@@ -1,0 +1,29 @@
+{
+  "all": [
+    {
+      "any": [
+        {
+          "is": {
+            "loved": true
+          }
+        },
+        {
+          "gt": {
+            "rating": 3
+          }
+        }
+      ]
+    },
+    {
+      "inTheRange": {
+        "year": [
+          1981,
+          1990
+        ]
+      }
+    }
+  ],
+  "sort": "year",
+  "order": "desc",
+  "limit": 25
+}

@@ -1,0 +1,9 @@
+# Hardware allowlist for the hardware tests: empty, so the guard refuses every disk. The blockdev guard refuses every
+# mount/write/format/partition operation on a disk that is not listed here. One table per device, e.g.:
+#
+# [ipod_classic]
+# usb_serial = "000A27000000000F"   # udev ID_SERIAL_SHORT
+# fs_uuid = "ABCD-1234"             # data partition
+# usb_vendor_id = "05ac"
+# usb_product_id = "1261"
+# model = "classic_7g"

@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Lint, types and the fast test suite on every push and pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run mypy syncmusic/core syncmusic/base
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg dosfstools exfatprogs
+      - run: uv sync --locked
+      # hardware tests need allowlisted USB devices, slow ones the services and browsers of nightly.yml
+      # branch coverage report (a report only, no gate yet)
+      - run: >-
+          uv run pytest -n auto -m "not hardware and not slow and not integration"
+          --cov=syncmusic --cov-branch --cov-report=term:skip-covered --cov-report=xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}
+          path: coverage.xml
+
+  # the compose stack (Navidrome, ABS, FTP, SMB, Jellyfin) on the generated test media
+  # (tests/integration/synthetic_media.py), as everywhere
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg dosfstools exfatprogs
+      - run: uv sync --locked
+      - run: uv run pytest -n 2 -m "integration and not hardware and not slow"
+      - if: always()
+        run: uv run python -c "from tests.integration import services; services.down()"

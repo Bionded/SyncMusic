@@ -1,0 +1,79 @@
+# Allowlist of the EMULATED test devices (one serial per kind, and one per xdist worker so parallel tests never
+# show two disks with the same serial): loop images built by tests/emulated.py, each with a
+# `<image>.device.json` sidecar carrying one of these USB serials. The blockdev guard accepts a loop device only
+# when loop devices are allowed and its serial is listed here. No real disk carries these serials.
+
+[emulated_flash]
+usb_serial = "EMU0000000FLASH1"
+usb_serial_aliases = [  # the same kind on xdist workers gw1..gw15 (tests/emulated.py: serial_of)
+    "EMU0000000FL01H1", "EMU0000000FL02H1", "EMU0000000FL03H1", "EMU0000000FL04H1",
+    "EMU0000000FL05H1", "EMU0000000FL06H1", "EMU0000000FL07H1", "EMU0000000FL08H1",
+    "EMU0000000FL09H1", "EMU0000000FL10H1", "EMU0000000FL11H1", "EMU0000000FL12H1",
+    "EMU0000000FL13H1", "EMU0000000FL14H1", "EMU0000000FL15H1",
+]
+usb_vendor_id = "0951"
+usb_product_id = "1666"
+
+[emulated_ipod_classic]
+# stock iPod Classic 7G: one FAT32 data partition, like a SSD-modded Classic
+usb_serial = "000A2700EE000001"
+usb_serial_aliases = [  # the same kind on xdist workers gw1..gw15 (tests/emulated.py: serial_of)
+    "000A2700EE000101", "000A2700EE000201", "000A2700EE000301", "000A2700EE000401",
+    "000A2700EE000501", "000A2700EE000601", "000A2700EE000701", "000A2700EE000801",
+    "000A2700EE000901", "000A2700EE001001", "000A2700EE001101", "000A2700EE001201",
+    "000A2700EE001301", "000A2700EE001401", "000A2700EE001501",
+]
+usb_vendor_id = "05ac"
+usb_product_id = "1261"
+model = "classic_7g"
+
+[emulated_ipod_mini]
+# stock iPod mini 2G: type-0 firmware partition + FAT32 data partition
+usb_serial = "000A2700EE000002"
+usb_serial_aliases = [  # the same kind on xdist workers gw1..gw15 (tests/emulated.py: serial_of)
+    "000A2700EE000102", "000A2700EE000202", "000A2700EE000302", "000A2700EE000402",
+    "000A2700EE000502", "000A2700EE000602", "000A2700EE000702", "000A2700EE000802",
+    "000A2700EE000902", "000A2700EE001002", "000A2700EE001102", "000A2700EE001202",
+    "000A2700EE001302", "000A2700EE001402", "000A2700EE001502",
+]
+usb_vendor_id = "05ac"
+usb_product_id = "1205"
+model = "mini_2g"
+
+[emulated_rockbox]
+# iPod mini 2G running Rockbox: firmware partition + FAT32 data with /.rockbox
+usb_serial = "000A2700EE000003"
+usb_serial_aliases = [  # the same kind on xdist workers gw1..gw15 (tests/emulated.py: serial_of)
+    "000A2700EE000103", "000A2700EE000203", "000A2700EE000303", "000A2700EE000403",
+    "000A2700EE000503", "000A2700EE000603", "000A2700EE000703", "000A2700EE000803",
+    "000A2700EE000903", "000A2700EE001003", "000A2700EE001103", "000A2700EE001203",
+    "000A2700EE001303", "000A2700EE001403", "000A2700EE001503",
+]
+usb_vendor_id = "05ac"
+usb_product_id = "1205"
+model = "mini_2g"
+
+[emulated_rockbox_eros]
+# a non-Apple Rockbox player like the AIGO EROS Q: one FAT32 partition, /.rockbox on it
+usb_serial = "EMU000000000EROS"
+usb_serial_aliases = [  # the same kind on xdist workers gw1..gw15 (tests/emulated.py: serial_of)
+    "EMU00000000001OS", "EMU00000000002OS", "EMU00000000003OS", "EMU00000000004OS",
+    "EMU00000000005OS", "EMU00000000006OS", "EMU00000000007OS", "EMU00000000008OS",
+    "EMU00000000009OS", "EMU00000000010OS", "EMU00000000011OS", "EMU00000000012OS",
+    "EMU00000000013OS", "EMU00000000014OS", "EMU00000000015OS",
+]
+usb_vendor_id = "0000"
+usb_product_id = "0000"
+
+[emulated_hiby]
+# HiBy R1 with SonixOS: one whole-disk exFAT volume, no partition table
+usb_serial = "EMU000000HIBYR1"
+usb_serial_aliases = [  # the same kind on xdist workers gw1..gw15 (tests/emulated.py: serial_of)
+    "EMU000000HI01R1", "EMU000000HI02R1", "EMU000000HI03R1", "EMU000000HI04R1",
+    "EMU000000HI05R1", "EMU000000HI06R1", "EMU000000HI07R1", "EMU000000HI08R1",
+    "EMU000000HI09R1", "EMU000000HI10R1", "EMU000000HI11R1", "EMU000000HI12R1",
+    "EMU000000HI13R1", "EMU000000HI14R1", "EMU000000HI15R1",
+]
+usb_vendor_id = "32bb"
+usb_product_id = "0101"
+model = "hiby_r1_sonixos"

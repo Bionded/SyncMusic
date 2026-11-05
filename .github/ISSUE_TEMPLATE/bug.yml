@@ -1,0 +1,30 @@
+name: Bug report
+description: Something does not work as described
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`syncmusic --version` or Settings → System"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and library
+      description: e.g. "iPod Classic 7G, Navidrome 0.64"
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics bundle
+      description: Attach the zip from Settings → System → Collect diagnostics (secrets are masked).
+    validations:
+      required: true

@@ -1,0 +1,10 @@
+# Docker build context (packaging/docker/Dockerfile): only what the image needs
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!THIRD-PARTY.md
+!syncmusic
+!packaging/docker/entrypoint.sh
+**/__pycache__

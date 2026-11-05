@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The slow suite without hardware, nightly and on demand: the web UI in Playwright's Chromium and
+# the other slow tests. Not here: hardware (allowlisted USB devices), and the integration tests that need the
+# user's media folder, loop devices with sudo and the compose stack of tests/integration (they run on the
+# development host only).
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  slow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg dosfstools exfatprogs
+      - run: uv sync --locked
+      - run: uv run playwright install --with-deps chromium
+      - run: uv run pytest -n 2 -m "slow and not hardware and not integration and not heavy"
+      - name: Screenshots of failed UI tests
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts
+          path: tests/artifacts/
+          if-no-files-found: ignore

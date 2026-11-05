@@ -1,0 +1,23 @@
+name: New player model
+description: A player that is not detected or not supported yet
+labels: [device]
+body:
+  - type: input
+    id: model
+    attributes:
+      label: Player
+      description: Make, model, firmware (e.g. "Sansa Clip+, Rockbox 3.15")
+    validations:
+      required: true
+  - type: textarea
+    id: diag
+    attributes:
+      label: Device diagnostics
+      description: Plug the player in and attach the output of http://<host>:8765/api/v1/devices/diagnostics
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: What the player plays and how it finds music
+      description: Formats, playlists (.m3u?), database files, folder layout - whatever you know.

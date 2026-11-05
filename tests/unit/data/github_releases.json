@@ -1,0 +1,20 @@
+[
+  {"tag_name": "v0.2.2-4", "draft": false, "prerelease": true, "published_at": "2026-11-12T10:00:00Z",
+   "html_url": "https://github.com/example/SyncMusic/releases/tag/v0.2.2-4",
+   "body": "- fix(sync): something\n- feat(ui): something else",
+   "assets": [{"name": "syncmusic-web-0.2.2-4-linux-aarch64", "browser_download_url": "https://example.org/web-a", "size": 10}]},
+  {"tag_name": "v0.2.1", "draft": false, "prerelease": false, "published_at": "2026-11-10T10:00:00Z",
+   "html_url": "https://github.com/example/SyncMusic/releases/tag/v0.2.1",
+   "body": "## Fixed\n- Covers on the Classic\n* Rockbox playlists\n",
+   "assets": [
+     {"name": "syncmusic-web-0.2.1-linux-x86_64", "browser_download_url": "https://example.org/web-x", "size": 10},
+     {"name": "syncmusic-web-0.2.1-linux-aarch64", "browser_download_url": "https://example.org/web-a", "size": 11},
+     {"name": "syncmusic-desktop-0.2.1-linux-aarch64", "browser_download_url": "https://example.org/desk-a", "size": 12},
+     {"name": "SHA256SUMS", "browser_download_url": "https://example.org/sums", "size": 1}]},
+  {"tag_name": "v0.2.1-10", "draft": false, "prerelease": true, "published_at": "2026-11-09T10:00:00Z",
+   "html_url": null, "body": "", "assets": []},
+  {"tag_name": "v0.3.0", "draft": true, "prerelease": false, "published_at": null, "body": "", "assets": []},
+  {"tag_name": "nightly", "draft": false, "prerelease": true, "published_at": null, "body": "", "assets": []},
+  {"tag_name": "v0.2.0", "draft": false, "prerelease": false, "published_at": "2026-11-04T10:00:00Z",
+   "html_url": null, "body": "First release", "assets": []}
+]

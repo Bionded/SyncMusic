@@ -1,0 +1,25 @@
+[Unit]
+Description=SyncMusic
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/syncmusic/.venv/bin/syncmusic run --mode web
+Restart=on-failure
+User=root
+Environment=SYNCMUSIC_LOG_LEVEL=INFO
+# fewer malloc arenas: with malloc_trim after snapshot reloads ~30 % less RSS
+Environment=MALLOC_ARENA_MAX=2
+# graceful stop: the running sync stops after the current file and writes manifest + device DB first
+TimeoutStopSec=300
+# hardening that leaves mounting, mkfs and the device files alone
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

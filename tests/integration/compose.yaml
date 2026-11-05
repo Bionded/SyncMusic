@@ -1,0 +1,86 @@
+# Integration test services: Navidrome, Audiobookshelf, an FTP and an SMB server in containers.
+# Started and bootstrapped by tests/integration/services.py (pytest does it on first use; by hand:
+# `uv run python -m tests.integration.services up|down|status`). The test media is mounted READ-ONLY
+# (the safety rules in CONTRIBUTING.md); the servers' state lives in named volumes that `down` removes.
+name: syncmusic-it
+
+services:
+  navidrome:
+    image: deluan/navidrome:0.64.2
+    ports:
+      - "127.0.0.1:4533:4533"
+    environment:
+      ND_MUSICFOLDER: /srv/test-media/Music
+      ND_LOGLEVEL: info
+      ND_ENABLEINSIGHTSCOLLECTOR: "false"
+      ND_ENABLEEXTERNALSERVICES: "false"
+      ND_LASTFM_ENABLED: "false"
+      ND_LISTENBRAINZ_ENABLED: "false"
+      ND_SCANNER_SCHEDULE: "@every 1h"
+      # every xdist worker's application logs in from 127.0.0.1: the per-IP login limit would refuse them (429)
+      ND_AUTHREQUESTLIMIT: "0"
+    volumes:
+      - navidrome-data:/data
+      - ${SM_TEST_MEDIA:-./test-media}:/srv/test-media:ro
+    mem_limit: 512m  # test containers are memory-capped (Pi 5, 8 GB)
+
+  audiobookshelf:
+    image: ghcr.io/advplyr/audiobookshelf:2.37.1
+    ports:
+      - "127.0.0.1:13378:80"
+    volumes:
+      - abs-config:/config
+      - abs-metadata:/metadata
+      - ${SM_TEST_MEDIA:-./test-media}:/srv/test-media:ro
+      # a generated 3-part, 12-second book: tests that combine or sync a whole book stay fast
+      - ./abs-samples:/srv/samples:ro
+    mem_limit: 1g  # memory-capped (Pi 5, 8 GB); 768m OOM-killed ffprobe in the scan
+
+  # FTP server for the FTP device: pure-ftpd; services.py creates the user of .env.test with pure-pw.
+  # (vsftpd images segfault after a few connections on this host; SECURE_MODE=false allows rename and dot files.)
+  ftp:
+    image: crazymax/pure-ftpd:1.0.50@sha256:f505247fa1fc26efc46f24bd9f8aa45c45dee3afb458252097c90c0e2ae47b6a
+    ports:
+      - "127.0.0.1:2121:2100"
+      - "127.0.0.1:30000-30009:30000-30009"  # passive data connections
+    environment:
+      PASSIVE_IP: "127.0.0.1"
+      AUTH_METHOD: "puredb"
+      SECURE_MODE: "false"
+    mem_limit: 128m  # test containers are memory-capped (Pi 5, 8 GB)
+
+  # SMB server for the folder library over SMB: the user of .env.test on [music], guests on [public]
+  samba:
+    image: dockurr/samba:latest@sha256:2a0452a12b7a244a22f18d0f233101bb8d4952b5500ae263905e3b9dad3bf2ae
+    ports:
+      - "127.0.0.1:4445:445"
+    environment:
+      USER: ${SMB_USER:-samba}  # from .env.test (services.py passes it)
+      PASS: ${SMB_PASSWORD:-secret}
+      UID: ${SD_UID:-1000}  # the SMB device's files on [devices] belong to the test user
+      GID: ${SD_GID:-1000}
+    volumes:
+      - ./samba/smb.conf:/etc/samba/smb.conf:ro
+      # [devices]: the SMB device's writable share; the contract tests look at what arrived
+      - ${SD_SMB_DEVICES:-/var/tmp/syncmusic-it-smbdev}:/devices
+    mem_limit: 128m  # test containers are memory-capped (Pi 5, 8 GB)
+
+  # Jellyfin library: only with `--profile jellyfin` (started by its own tests, not the whole
+  # stack); a few generated short videos (a movie, two episodes), not a whole collection
+  jellyfin:
+    image: jellyfin/jellyfin:10.10.7
+    profiles: ["jellyfin"]
+    ports:
+      - "127.0.0.1:8096:8096"
+    volumes:
+      - jellyfin-config:/config
+      - jellyfin-cache:/cache
+      - ${SD_JELLYFIN_MEDIA:-/var/tmp/syncmusic-it-jellyfin}:/srv/video:ro
+    mem_limit: 1g  # test containers are memory-capped (Pi 5, 8 GB)
+
+volumes:
+  navidrome-data:
+  abs-config:
+  abs-metadata:
+  jellyfin-config:
+  jellyfin-cache:

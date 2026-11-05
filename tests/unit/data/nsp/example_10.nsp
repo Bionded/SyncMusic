@@ -1,0 +1,13 @@
+{
+  "name": "Weekly Discoveries",
+  "all": [
+    {
+      "notInTheLast": {
+        "lastPlayed": 90
+      }
+    }
+  ],
+  "sort": "random",
+  "limit": 50,
+  "refreshDelay": "1w"
+}

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>SyncMusic</title>
+<link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="icons/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<script src="js/theme.js"></script>
+<link rel="stylesheet" href="app.css">
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<div class="shell">
+  <aside class="sidebar" id="sidebar" aria-label="Main navigation">
+    <a class="brand" href="#/" id="brand"><span class="brand-mark" id="brandMark" aria-hidden="true"></span><span class="brand-text"><b>SyncMusic</b><small id="brandSub"></small></span></a>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-bottom" id="sideBottom"></div>
+    <button type="button" class="side-collapse" id="sideCollapse" aria-controls="sidebar" aria-expanded="true"></button>
+  </aside>
+  <div class="side-tip" id="sideTip" role="tooltip" hidden></div>
+  <main class="main">
+    <header class="topbar">
+      <button type="button" class="iconbtn burger" id="burger" aria-label="Menu" aria-controls="sidebar" aria-expanded="false"></button>
+      <nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav>
+      <div class="page-title" id="pageTitle"></div>
+      <div class="top-actions"><button type="button" class="search-btn" id="searchBtn"></button><div class="sync-pill" id="livePill" role="status" aria-live="polite"></div><button type="button" class="iconbtn" id="themeBtn"></button><a class="iconbtn bell" id="bell" href="#/notifications"></a></div>
+    </header>
+    <div class="live-banner" id="liveBanner" role="alert" hidden></div>
+    <div class="content" id="content" tabindex="-1"></div>
+  </main>
+  <div class="nav-backdrop" id="navBackdrop"></div>
+</div>
+<div id="overlay"></div>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<noscript><p class="empty">SyncMusic needs JavaScript.</p></noscript>
+</body>
+</html>

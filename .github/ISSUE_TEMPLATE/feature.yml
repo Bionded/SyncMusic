@@ -1,0 +1,11 @@
+name: Feature request
+description: An idea for SyncMusic
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What do you want to do?
+      description: Describe the need first, then the solution you have in mind.
+    validations:
+      required: true

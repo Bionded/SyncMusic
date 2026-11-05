@@ -1,0 +1,18 @@
+{
+  "name": "Overplayed Favorites",
+  "comment": "Most Played Favorites Played Within Last 4yr",
+  "public": true,
+  "all": [
+    {
+      "inPlaylist": {
+        "path": "most-played-favorites.nsp"
+      }
+    },
+    {
+      "notInPlaylist": {
+        "path": "favorites-not-played-in-4-yrs.nsp"
+      }
+    }
+  ],
+  "sort": "playCount, lastPlayed"
+}

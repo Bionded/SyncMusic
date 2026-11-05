@@ -1,0 +1,11 @@
+{
+  "name": "Recently Added Albums",
+  "all": [
+    {
+      "inTheLast": {
+        "albumdateadded": 30
+      }
+    }
+  ],
+  "sort": "-albumdateadded,album,discnumber,tracknumber"
+}

@@ -1,0 +1,71 @@
+# Known device models (device profile).
+#
+# <device type>:
+#   <model id>:            # the detected model: pygpod generation (iPod), rockbox-info.txt `Target` (Rockbox);
+#     label: ...           # `generic` = any model of the type that is not listed
+#     <profile field>: ... # see PROFILE_FIELDS in core/profile.py; cover_size null = no covers
+#
+# Values here are what the player handles well, not only what it can decode: what the device itself reports
+# (pygpod's model table, the installed Rockbox codecs and features) wins over them, a override wins over
+# both. Keep entries conservative - an unknown key or value fails the unit test of this file.
+
+ipod:
+  first: {label: "iPod (1st generation)", cover_size: null}
+  second: {label: "iPod (2nd generation)", cover_size: null}
+  third: {label: "iPod (3rd generation)", cover_size: null}
+  fourth: {label: "iPod (4th generation)", cover_size: null}
+  photo: {label: "iPod photo / color"}
+  mini_1: {label: "iPod mini (1st generation)", cover_size: null}
+  mini_2: {label: "iPod mini (2nd generation)", cover_size: null}
+  shuffle_1: {label: "iPod shuffle (1st generation)", cover_size: null, supports_playlists: false}
+  shuffle_2: {label: "iPod shuffle (2nd generation)", cover_size: null, supports_playlists: false}
+  shuffle_3: {label: "iPod shuffle (3rd generation)", cover_size: null, supports_playlists: false}
+  shuffle_4: {label: "iPod shuffle (4th generation)", cover_size: null, supports_playlists: false}
+  nano_1: {label: "iPod nano (1st generation)"}
+  nano_2: {label: "iPod nano (2nd generation)"}
+  nano_3: {label: "iPod nano (3rd generation)"}
+  nano_4: {label: "iPod nano (4th generation)"}
+  nano_5: {label: "iPod nano (5th generation)"}
+  nano_6: {label: "iPod nano (6th generation)"}
+  video_1: {label: "iPod video (5th generation)"}
+  video_2: {label: "iPod video (5.5th generation)"}
+  classic_1: {label: "iPod classic (6th generation)"}
+  classic_2: {label: "iPod classic (6th generation, 2008)"}
+  classic_3: {label: "iPod classic (7th generation)"}
+  generic: {label: "iPod (model not recognised)"}
+
+# Rockbox targets: hi-res and lossless cost battery on the slow ones (prefer_lossy, 48 kHz / 16 bit);
+# cover_size follows the screen (greyscale iPods: small; null = 1-bit screens without album art)
+rockbox:
+  ipod1g2g: {label: "iPod 1st/2nd generation (Rockbox)", cover_size: 100, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  ipod3g: {label: "iPod 3rd generation (Rockbox)", cover_size: 100, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  ipod4g: {label: "iPod 4th generation (Rockbox)", cover_size: 100, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  ipodcolor: {label: "iPod photo / color (Rockbox)", cover_size: 150, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  ipodmini1g: {label: "iPod mini 1st generation (Rockbox)", cover_size: 100, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  ipodmini2g: {label: "iPod mini 2nd generation (Rockbox)", cover_size: 100, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  ipodnano1g: {label: "iPod nano 1st generation (Rockbox)", cover_size: 120, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  ipodnano2g: {label: "iPod nano 2nd generation (Rockbox)", cover_size: 120, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  ipodvideo: {label: "iPod video (Rockbox)", cover_size: 200, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  ipod6g: {label: "iPod classic (Rockbox)", cover_size: 200, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  sansae200: {label: "SanDisk Sansa e200 (Rockbox)", cover_size: 150, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  sansaclip: {label: "SanDisk Sansa Clip (Rockbox)", cover_size: null, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  sansaclipv2: {label: "SanDisk Sansa Clip v2 (Rockbox)", cover_size: null, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  sansaclipplus: {label: "SanDisk Sansa Clip+ (Rockbox)", cover_size: null, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  sansaclipzip: {label: "SanDisk Sansa Clip Zip (Rockbox)", cover_size: 90, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  sansafuze: {label: "SanDisk Sansa Fuze (Rockbox)", cover_size: 150, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  sansafuzev2: {label: "SanDisk Sansa Fuze v2 (Rockbox)", cover_size: 150, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  sansafuzeplus: {label: "SanDisk Sansa Fuze+ (Rockbox)", cover_size: 200, max_sample_rate: 48000, max_bit_depth: 16, prefer_lossy: true}
+  # the AIGO EROS Q / K family and other X1000 players are fast enough for lossless
+  # Rockbox has two EROS Q builds: the native port (Target "erosqnative") and the older hosted one on the stock
+  # Linux (Target "aigoerosq") - same player, same values
+  erosqnative: {label: "AIGO EROS Q / K (Rockbox)", cover_size: 200, prefer_lossy: false}
+  aigoerosq: {label: "AIGO EROS Q / K (Rockbox)", cover_size: 200, prefer_lossy: false}
+  fiiom3k: {label: "FiiO M3K (Rockbox)", cover_size: 200, prefer_lossy: false}
+  shanlingq1: {label: "Shanling Q1 (Rockbox)", cover_size: 200, prefer_lossy: false}
+  generic: {label: "Rockbox player (target not in the list)"}
+
+flashdrive:
+  generic: {label: "USB flash drive"}
+
+ftp:
+  generic: {label: "FTP server"}

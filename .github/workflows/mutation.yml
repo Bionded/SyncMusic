@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Mutation testing of one critical module, on demand only (the developer notes "Mutation testing").
+name: Mutation
+
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: "Module to mutate"
+        default: syncmusic/infra/blockdev/guard.py
+      tests:
+        description: "Its test files (space-separated)"
+        default: tests/unit/test_guard.py
+
+permissions:
+  contents: read
+
+jobs:
+  mutmut:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      MODULE: ${{ inputs.module }}
+      TESTS: ${{ inputs.tests }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg dosfstools exfatprogs
+      - run: uv sync --locked
+      - name: Point [tool.mutmut] at the chosen module
+        run: >-
+          uv run python -c "import os, re, json, pathlib;
+          p = pathlib.Path('pyproject.toml'); s = p.read_text();
+          s = re.sub(r'(?m)^paths_to_mutate = .*$', 'paths_to_mutate = ' + json.dumps([os.environ['MODULE']]), s);
+          s = re.sub(r'(?m)^tests_dir = .*$', 'tests_dir = ' + json.dumps(os.environ['TESTS'].split()), s);
+          p.write_text(s)"
+      - run: uv run mutmut run --max-children 4
+      - if: always()
+        run: uv run mutmut results

@@ -1,0 +1,121 @@
+[project]
+name = "syncmusic"
+version = "0.2.0"
+description = "Sync media from libraries (Navidrome, folders, Audiobookshelf) to portable players, and listening data back"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE", "THIRD-PARTY.md"]
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "pydantic>=2.7",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "aiosqlite>=0.20",
+    "httpx>=0.27",
+    "mutagen>=1.47",
+    "pillow>=10",
+    "pyudev>=0.24",
+    "pyyaml>=6",
+    "typer>=0.12",
+    "pygpod==0.2.3",
+    "packaging>=24",
+    "smbprotocol>=1.15",
+    "zeroconf>=0.151.5",
+    "watchfiles>=1.0",
+]
+
+
+[project.urls]
+Homepage = "https://github.com/Bionded/SyncMusic"
+Documentation = "https://github.com/Bionded/SyncMusic/tree/main/docs"
+Issues = "https://github.com/Bionded/SyncMusic/issues"
+Changelog = "https://github.com/Bionded/SyncMusic/blob/main/CHANGELOG.md"
+
+[project.scripts]
+syncmusic = "syncmusic.__main__:main"
+syncmusic-priv = "syncmusic.infra.blockdev.priv_helper:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-pyyaml",
+    "pytest-timeout>=2.4.0",
+    "pytest-playwright>=0.10.0",
+    "pyftpdlib>=2.2.0",
+    "pytest-xdist>=3.8.0",
+    "pytest-cov>=7.1.0",
+    "mutmut>=3.8.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["syncmusic"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+# `-n auto` (pytest-xdist): the workers and the serial group are chosen in tests/conftest.py
+addopts = "--dist loadgroup"
+# /tmp is a 4 GB tmpfs on the Pi: keep tmp dirs of failed tests only (media fixtures are big)
+tmp_path_retention_policy = "failed"
+markers = [
+    "unit: fast tests without I/O (default)",
+    "integration: real services (Navidrome, ABS) and virtual devices",
+    "slow: benchmarks and long runs",
+    "heavy: soak tests at live scale (minutes each, also slow): only the full slow suite runs them",
+    "hardware: real USB devices from tests/hardware.toml (opt-in, needs connected devices)",
+    "emulated: emulated devices on loop images (tests/emulated.py, tests/emulated.toml)",
+    "ui: Playwright web UI tests",
+    "e2e: end-to-end flows",
+]
+filterwarnings = [
+    "ignore:Due to '_pack_':DeprecationWarning",
+    "ignore:.*optional dependencies not installed:UserWarning",  # pygpod without pyusb (udev gives the serial)
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["docs", "*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC"]
+ignore = ["B008", "E501", "ASYNC109"]  # line length is enforced by the formatter
+
+[tool.ruff.lint.per-file-ignores]
+"syncmusic/base/*.py" = ["B027"]  # optional hooks with a no-op default are intentional
+"syncmusic/core/rules/evaluator.py" = ["E731"]  # predicates are built as closures
+
+[tool.mypy]
+python_version = "3.12"
+files = ["syncmusic/core", "syncmusic/base", "syncmusic/processors"]
+strict = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["pygpod.*", "pyudev.*", "mutagen.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# the processors write tags through mutagen, whose API has no annotations
+module = ["syncmusic.processors.*"]
+disallow_untyped_calls = false
+
+[tool.mutmut]
+# Mutation testing of the critical modules; run in chunks, see the developer notes.
+paths_to_mutate = ["syncmusic/devices/HibyR1/sonixos.py"]
+tests_dir = ["tests/unit/test_hiby_databases.py", "tests/unit/test_hiby_full_sync.py", "tests/unit/test_hiby_playlists.py", "tests/unit/test_hiby_device.py", "tests/unit/test_hiby_starred.py"]
+# timing benchmarks fail under the mutmut trampolines
+pytest_add_cli_args = ["-p", "no:cacheprovider", "-q", "-x", "--deselect", "tests/unit/test_rules.py::test_benchmark_100k_tracks"]
+also_copy = ["tests", "syncmusic"]

@@ -1,0 +1,54 @@
+# A sample tests/hardware.toml matching lsblk_pi5.json (made-up serials and UUIDs): the guard tests do not depend
+# on the local allowlist (a fresh checkout has an empty one).
+# Hardware allowlist. The blockdev guard (syncmusic.infra.blockdev.guard) refuses every
+# mount/write/format/partition operation on a disk that is not listed here when
+# SYNCMUSIC_DEVICE_ALLOWLIST points at this file (always the case in tests).
+
+[ipod_classic]
+# Apple 05ac:1261 "iPod Classic", SSD-modded (464 GB, 4096-byte logical sectors).
+# DOS partition table, single FAT32 partition sdX1 - no visible firmware partition.
+usb_serial = "000A11223344556F"     # udev ID_SERIAL_SHORT (= FireWire GUID)
+fs_uuid = "1A2B-3C4D"               # data partition (changes after every format)
+usb_vendor_id = "05ac"
+usb_product_id = "1261"
+model = "classic_7g"
+size_bytes = 498417274880
+
+[ipod_mini_rockbox]
+# Apple 05ac:1205 "iPod Mini 1.Gen/2.Gen", CF-modded (238 GB "1 CompactFlash C", INIC-205 bridge).
+# DOS partition table: sdX1 39 MB firmware partition (type 0), sdX2 FAT32 data (label IPOD).
+usb_serial = "300000000000A1B2C3D4E5F60"            # under Rockbox
+usb_serial_aliases = ["000A1B2C3D4E5F60"]      # the same mini in Apple disk mode
+fs_uuid = "2B3C-4D5E"               # data partition (changes after a format)
+usb_vendor_id = "05ac"
+usb_product_id = "1205"
+model = "mini_2g"
+size_bytes = 255869320704
+
+[ipod_classic_black]
+# Apple 05ac:1261 "iPod Classic" (SysInfo ModelNumStr MB029, 6G, firmware 1.62), modded to 128 GB, 4096-byte sectors,
+# single FAT32 partition sdX1 (label CLASSIC6G), no visible firmware partition.
+usb_serial = "000A99887766554F"     # udev ID_SERIAL_SHORT (= FireWire GUID)
+fs_uuid = "3C4D-5E6F"               # data partition (changes after every format)
+usb_vendor_id = "05ac"
+usb_product_id = "1261"
+model = "classic_6g"
+size_bytes = 137237364736
+
+[hiby_r1]
+# HiBy R1 with SonixOS, USB 32bb:0101 "HiBy R1 U-DISK", mass storage of its SD card:
+# exFAT on the whole disk (no partition table), 477.5 GB. ID_SERIAL_SHORT "HiBy_R1" is generic (same for every R1),
+# so the file system UUID is the identity. On the player the card is /mnt/sd_0 (DB paths use that prefix).
+usb_serial = "HiBy_R1"              # generic, NOT unique - match together with fs_uuid
+fs_uuid = "5E6F-7081"               # exFAT volume (changes after a format)
+usb_vendor_id = "32bb"
+usb_product_id = "0101"
+model = "hiby_r1_sonixos"
+size_bytes = 512701235200
+
+[flash]
+# Zorvex FlashStick 3.0 (0951:1666), 64 GB. May be reformatted freely.
+usb_serial = "F00DFEED0123456789ABCDEF"
+usb_vendor_id = "0951"
+usb_product_id = "1666"
+size_bytes = 61872793600

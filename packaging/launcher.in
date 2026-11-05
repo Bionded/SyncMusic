@@ -1,0 +1,50 @@
+#!/bin/sh
+# SyncMusic @VERSION@ (@MODE@) for linux-@ARCH@: a single-file binary built by packaging/build-web|build-desktop.
+# A shell launcher with a tar.gz payload after the __PAYLOAD__ line (a bundled CPython + the app). The first run
+# unpacks it to $SYNCMUSIC_RUNTIME_DIR (default ~/.cache/syncmusic/runtime)/@ID@; later runs start from there. The
+# root-owned /opt/syncmusic/runtime/@ID@ of `syncmusic --install` is used when it exists.
+# Without arguments it runs the app in @MODE@ mode; `<binary> --help` lists the commands.
+set -eu
+ID=@ID@
+case "$(uname -s)-$(uname -m)" in
+  Linux-@ARCH@) ;;
+  *) echo "syncmusic: this binary is for linux-@ARCH@, not $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+esac
+self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+# an update on trial (SyncMusic deletes $self.trial once the new version runs healthy): after 3 starts that never
+# got there, the previous binary comes back and $self.rolled-back tells SyncMusic so
+if [ -f "$self.trial" ] && [ -f "$self.previous" ]; then
+  starts=$(($(head -c 8 "$self.trial" | tr -cd 0-9) + 1))
+  if [ "$starts" -gt 3 ]; then
+    mv -f "$self.previous" "$self" && rm -f "$self.trial" && : > "$self.rolled-back"
+    echo "syncmusic: the update did not start; going back to the previous version" >&2
+    exec "$self" "$@"
+  fi
+  echo "$starts" > "$self.trial"
+fi
+if [ -z "${SYNCMUSIC_RUNTIME_DIR:-}" ] && [ -f "/opt/syncmusic/runtime/$ID/.complete" ]; then
+  SYNCMUSIC_RUNTIME_DIR=/opt/syncmusic/runtime
+fi
+base="${SYNCMUSIC_RUNTIME_DIR:-${XDG_CACHE_HOME:-${HOME:-/var/tmp}/.cache}/syncmusic/runtime}"
+dir="$base/$ID"
+if [ ! -f "$dir/.complete" ]; then
+  mkdir -p "$base"
+  tmp="$(mktemp -d "$base/.unpack.XXXXXX")"
+  skip=$(awk '/^__PAYLOAD__$/ {print NR + 1; exit}' "$self")
+  if ! tail -n +"$skip" "$self" | tar -xzf - -C "$tmp"; then
+    rm -rf "$tmp"
+    echo "syncmusic: could not unpack to $base" >&2
+    exit 1
+  fi
+  touch "$tmp/.complete"
+  # another run may have unpacked it meanwhile: keep the first one
+  mv -T "$tmp" "$dir" 2>/dev/null || rm -rf "$tmp"
+fi
+SYNCMUSIC_BINARY="$self"
+MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"  # less RSS after snapshot reloads
+export SYNCMUSIC_BINARY MALLOC_ARENA_MAX
+[ $# -gt 0 ] || set -- run
+# -I: isolated, never imports from the current directory (a checkout or any syncmusic/ folder there)
+exec "$dir/python/bin/python3" -I -m syncmusic "$@"
+exit 1
+__PAYLOAD__

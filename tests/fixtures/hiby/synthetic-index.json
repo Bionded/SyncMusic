@@ -1,0 +1,654 @@
+{
+ "rules": "a0/g11/j1/x00000000",
+ "media": [
+  {
+   "path": "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/01 - Prolog.flac",
+   "name": "Prolog",
+   "album_artist": "Anna Kowalczyk",
+   "character": "P",
+   "sortkey": "3prolog",
+   "album_key": "a127f7ea4"
+  },
+  {
+   "path": "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/02 - Światło.flac",
+   "name": "Światło",
+   "album_artist": "Anna Kowalczyk",
+   "character": "Ś",
+   "sortkey": "3swiatlo",
+   "album_key": "a127f7ea4"
+  },
+  {
+   "path": "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/03 - V.flac",
+   "name": "V",
+   "album_artist": "Anna Kowalczyk",
+   "character": "V",
+   "sortkey": "3v",
+   "album_key": "a127f7ea4"
+  },
+  {
+   "path": "/mnt/sd_0/Music/Ольга Морозова/2021 - Зимові казки/01 - Сутінки.flac",
+   "name": "Сутінки",
+   "album_artist": "Ольга Морозова",
+   "character": "С",
+   "sortkey": "5сутінки",
+   "album_key": "ae4ecaeb6"
+  },
+  {
+   "path": "/mnt/sd_0/Music/Ольга Морозова/2021 - Зимові казки/02 - Міст.flac",
+   "name": "Міст",
+   "album_artist": "Ольга Морозова",
+   "character": "М",
+   "sortkey": "5міст",
+   "album_key": "ae4ecaeb6"
+  },
+  {
+   "path": "/mnt/sd_0/Music/マリコ/2018 - ナイトプール/01 - コーヒー.flac",
+   "name": "コーヒー",
+   "album_artist": "マリコ",
+   "character": "コ",
+   "sortkey": "6コーヒー",
+   "album_key": "ab2976189"
+  },
+  {
+   "path": "/mnt/sd_0/Music/マリコ/2018 - ナイトプール/02 - プール.flac",
+   "name": "プール",
+   "album_artist": "マリコ",
+   "character": "プ",
+   "sortkey": "6プール",
+   "album_key": "ab2976189"
+  },
+  {
+   "path": "/mnt/sd_0/Music/The Paper Kites Club/2015 - Don’t Look Back/01 - Why’s This Here_.flac",
+   "name": "Why’s This Here?",
+   "album_artist": "The Paper Kites Club",
+   "character": "W",
+   "sortkey": "3why’s this here?",
+   "album_key": "ae3dde036"
+  },
+  {
+   "path": "/mnt/sd_0/Music/The Paper Kites Club/2015 - Don’t Look Back/02 - Café Société.flac",
+   "name": "Café Société",
+   "album_artist": "The Paper Kites Club",
+   "character": "C",
+   "sortkey": "3cafe societe",
+   "album_key": "ae3dde036"
+  },
+  {
+   "path": "/mnt/sd_0/Music/Lee Smith‐Jones/2010 - 1999/01 - 67 Mustang.flac",
+   "name": "67 Mustang",
+   "album_artist": "Lee Smith‐Jones",
+   "character": "0-9",
+   "sortkey": "267 mustang",
+   "album_key": "acb7887ef"
+  },
+  {
+   "path": "/mnt/sd_0/Music/Lee Smith‐Jones/2010 - 1999/02 - Track (feat. Ray & Bo).flac",
+   "name": "Track (feat. Ray & Bo)",
+   "album_artist": "Lee Smith‐Jones",
+   "character": "T",
+   "sortkey": "3track (feat. ray & bo)",
+   "album_key": "acb7887ef"
+  },
+  {
+   "path": "/mnt/sd_0/Music/Various Artists/2022 - :Of Moons & Stars:/01 - Zed.flac",
+   "name": "Zed",
+   "album_artist": "Various Artists",
+   "character": "Z",
+   "sortkey": "3zed",
+   "album_key": "a8ae1bdd2"
+  },
+  {
+   "path": "/mnt/sd_0/Music/Various Artists/2022 - :Of Moons & Stars:/02 - Quiet Hour.flac",
+   "name": "Quiet Hour",
+   "album_artist": "Various Artists",
+   "character": "Q",
+   "sortkey": "3quiet hour",
+   "album_key": "a8ae1bdd2"
+  },
+  {
+   "path": "/mnt/sd_0/Music/Various Artists/2022 - :Of Moons & Stars:/03 - Échos.flac",
+   "name": "Échos",
+   "album_artist": "Various Artists",
+   "character": "É",
+   "sortkey": "3echos",
+   "album_key": "a8ae1bdd2"
+  }
+ ],
+ "folders": [
+  {
+   "path": "/mnt/sd_0/Music",
+   "entries": [
+    [
+     "Anna Kowalczyk",
+     true
+    ],
+    [
+     "Ольга Морозова",
+     true
+    ],
+    [
+     "マリコ",
+     true
+    ],
+    [
+     "The Paper Kites Club",
+     true
+    ],
+    [
+     "Lee Smith‐Jones",
+     true
+    ],
+    [
+     "Various Artists",
+     true
+    ]
+   ],
+   "files": 6,
+   "names": -7365880578199798720
+  },
+  {
+   "path": "/mnt/sd_0/Music/Anna Kowalczyk",
+   "entries": [
+    [
+     "2019 - Łódź Nights",
+     true
+    ]
+   ],
+   "files": 1,
+   "names": 7169885079884258173
+  },
+  {
+   "path": "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights",
+   "entries": [
+    [
+     "01 - Prolog.flac",
+     false
+    ],
+    [
+     "02 - Światło.flac",
+     false
+    ],
+    [
+     "03 - V.flac",
+     false
+    ],
+    [
+     "cover.jpg",
+     false
+    ]
+   ],
+   "files": 4,
+   "names": -8128162960921919234
+  },
+  {
+   "path": "/mnt/sd_0/Music/Ольга Морозова",
+   "entries": [
+    [
+     "2021 - Зимові казки",
+     true
+    ]
+   ],
+   "files": 1,
+   "names": -8875348835996231117
+  },
+  {
+   "path": "/mnt/sd_0/Music/Ольга Морозова/2021 - Зимові казки",
+   "entries": [
+    [
+     "01 - Сутінки.flac",
+     false
+    ],
+    [
+     "02 - Міст.flac",
+     false
+    ],
+    [
+     "cover.jpg",
+     false
+    ]
+   ],
+   "files": 3,
+   "names": 2337088046734886774
+  },
+  {
+   "path": "/mnt/sd_0/Music/マリコ",
+   "entries": [
+    [
+     "2018 - ナイトプール",
+     true
+    ]
+   ],
+   "files": 1,
+   "names": -3274377714992246839
+  },
+  {
+   "path": "/mnt/sd_0/Music/マリコ/2018 - ナイトプール",
+   "entries": [
+    [
+     "01 - コーヒー.flac",
+     false
+    ],
+    [
+     "02 - プール.flac",
+     false
+    ],
+    [
+     "cover.jpg",
+     false
+    ]
+   ],
+   "files": 3,
+   "names": -6257345827249760030
+  },
+  {
+   "path": "/mnt/sd_0/Music/The Paper Kites Club",
+   "entries": [
+    [
+     "2015 - Don’t Look Back",
+     true
+    ]
+   ],
+   "files": 1,
+   "names": -7560509404748753841
+  },
+  {
+   "path": "/mnt/sd_0/Music/The Paper Kites Club/2015 - Don’t Look Back",
+   "entries": [
+    [
+     "01 - Why’s This Here_.flac",
+     false
+    ],
+    [
+     "02 - Café Société.flac",
+     false
+    ],
+    [
+     "cover.jpg",
+     false
+    ]
+   ],
+   "files": 3,
+   "names": 9205201625213995817
+  },
+  {
+   "path": "/mnt/sd_0/Music/Lee Smith‐Jones",
+   "entries": [
+    [
+     "2010 - 1999",
+     true
+    ]
+   ],
+   "files": 1,
+   "names": -1152849380861970932
+  },
+  {
+   "path": "/mnt/sd_0/Music/Lee Smith‐Jones/2010 - 1999",
+   "entries": [
+    [
+     "01 - 67 Mustang.flac",
+     false
+    ],
+    [
+     "02 - Track (feat. Ray & Bo).flac",
+     false
+    ],
+    [
+     "cover.jpg",
+     false
+    ]
+   ],
+   "files": 3,
+   "names": 4650730175587804995
+  },
+  {
+   "path": "/mnt/sd_0/Music/Various Artists",
+   "entries": [
+    [
+     "2022 - :Of Moons & Stars:",
+     true
+    ]
+   ],
+   "files": 1,
+   "names": 3454717105985337241
+  },
+  {
+   "path": "/mnt/sd_0/Music/Various Artists/2022 - :Of Moons & Stars:",
+   "entries": [
+    [
+     "01 - Zed.flac",
+     false
+    ],
+    [
+     "02 - Quiet Hour.flac",
+     false
+    ],
+    [
+     "03 - Échos.flac",
+     false
+    ],
+    [
+     "cover.jpg",
+     false
+    ]
+   ],
+   "files": 4,
+   "names": -2310115311136413579
+  }
+ ],
+ "lookups": {
+  "ALBUM_TABLE": [
+   [
+    "1999",
+    "0-9",
+    2,
+    "21999"
+   ],
+   [
+    ":Of Moons & Stars:",
+    ":",
+    1,
+    "1:of moons & stars:"
+   ],
+   [
+    "Don’t Look Back",
+    "D",
+    3,
+    "3don’t look back"
+   ],
+   [
+    "Łódź Nights",
+    "Ł",
+    3,
+    "3lodz nights"
+   ],
+   [
+    "Зимові казки",
+    "З",
+    5,
+    "5зимові казки"
+   ],
+   [
+    "ナイトプール",
+    "ナ",
+    6,
+    "6ナイトプール"
+   ]
+  ],
+  "ARTIST_TABLE": [
+   [
+    "Anna Kowalczyk",
+    "A",
+    3,
+    "3anna kowalczyk"
+   ],
+   [
+    "Lee Smith‐Jones",
+    "L",
+    3,
+    "3lee smith‐jones"
+   ],
+   [
+    "The Paper Kites Club",
+    "P",
+    3,
+    "3paper kites club"
+   ],
+   [
+    "Various Artists",
+    "V",
+    3,
+    "3various artists"
+   ],
+   [
+    "Ольга Морозова",
+    "О",
+    5,
+    "5ольга морозова"
+   ],
+   [
+    "マリコ",
+    "マ",
+    6,
+    "6マリコ"
+   ]
+  ],
+  "GENRE_TABLE": [
+   [
+    "Ambient",
+    "A",
+    3,
+    "3ambient"
+   ],
+   [
+    "Electronic",
+    "E",
+    3,
+    "3electronic"
+   ],
+   [
+    "Folk",
+    "F",
+    3,
+    "3folk"
+   ],
+   [
+    "Hip Hop",
+    "H",
+    3,
+    "3hip hop"
+   ],
+   [
+    "Indie Rock",
+    "I",
+    3,
+    "3indie rock"
+   ],
+   [
+    "Neofolk",
+    "N",
+    3,
+    "3neofolk"
+   ],
+   [
+    "Post-Punk",
+    "P",
+    3,
+    "3post-punk"
+   ],
+   [
+    "Rock",
+    "R",
+    3,
+    "3rock"
+   ],
+   [
+    "Synthwave",
+    "S",
+    3,
+    "3synthwave"
+   ]
+  ],
+  "ALBUM_ARTIST_TABLE": [
+   [
+    "Anna Kowalczyk",
+    "A",
+    3,
+    "3anna kowalczyk"
+   ],
+   [
+    "Lee Smith‐Jones",
+    "L",
+    3,
+    "3lee smith‐jones"
+   ],
+   [
+    "The Paper Kites Club",
+    "P",
+    3,
+    "3paper kites club"
+   ],
+   [
+    "Various Artists",
+    "V",
+    3,
+    "3various artists"
+   ],
+   [
+    "Ольга Морозова",
+    "О",
+    5,
+    "5ольга морозова"
+   ],
+   [
+    "マリコ",
+    "マ",
+    6,
+    "6マリコ"
+   ]
+  ]
+ },
+ "genre_link": [
+  [
+   "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/01 - Prolog.flac",
+   "Electronic"
+  ],
+  [
+   "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/01 - Prolog.flac",
+   "Ambient"
+  ],
+  [
+   "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/01 - Prolog.flac",
+   "Synthwave"
+  ],
+  [
+   "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/02 - Światło.flac",
+   "Electronic"
+  ],
+  [
+   "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/02 - Światło.flac",
+   "Ambient"
+  ],
+  [
+   "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/02 - Światło.flac",
+   "Synthwave"
+  ],
+  [
+   "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/03 - V.flac",
+   "Electronic"
+  ],
+  [
+   "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/03 - V.flac",
+   "Ambient"
+  ],
+  [
+   "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/03 - V.flac",
+   "Synthwave"
+  ],
+  [
+   "/mnt/sd_0/Music/Ольга Морозова/2021 - Зимові казки/01 - Сутінки.flac",
+   "Folk"
+  ],
+  [
+   "/mnt/sd_0/Music/Ольга Морозова/2021 - Зимові казки/01 - Сутінки.flac",
+   "Neofolk"
+  ],
+  [
+   "/mnt/sd_0/Music/Ольга Морозова/2021 - Зимові казки/02 - Міст.flac",
+   "Folk"
+  ],
+  [
+   "/mnt/sd_0/Music/Ольга Морозова/2021 - Зимові казки/02 - Міст.flac",
+   "Neofolk"
+  ],
+  [
+   "/mnt/sd_0/Music/The Paper Kites Club/2015 - Don’t Look Back/01 - Why’s This Here_.flac",
+   "Indie Rock"
+  ],
+  [
+   "/mnt/sd_0/Music/The Paper Kites Club/2015 - Don’t Look Back/01 - Why’s This Here_.flac",
+   "Post-Punk"
+  ],
+  [
+   "/mnt/sd_0/Music/The Paper Kites Club/2015 - Don’t Look Back/02 - Café Société.flac",
+   "Indie Rock"
+  ],
+  [
+   "/mnt/sd_0/Music/The Paper Kites Club/2015 - Don’t Look Back/02 - Café Société.flac",
+   "Post-Punk"
+  ],
+  [
+   "/mnt/sd_0/Music/Lee Smith‐Jones/2010 - 1999/01 - 67 Mustang.flac",
+   "Hip Hop"
+  ],
+  [
+   "/mnt/sd_0/Music/Lee Smith‐Jones/2010 - 1999/01 - 67 Mustang.flac",
+   "Rock"
+  ],
+  [
+   "/mnt/sd_0/Music/Lee Smith‐Jones/2010 - 1999/02 - Track (feat. Ray & Bo).flac",
+   "Hip Hop"
+  ],
+  [
+   "/mnt/sd_0/Music/Lee Smith‐Jones/2010 - 1999/02 - Track (feat. Ray & Bo).flac",
+   "Rock"
+  ]
+ ],
+ "media_genre": [
+  [
+   "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/01 - Prolog.flac",
+   "Electronic; Ambient; Synthwave"
+  ],
+  [
+   "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/02 - Światło.flac",
+   "Electronic; Ambient; Synthwave"
+  ],
+  [
+   "/mnt/sd_0/Music/Anna Kowalczyk/2019 - Łódź Nights/03 - V.flac",
+   "Electronic; Ambient; Synthwave"
+  ],
+  [
+   "/mnt/sd_0/Music/Ольга Морозова/2021 - Зимові казки/01 - Сутінки.flac",
+   "Folk; Neofolk"
+  ],
+  [
+   "/mnt/sd_0/Music/Ольга Морозова/2021 - Зимові казки/02 - Міст.flac",
+   "Folk; Neofolk"
+  ],
+  [
+   "/mnt/sd_0/Music/マリコ/2018 - ナイトプール/01 - コーヒー.flac",
+   "Vaporwave"
+  ],
+  [
+   "/mnt/sd_0/Music/マリコ/2018 - ナイトプール/02 - プール.flac",
+   "Vaporwave"
+  ],
+  [
+   "/mnt/sd_0/Music/The Paper Kites Club/2015 - Don’t Look Back/01 - Why’s This Here_.flac",
+   "Indie Rock; Post-Punk"
+  ],
+  [
+   "/mnt/sd_0/Music/The Paper Kites Club/2015 - Don’t Look Back/02 - Café Société.flac",
+   "Indie Rock; Post-Punk"
+  ],
+  [
+   "/mnt/sd_0/Music/Lee Smith‐Jones/2010 - 1999/01 - 67 Mustang.flac",
+   "Hip Hop; Rock"
+  ],
+  [
+   "/mnt/sd_0/Music/Lee Smith‐Jones/2010 - 1999/02 - Track (feat. Ray & Bo).flac",
+   "Hip Hop; Rock"
+  ],
+  [
+   "/mnt/sd_0/Music/Various Artists/2022 - :Of Moons & Stars:/01 - Zed.flac",
+   ""
+  ],
+  [
+   "/mnt/sd_0/Music/Various Artists/2022 - :Of Moons & Stars:/02 - Quiet Hour.flac",
+   ""
+  ],
+  [
+   "/mnt/sd_0/Music/Various Artists/2022 - :Of Moons & Stars:/03 - Échos.flac",
+   ""
+  ]
+ ]
+}

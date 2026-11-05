@@ -1,0 +1,15 @@
+{
+  "name": "2000s Hits by Year and Rating",
+  "all": [
+    {
+      "inTheRange": {
+        "year": [
+          2000,
+          2009
+        ]
+      }
+    }
+  ],
+  "sort": "-year,-rating,title",
+  "limit": 200
+}

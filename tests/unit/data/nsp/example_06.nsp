@@ -1,0 +1,17 @@
+{
+  "name": "High-Rated Songs from Library 2",
+  "all": [
+    {
+      "is": {
+        "library_id": 2
+      }
+    },
+    {
+      "gt": {
+        "rating": 4
+      }
+    }
+  ],
+  "sort": "-rating,title",
+  "limit": 100
+}

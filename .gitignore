@@ -1,0 +1,45 @@
+# Python, tools
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local secrets. .env.test (credentials of the throwaway test containers) and .env.example are tracked.
+.env
+
+# Build output (packaging/build-desktop)
+dist/
+
+# Test-local files: your own device allowlist (copy tests/hardware.example.toml), device dumps, test output
+tests/hardware.toml
+tests/artifacts/
+tests/integration/.compose.env
+test-results/
+playwright-report/
+junit*.xml
+.syncmusic-test/
+
+# Logs, editors, OS
+logs/
+*.log
+.idea/
+.vscode/
+*.sw?
+.DS_Store
+
+# npm (a local `npm i playwright` - the project uses Playwright from Python)
+node_modules/
+package.json
+package-lock.json
+
+# Playwright MCP output (browser snapshots/screenshots of interactive checks)
+.playwright-mcp/
+BUILD_COMMIT
+mutants/
+
+# coverage data
+.coverage
+.coverage.*
+htmlcov/

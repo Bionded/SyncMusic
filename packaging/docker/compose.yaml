@@ -1,0 +1,51 @@
+# SyncMusic in Docker, built locally with packaging/docker/build.sh (image syncmusic:local).
+# Two variants, pick one with --profile:
+#   network  libraries over the network (Navidrome, Audiobookshelf, SMB, folders mounted into /music) and network
+#            devices (FTP, SMB share). Unprivileged.
+#            docker compose -f packaging/docker/compose.yaml --profile network up -d
+#   usb      also USB devices (iPods, Rockbox players, flash drives): the container gets every host device, udev and
+#            the host network. WARNING: privileged + /dev = root on the host. A container cannot protect your disks
+#            from the app; prefer the native systemd install (syncmusic --install) for USB iPods.
+#            docker compose -f packaging/docker/compose.yaml --profile usb up -d
+# Both serve the UI on port 8080. Data stays in the named volumes; `down -v` deletes it.
+name: syncmusic
+
+x-common: &common
+  image: ${SYNCMUSIC_IMAGE:-syncmusic:local}
+  volumes:
+    - config:/config
+    - data:/data
+    - cache:/cache
+    - ${SYNCMUSIC_MUSIC:-./music}:/music:ro  # a folder library (read-only)
+  mem_limit: 1g
+  restart: "no"  # set unless-stopped yourself once it works for you
+
+services:
+  syncmusic:
+    <<: *common
+    profiles: [network]
+    ports:
+      - "${SYNCMUSIC_PUBLISH:-8080}:8080"
+    environment:
+      SYNCMUSIC_DETECT_DEVICES: "false"  # no udev in an unprivileged container
+
+  syncmusic-usb:
+    <<: *common
+    profiles: [usb]
+    privileged: true  # root-equivalent: see the warning above
+    network_mode: host  # port 8080 on the host
+    volumes:
+      - config:/config
+      - data:/data
+      - cache:/cache
+      - ${SYNCMUSIC_MUSIC:-./music}:/music:ro
+      - /dev:/dev
+      - /run/udev:/run/udev:ro
+    environment:
+      SYNCMUSIC_DETECT_DEVICES: "true"
+      SYNCMUSIC_MOUNT_ROOT: /run/syncmusic
+
+volumes:
+  config:
+  data:
+  cache:

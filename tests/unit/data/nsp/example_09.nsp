@@ -1,0 +1,13 @@
+{
+  "name": "Daily Mix",
+  "all": [
+    {
+      "inTheLast": {
+        "lastPlayed": 30
+      }
+    }
+  ],
+  "sort": "random",
+  "limit": 20,
+  "refreshDelay": "1d"
+}

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Build the desktop binary of SyncMusic (starts in desktop mode without arguments). See packaging/build.sh --help.
+exec "$BASH" "$(dirname "${BASH_SOURCE[0]}")/build.sh" --mode desktop "$@"

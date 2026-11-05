@@ -1,0 +1,14 @@
+{
+  "name": "Recently Played",
+  "comment": "Recently played tracks",
+  "all": [
+    {
+      "inTheLast": {
+        "lastPlayed": 30
+      }
+    }
+  ],
+  "sort": "lastPlayed",
+  "order": "desc",
+  "limit": 100
+}

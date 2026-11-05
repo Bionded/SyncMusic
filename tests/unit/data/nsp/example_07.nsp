@@ -1,0 +1,11 @@
+{
+  "all": [
+    {
+      "is": {
+        "loved": true
+      }
+    }
+  ],
+  "sort": "random",
+  "limitPercent": 10
+}
