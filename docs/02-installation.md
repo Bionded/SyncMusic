@@ -35,7 +35,7 @@ chmod +x syncmusic-web-0.2.0-linux-aarch64
 ./syncmusic-web-0.2.0-linux-aarch64 stop     # stop the background instance
 ```
 
-Check the download against its `.sha256` file (`sha256sum -c syncmusic-web-…sha256`). The first start unpacks the
+Check the download against the release's `SHA256SUMS` (`sha256sum -c --ignore-missing SHA256SUMS`). The first start unpacks the
 bundled Python to `~/.cache/syncmusic/runtime/` (set `SYNCMUSIC_RUNTIME_DIR` to put it elsewhere); later starts are
 fast.
 
@@ -92,7 +92,10 @@ To remove it: `sudo syncmusic --uninstall` (keeps data, cache, logs and config) 
 --purge` (deletes them too).
 
 ## Docker
-A Docker image and a compose file are in `packaging/docker/` (build the image with `packaging/docker/build.sh`).
+The image `ghcr.io/bionded/syncmusic` (amd64 and arm64) is published with every release: `latest` is the newest
+stable release, `beta` the newest beta, and each version has its own tag. The compose file
+`packaging/docker/compose.yaml` takes it from `SYNCMUSIC_IMAGE` (by default a local build of
+`packaging/docker/build.sh`): e.g. `export SYNCMUSIC_IMAGE=ghcr.io/bionded/syncmusic:latest`.
 There are two variants:
 
 - **network** - libraries over the network and network devices (FTP, SMB). Unprivileged.

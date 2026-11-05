@@ -25,7 +25,9 @@ def _git(cwd: Path, *args: str) -> str:
 def repo(tmp_path):
     """A clone of HEAD with the working copy's release script, on main, committed."""
     dst = tmp_path / "repo"
-    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{ROOT}", str(dst)], check=True)
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", "--no-tags", f"file://{ROOT}", str(dst)], check=True
+    )
     _git(dst, "checkout", "-q", "-B", "main")
     shutil.copy(ROOT / "scripts" / "release.sh", dst / "scripts" / "release.sh")
     for name in ("build-web", "build-desktop"):  # builds stubbed: one fake binary per target

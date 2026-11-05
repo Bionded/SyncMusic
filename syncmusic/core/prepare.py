@@ -386,7 +386,9 @@ class Preparer:
         check_cancelled: Callable[[], None] | None,
         cache: bool = True,
     ) -> WorkItem:
-        await asyncio.to_thread(work_dir.mkdir, parents=True, exist_ok=True)
+        # made here, not in a thread: a cancel while a thread waits to make it would leave the directory behind
+        # (made after the cleanup of the cancelled prepare)
+        work_dir.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
         t0 = time.monotonic()
         original = await _step("download", self.original(library, item.track, work_dir, cache))
         log.debug("original of %s: %.2f s", item.track.ref.key(), time.monotonic() - t0)
@@ -421,7 +423,7 @@ class Preparer:
         the tag/cover/sidecar processors only; None when the device has no such file to start from."""
         work_dir = self.work_root / uuid.uuid4().hex
         try:
-            await asyncio.to_thread(work_dir.mkdir, parents=True, exist_ok=True)
+            work_dir.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240 - not in a thread: see _process
             path = work_dir / f"{ORIGINAL_NAME}.{item.file.ext}"
             if not await _step("download", fetch(path)):
                 yield None
@@ -511,7 +513,7 @@ class Preparer:
     ) -> Path | CacheEntry:
         """The parts of a multi-file audiobook merged into one chaptered .m4b, cached like a download."""
         parts_dir = work_dir / "parts"
-        await asyncio.to_thread(parts_dir.mkdir, parents=True, exist_ok=True)
+        parts_dir.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240 - not in a thread: see _process
         files: list[Path] = []
         held: list[str] = []
         for part in books.parts_of(book):

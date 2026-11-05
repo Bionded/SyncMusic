@@ -27,13 +27,13 @@ window, and a command line client. It runs on Linux (x86_64 and arm64, e.g. a Ra
 ## Contents
 - [Supported devices](#supported-devices)
 - [Requirements](#requirements)
-- [Installation](#installation) - from source, as a systemd service, desktop bundle
+- [Installation](#installation) - one-line service install, single-file binary, Docker, from source
 - [Quick start](#quick-start)
 - [Run modes](#run-modes)
 - [Your first device](#your-first-device)
 - [Configuration and data](#configuration-and-data)
 - [Command line](#command-line)
-- [Building the desktop bundles](#building-the-desktop-bundles)
+- [Building the single-file binaries](#building-the-single-file-binaries)
 - [Running the tests](#running-the-tests)
 - [Troubleshooting](#troubleshooting)
 - [Safety notes](#safety-notes)
@@ -56,25 +56,54 @@ Details per device: [docs/04-devices.md](docs/04-devices.md).
 
 ## Requirements
 - Linux with udev, glibc ≥ 2.28. Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/) for a source install (the
-  desktop bundle brings its own Python).
+  single-file binaries bring their own Python).
 - System tools (Debian / Raspberry Pi OS / Ubuntu package names):
   ```sh
   sudo apt install ffmpeg util-linux fdisk parted udev dosfstools exfatprogs e2fsprogs ntfs-3g sg3-utils eject rsync
   # optional: udisks2 (power a disk off after eject)
-  # desktop window only: libsecret-1-0 libegl1 libgl1 libgles2 (and a GTK 3 desktop)
+  # desktop window only: libsecret-1-0 libegl1 libgl1 libgles2 and a Chromium-based browser
   ```
 - Mounting and formatting devices needs root. The systemd service runs as root; when you run SyncMusic as a
   normal user it calls the block-device tools through `sudo -n`, so that user needs passwordless sudo for them.
 
 ## Installation
 
-### One line (systemd service from the latest release)
+Releases: [github.com/Bionded/SyncMusic/releases](https://github.com/Bionded/SyncMusic/releases). Besides the
+stable releases, every change on `main` is published as a **beta** pre-release (`v0.2.1-3`: build 3 on the way to
+0.2.1).
+
+### One line (systemd service)
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Bionded/SyncMusic/main/install.sh | sudo bash
 ```
-It downloads the single-file program for your CPU (x86_64 or aarch64), checks its checksum and installs it as the
-`syncmusic` service (web UI on port 8765). Options after `sudo bash -s --`: `--beta`, `--version X`, `--port N`,
-`--user NAME`, `--install-deps`, `--uninstall [--purge]`. Running it again upgrades in place.
+It downloads the web binary for your CPU (x86_64 or aarch64) from the newest stable release, checks it against the
+release's `SHA256SUMS` and installs it as the `syncmusic` service: open `http://<host>:8765/`. Options after
+`sudo bash -s --`: `--beta` (the newest beta instead), `--version X` (e.g. `0.2.0`),
+`--port N`, `--user NAME` (a normal user that may use the devices), `--install-deps` (the system tools above, apt or
+dnf), `--uninstall [--purge]`. Running it again upgrades in place; the app can also update itself (Settings →
+Updates, channel *Stable* or *Beta*).
+
+### Single-file binary
+Download `syncmusic-web-<version>-linux-<arch>` (web UI) or `syncmusic-desktop-<version>-linux-<arch>` (its own
+window) and `SHA256SUMS` from the [release](https://github.com/Bionded/SyncMusic/releases), then:
+```sh
+sha256sum -c --ignore-missing SHA256SUMS
+chmod +x syncmusic-web-0.2.0-linux-x86_64
+./syncmusic-web-0.2.0-linux-x86_64                # web UI on http://localhost:8765/, Ctrl+C stops it
+./syncmusic-web-0.2.0-linux-x86_64 -d             # in the background; `status`, `stop`
+sudo ./syncmusic-web-0.2.0-linux-x86_64 --install # or install this file as the systemd service
+```
+Each binary carries its own Python and dependencies; the first start unpacks them to `~/.cache/syncmusic/runtime/`.
+It still needs the system tools listed under [Requirements](#requirements).
+
+### Docker
+The image `ghcr.io/bionded/syncmusic` (amd64 and arm64) is tagged `latest` (newest stable release), `beta` (newest
+beta) and by version (`v0.2.0`). With the compose file of this repository:
+```sh
+SYNCMUSIC_IMAGE=ghcr.io/bionded/syncmusic:latest docker compose -f packaging/docker/compose.yaml --profile network up -d
+```
+Web UI on port 8080. `--profile network` is for network libraries and FTP/SMB devices; `--profile usb` also reaches
+USB players but runs **privileged** (details and the risks: [docs/02-installation.md](docs/02-installation.md#docker)).
 
 ### From source
 ```sh
@@ -84,7 +113,7 @@ uv sync                      # creates .venv with the locked dependencies (pygpo
 uv run syncmusic --help
 ```
 
-### As a systemd service
+### As a systemd service from source
 ```sh
 sudo packaging/install-systemd.sh                 # copies the app to /opt/syncmusic/app, venv in /opt/syncmusic/.venv
 sudo systemctl enable --now syncmusic  # web UI and API on port 8765
@@ -93,15 +122,6 @@ sudo systemctl enable --now syncmusic  # web UI and API on port 8765
 `/etc/systemd/system`). It is idempotent: to upgrade, update the checkout, run it again and
 `sudo systemctl restart syncmusic`. It never copies `.env*` files, local test data or build output.
 The service keeps its database in `/var/lib/syncmusic` and its cache in `/var/cache/syncmusic`.
-
-### Desktop bundle
-Build a self-contained bundle (see [below](#building-the-desktop-bundles)), unpack it anywhere and start it:
-```sh
-tar -xzf syncmusic-0.2.0-linux-x86_64.tar.gz
-syncmusic-0.2.0-linux-x86_64/bin/syncmusic      # opens the desktop window
-```
-The bundle contains Python, all dependencies and the desktop client; it still needs the system tools listed
-under [Requirements](#requirements) to mount, format and transcode.
 
 ## Quick start
 ```sh
@@ -123,7 +143,7 @@ Open `http://<host>:8765/` in a browser (phone or desktop), then:
 | `desktop` | the same, plus a desktop window; closing the window stops the app (needs a display) |
 | `daemon` | daemon + REST API only, no UI |
 
-The desktop bundle defaults to `desktop`. Command-line options override environment variables, which override
+The `syncmusic-desktop-…` binary defaults to `desktop`, the `syncmusic-web-…` one to `web`. Command-line options override environment variables, which override
 the config file.
 
 ## Your first device
@@ -156,7 +176,7 @@ Startup settings come from a TOML file (`--config`, `SYNCMUSIC_CONFIG`, default
 
 | Key | Environment | Default |
 |---|---|---|
-| `mode` | `SYNCMUSIC_MODE` | `web` (`desktop` in the desktop bundle) |
+| `mode` | `SYNCMUSIC_MODE` | `web` (`desktop` in the `syncmusic-desktop-…` binary) |
 | `host` / `port` | `SYNCMUSIC_HOST` / `SYNCMUSIC_PORT` | `0.0.0.0` / `8765` |
 | `allowed_hosts` | `SYNCMUSIC_ALLOWED_HOSTS` (comma-separated) | `[]` (IP addresses, `localhost` and the machine's name always work; `["*"]` = any) |
 | `data_dir` | `SYNCMUSIC_DATA_DIR` | root: `/var/lib/syncmusic`, else `~/.local/share/syncmusic` |
