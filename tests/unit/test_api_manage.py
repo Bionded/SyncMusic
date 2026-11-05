@@ -38,7 +38,13 @@ async def test_types_list_every_registered_class_with_a_schema(env):
         r = await c.get(f"/api/v1/{path}")
         assert r.status_code == 200
         body = r.json()
-        assert sorted(t["type"] for t in body) == sorted(cls.type_name for cls in classes)
+        # a device type without what it needs here (libmtp for Android) is left out
+        offered = [
+            c.type_name
+            for c in classes
+            if not (hasattr(c, "unavailable_reason") and c.unavailable_reason())
+        ]
+        assert sorted(t["type"] for t in body) == sorted(offered)
         for t in body:
             assert t["display_name"] and t["settings_schema"]["type"] == "object"
     flash = next(

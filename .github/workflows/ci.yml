@@ -41,7 +41,7 @@ jobs:
         with:
           enable-cache: true
       - name: System packages
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg dosfstools exfatprogs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg dosfstools exfatprogs smbclient
       - run: uv sync --locked
       # hardware tests need allowlisted USB devices, slow ones the services and browsers of nightly.yml
       # branch coverage report (a report only, no gate yet)
@@ -64,7 +64,7 @@ jobs:
         with:
           enable-cache: true
       - name: System packages
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg dosfstools exfatprogs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg dosfstools exfatprogs smbclient
       - run: uv sync --locked
       - run: uv run pytest -n 2 -m "integration and not hardware and not slow"
       - if: always()

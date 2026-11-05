@@ -55,7 +55,7 @@ async def test_mdns_announced_servers_are_found():
     assert mine[("ftp", "SyncMusic Test FTP")].port == 2121
 
 
-async def test_shares_of_the_compose_samba():
+async def test_shares_of_the_compose_samba(compose_stack):
     host, port = svc.ENV["SMB_HOST"], int(svc.ENV["SMB_PORT"])
     shares = await discovery.list_shares(host, port, svc.ENV["SMB_USER"], svc.ENV["SMB_PASSWORD"])
     assert [s.name for s in shares] == [

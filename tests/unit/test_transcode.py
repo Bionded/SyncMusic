@@ -339,7 +339,9 @@ async def test_corrupt_block_fails_item(tmp_path):
     bad = tmp_path / "src" / "bad.flac"
     data = bytearray(src.read_bytes())
     mid = len(data) // 2
-    data[mid : mid + 50_000] = bytes(50_000)
+    # flipped bits (ffmpeg 6 skips a zeroed block without a word)
+    for i in range(mid, mid + 50_000, 500):
+        data[i] ^= 0xFF
     bad.write_bytes(bytes(data))
     item = media_work_item(bad, tmp_path / "work")
     p = tc({"from": ["flac"], "to": "alac", "when": "always"})

@@ -3,6 +3,10 @@ from pathlib import Path
 
 import pytest
 
+# plain help and error texts in CI: Typer forces a colour terminal when GITHUB_ACTIONS or FORCE_COLOR is set
+# (read when typer is imported - before the imports below; `syncmusic` subprocesses inherit it)
+os.environ["_TYPER_FORCE_DISABLE_TERMINAL"] = "1"
+
 from syncmusic.infra import config as _config
 from syncmusic.infra import install  # noqa: F401 - imported first: keeps the real default path
 from syncmusic.infra.config import load_config
@@ -86,8 +90,8 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 def auto_workers(cpus: int) -> int:
-    """All CPUs but two, at least half of them: 2 on a 4-core Pi 5, 10 on 12 cores."""
-    return max(cpus - 2, cpus // 2, 1)
+    """All CPUs but one: 3 on a 4-core Pi 5, 11 on 12 cores."""
+    return max(cpus - 1, 1)
 
 
 def pytest_xdist_auto_num_workers(config):

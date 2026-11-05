@@ -128,14 +128,10 @@ def attach(
     image = workdir / "disk.img"
     with open(image, "wb") as f:
         f.truncate(size_mb * 1024**2)
-    if layout is not None:
-        sfdisk = [
-            "sfdisk",
-            "-q",
-            *(["--sector-size", str(sector_size)] if sector_size else []),
-            str(image),
-        ]
-        subprocess.run(sfdisk, input=layout, text=True, check=True, capture_output=True)
+    if layout is not None and not sector_size:
+        subprocess.run(
+            ["sfdisk", "-q", str(image)], input=layout, text=True, check=True, capture_output=True
+        )
     sidecar = {
         "serial": serial_of(kind),
         "usb_vendor_id": ident.get("usb_vendor_id"),
@@ -148,6 +144,10 @@ def attach(
         losetup += ["--sector-size", str(sector_size)]
     disk = EmulatedDisk(kind, sh(*losetup, str(image)), image)
     try:
+        if layout is not None and sector_size:
+            # other sector sizes: partition the loop device, which has them (sfdisk < 2.40, e.g. Ubuntu 24.04,
+            # has no --sector-size for an image file); sfdisk re-reads the table of the device itself
+            sh("sfdisk", "-q", disk.dev, input=layout)
         sh("udevadm", "settle", "--timeout=10")
         yield disk
     finally:

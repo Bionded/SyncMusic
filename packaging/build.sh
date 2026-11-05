@@ -207,7 +207,9 @@ EOF
   case "$arch" in x86_64) loader=ld-linux-x86-64.so.2 ;; aarch64) loader=ld-linux-aarch64.so.1 ;; esac
   if [ "$(uname -m)" = "$arch" ]; then
     local usage
-    usage=$(SYNCMUSIC_RUNTIME_DIR="$home" "$bin" --help) || die "smoke run failed: $name --help"
+    # plain text: Typer forces colours when GITHUB_ACTIONS or FORCE_COLOR is set (the release workflow)
+    usage=$(SYNCMUSIC_RUNTIME_DIR="$home" _TYPER_FORCE_DISABLE_TERMINAL=1 "$bin" --help) \
+      || die "smoke run failed: $name --help"
     grep -q '^ *Usage: syncmusic ' <<<"$usage" || die "smoke run: $name --help has no 'Usage: syncmusic' line"
     echo "  smoke run ok ($name --help)"
   elif command -v "qemu-$arch" >/dev/null && [ -f "$sysroot/lib/$loader" ]; then

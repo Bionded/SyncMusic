@@ -23,7 +23,7 @@ jobs:
         with:
           enable-cache: true
       - name: System packages
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg dosfstools exfatprogs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg dosfstools exfatprogs smbclient
       - run: uv sync --locked
       - run: uv run playwright install --with-deps chromium
       - run: uv run pytest -n 2 -m "slow and not hardware and not integration and not heavy"

@@ -54,7 +54,7 @@ FAST = "not hardware and not slow and not integration"
 class Suite:
     help: str  # for --help: what it runs and what it needs
     marks: str = ""  # pytest -m expression ("" for lint / all)
-    # default -n: "auto" (tests/conftest.py: all CPUs but two), "half" (half of them: a browser and a server per
+    # default -n: "auto" (tests/conftest.py: all CPUs but one), "half" (half of them: a browser and a server per
     # worker - ten of them on twelve cores starve the slower screens), None (one process)
     workers: str | None = None
     paths: tuple[str, ...] = ()  # test paths (default: all of tests/)

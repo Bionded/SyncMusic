@@ -21,7 +21,7 @@ Mounting and formatting devices needs root, or passwordless `sudo` for the block
 | `uv run pytest -m slow` | everything slow: UI, builds, soak tests |
 | `uv run pytest -m hardware` | real USB devices - **only** the ones you list in `tests/hardware.toml` (git-ignored; copy `tests/hardware.example.toml` or generate it from the players your SyncMusic knows: `syncmusic devices allowlist --all -o tests/hardware.toml`; without it nothing is collected) |
 
-`-n auto` runs all CPUs but two (at least half of them). Tests on the compose stack or on emulated devices are
+`-n auto` runs all CPUs but one. Tests on the compose stack or on emulated devices are
 always marked `integration` (also when they only use the stack through a fixture), so the fast suite never needs
 Docker. Under `-n` the compose-stack and emulated tests run on every worker at once (each worker is a server user
 of its own, each emulated disk has its worker's USB serial); only what is really shared runs in order. A test

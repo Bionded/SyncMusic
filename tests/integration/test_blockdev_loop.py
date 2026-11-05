@@ -216,8 +216,8 @@ async def test_vfat_on_4k_sector_disk_like_apple(loop_4k, guard):
 def test_mount_refuses_system_disk(guard, tmp_path):
     import asyncio
 
-    root = next(
-        d for d in scan_block_devices(with_udev=False) if d.name.startswith(("nvme", "mmcblk"))
+    root = next(  # the disk of / (nvme, mmcblk, sda on a CI runner, vda in a VM)
+        d for d in scan_block_devices(with_udev=False) if "/" in d.all_mountpoints()
     )
     for target in [root.path, *(p.path for p in root.partitions())]:
         with pytest.raises(GuardError):
