@@ -15,7 +15,8 @@
 # first run it unpacks itself to ~/.cache/syncmusic/runtime/<id> (or $SYNCMUSIC_RUNTIME_DIR) and then starts from
 # there. Nothing is compiled, so every target builds on any host. Every ELF file must match the target
 # architecture, otherwise the build fails. The host's target is smoke-run (`<binary> --help`).
-# Output: <out>/syncmusic-<mode>-<version>-linux-<arch> and .sha256 (paths and checksums printed).
+# Output: <out>/syncmusic-<mode>-<version>-linux-<arch> and .sha256 (paths and checksums printed). Downloads are
+# cached in $SYNCMUSIC_BUILD_CACHE (default ~/.cache/syncmusic/build-downloads).
 # Needs: uv, curl, tar, gzip, sha256sum, python3 (host). Network access to PyPI, GitHub and releases.astral.sh.
 # Nothing is published or uploaded.
 # Examples:
@@ -77,10 +78,12 @@ VERSION="$(python3 -c 'import sys,tomllib;print(tomllib.load(open(sys.argv[1],"r
 EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || stat -c %Y "$ROOT/uv.lock")}"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
-DL="$OUT/downloads"
+# the download cache (Python builds, wheels) is kept between builds, outside the output directory: everything in
+# <out> is a release file (the release workflow publishes it)
+DL="${SYNCMUSIC_BUILD_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/syncmusic/build-downloads}"
 mkdir -p "$DL"
 
-# fetch URL FILE SHA256: download once into downloads/, verify the checksum every time
+# fetch URL FILE SHA256: download once into the cache, verify the checksum every time
 fetch() {
   local url="$1" file="$DL/$2" sha="$3"
   if [ ! -f "$file" ]; then
