@@ -109,6 +109,8 @@ async def test_check_reuses_the_etag(tmp_path, monkeypatch):
 
 async def test_a_releases_url_instead_of_a_repository(tmp_path, monkeypatch):
     """a mirror (or a local fake release in tests): the URL as it is, same JSON shape."""
+    monkeypatch.setattr(_build, "BUILD_NUMBER", None)
+    monkeypatch.setattr(updates, "__version__", "0.2.0")
     monkeypatch.setattr(updates, "running_version", lambda: "0.2.0")
     gh = FakeGitHub()
     checker = updates.Checker(tmp_path / "rel.json", transport=gh)
@@ -141,6 +143,8 @@ async def test_api_check_and_notification(env, monkeypatch):
     r = (await c.post("/api/v1/updates/check")).json()
     assert r["enabled"] is False and r["checked"] is False  # update_repo = none: nothing asked
     monkeypatch.setattr(app.config, "update_repo", "example/SyncMusic")
+    monkeypatch.setattr(_build, "BUILD_NUMBER", None)
+    monkeypatch.setattr(updates, "__version__", "0.2.0")
     monkeypatch.setattr(updates, "running_version", lambda: "0.2.0")
     app.update_checker.transport = FakeGitHub()
     q = app.bus.subscribe()

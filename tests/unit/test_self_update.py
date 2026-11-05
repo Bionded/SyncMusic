@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from syncmusic import _build
 from syncmusic.infra import self_update as su
 from tests.unit.test_api_sync import env, music  # noqa: F401
 
@@ -201,6 +202,8 @@ async def test_auto_update_policies(env, monkeypatch, tmp_path):
 
     app, c = env
     monkeypatch.setattr(app.config, "update_repo", "example/SyncMusic")
+    monkeypatch.setattr(_build, "BUILD_NUMBER", None)
+    monkeypatch.setattr(updates, "__version__", "0.2.0")
     monkeypatch.setattr(updates, "running_version", lambda: "0.2.0")
     monkeypatch.setenv("SYNCMUSIC_INSTALL_TYPE", "standalone")
     monkeypatch.setenv("SYNCMUSIC_BINARY", str(tmp_path / "syncmusic"))
