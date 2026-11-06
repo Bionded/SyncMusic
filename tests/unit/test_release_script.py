@@ -12,12 +12,14 @@ import pytest
 
 ROOT = Path(__file__).parents[2]
 ID = {"NAME": "t", "EMAIL": "t@t"}
+# a CI runner has no git identity: every commit here (and in release.sh) uses this one
+GIT_ENV = os.environ | {f"GIT_{w}_{k}": v for w in ("AUTHOR", "COMMITTER") for k, v in ID.items()}
 pytestmark = pytest.mark.skipif(not shutil.which("git"), reason="needs git")
 
 
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True, env=GIT_ENV
     ).stdout
 
 
@@ -40,7 +42,7 @@ def repo(tmp_path):
         )
         stub.chmod(0o755)
     _git(dst, "add", "-A")
-    _git(dst, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "stub builds")
+    _git(dst, "commit", "-qm", "stub builds")
     return dst
 
 
@@ -51,8 +53,7 @@ def _release(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
-        env=os.environ
-        | {f"GIT_{w}_{k}": v for w in ("AUTHOR", "COMMITTER") for k, v in ID.items()},
+        env=GIT_ENV,
     )
 
 
