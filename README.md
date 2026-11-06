@@ -18,13 +18,14 @@ listened to on the device (play counts, ratings, podcast/audiobook positions) ba
   comes with default templates (e.g. "All music", "Favourites", "Unfinished books"); a device gets templates (and
   optionally its own rules), and **the templates decide which libraries it draws from**.
 - **Processors** run per device: transcode (e.g. FLAC → ALAC/AAC/MP3), retag, covers, lyrics (`.lrc`).
-- **Reverse sync**: iPod play counts, ratings and bookmarks and Rockbox play logs go back to Navidrome and
-  Audiobookshelf.
+- **Reverse sync**: what you played, rated, favourited or where you stopped in a book goes from the device back to
+  the library - see [Supported libraries](#supported-libraries) for what each library takes back.
 
 It is one Python application: a daemon with a REST API, a web UI that also works on a phone, an optional desktop
 window, and a command line client. It runs on Linux (x86_64 and arm64, e.g. a Raspberry Pi).
 
 ## Contents
+- [Supported libraries](#supported-libraries)
 - [Supported devices](#supported-devices)
 - [Requirements](#requirements)
 - [Installation](#installation) - one-line service install, single-file binary, Docker, from source
@@ -39,6 +40,19 @@ window, and a command line client. It runs on Linux (x86_64 and arm64, e.g. a Ra
 - [Safety notes](#safety-notes)
 - [Roadmap](#roadmap)
 - [Documentation](#documentation)
+
+## Supported libraries
+| Library | What it provides | Reverse sync (device → library) |
+|---|---|---|
+| [Navidrome](https://www.navidrome.org/) - other Subsonic servers (Gonic, Airsonic, Ampache, …) speak the same API but are untested | music, playlists (Navidrome has no podcasts; podcasts come only from Subsonic servers that serve them) | **yes**: play counts (scrobbles), ratings, favourites |
+| [Audiobookshelf](https://www.audiobookshelf.org/) | audiobooks, podcasts, collections | **yes**: listening positions (progress, finished) |
+| Folder - local, on an SMB share or on an FTP server | music, podcasts, audiobooks, video files | no (files only) |
+| [Jellyfin](https://jellyfin.org/) | movies and episodes - **beta** | no: one way, to the player |
+| Plex | - | not available in this version |
+
+What a device reports back depends on the device: iPods send play counts, ratings and audiobook/podcast bookmarks;
+Rockbox players play counts (from the playback log) and ratings; the HiBy R1 play counts, favourites and positions.
+USB drives, FTP/SMB folders and Android players have no listening data to send back.
 
 ## Supported devices
 | Device | Status | Notes |
@@ -82,6 +96,14 @@ release's `SHA256SUMS` and installs it as the `syncmusic` service: open `http://
 `--port N`, `--user NAME` (a normal user that may use the devices), `--install-deps` (the system tools above, apt or
 dnf), `--uninstall [--purge]`. Running it again upgrades in place; the app can also update itself (Settings →
 Updates, channel *Stable* or *Beta*).
+
+### One folder, no root
+```sh
+curl -fsSL https://raw.githubusercontent.com/Bionded/SyncMusic/main/install.sh | bash -s -- --dir ~/syncmusic --port 8765
+~/syncmusic/run.sh
+```
+Program, config, data, cache and logs all go into that folder; no service is set up, you start it by hand.
+Details in [docs/02-installation.md](docs/02-installation.md#in-one-folder-without-a-service).
 
 ### Single-file binary
 Download `syncmusic-web-<version>-linux-<arch>` (web UI) or `syncmusic-desktop-<version>-linux-<arch>` (its own

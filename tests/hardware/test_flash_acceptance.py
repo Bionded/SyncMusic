@@ -94,7 +94,10 @@ async def _check_device(a, device_id):
     for e in m.items.values():
         f = dev.mount / e.path
         assert f.stat().st_size == e.size
-        tags = mutagen.File(f, easy=True)
+        try:
+            tags = mutagen.File(f, easy=True)
+        except mutagen.MutagenError as err:
+            raise AssertionError(f"{e.path} unreadable: {err} - {_describe(f)}") from err
         assert tags is not None and tags.get("title"), e.path
     return dev, m
 
@@ -186,6 +189,18 @@ async def flash_scenario(a, flash):
             cfg.model_copy(update={"sync": cfg.sync.model_validate({})})
         )
     assert _data_listing() == before, "the test media changed"
+
+
+def _describe(f: Path) -> str:
+    """What an unreadable device file holds: tells a truncated copy, zeroed blocks and a tag without audio apart."""
+    data = f.read_bytes()
+    id3 = 0
+    if data[:3] == b"ID3":
+        id3 = 10 + sum((b & 0x7F) << (7 * (3 - i)) for i, b in enumerate(data[6:10]))
+    return (
+        f"{len(data)} bytes, head {data[:16].hex()}, {data.count(0)} zero bytes, ID3 tag {id3} bytes, "
+        f"after the tag {data[id3 : id3 + 8].hex() or 'nothing'}"
+    )
 
 
 def _fstype(mount: Path) -> str:

@@ -4,16 +4,17 @@
 # (git push origin main vVERSION) starts the GitHub release workflow, which builds the binaries for every target,
 # the Docker image (amd64 and arm64) and SHA256SUMS, and publishes the release with the CHANGELOG entry as notes.
 # Usage: scripts/release.sh VERSION [--dry-run] [--build [--docker] [--out DIR]]
-#   VERSION      e.g. 0.2.0 (CHANGELOG.md must have a "## [VERSION]" section)
+#   VERSION      e.g. 0.2.0 (CHANGELOG.md needs a "## [VERSION]" section, or entries under "## [Unreleased]",
+#                which become "## [VERSION] - <today>" in the release commit)
 #   --dry-run    run the checks and print every step without changing anything
 #   --build      also build what the workflow will publish, locally, to look at it first: the web and desktop
 #                binaries for every target, SHA256SUMS and RELEASE-NOTES.md
 #   --docker     with --build: the arm64 Docker image syncmusic:VERSION too (needs the docker buildx plugin)
 #   --out        with --build: the output directory (default <repo>/dist/release-VERSION)
 # Steps: checks (on main, clean tree, CHANGELOG entry, tag vVERSION not there yet), the version in pyproject.toml
-# (+ uv.lock, committed when it changes), [the local build], the annotated git tag vVERSION (local), then main moves
-# on to the next patch version (committed) so the beta builds of main (v<next>-<build>, the release workflow) sort
-# after this release and before the next one: 0.2.0 → main says 0.2.1 → betas 0.2.1-1, 0.2.1-2, … → release 0.2.1.
+# (+ uv.lock) and the CHANGELOG heading (committed when they change), [the local build], the annotated git tag
+# vVERSION (local), then main moves on to the next patch version with a fresh empty "## [Unreleased]" (committed)
+# so the beta builds of main (v<next>-<build>, the release workflow) sort after this release and before the next one: 0.2.0 → main says 0.2.1 → betas 0.2.1-1, 0.2.1-2, … → release 0.2.1.
 # Examples:
 #   scripts/release.sh 0.2.0 --dry-run
 #   scripts/release.sh 0.2.0 && git push origin main v0.2.0
@@ -51,11 +52,12 @@ run() { # a step: printed, and run unless --dry-run
 [ "$(git rev-parse --abbrev-ref HEAD)" = main ] || die "not on main"
 [ -z "$(git status --porcelain)" ] || die "the working tree is not clean"
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && die "tag $TAG exists already"
-NOTES="$(awk -v v="$VERSION" '
-  index($0, "## [" v "]") == 1 {on = 1; next}
-  on && /^## \[/ {exit}
-  on {print}' CHANGELOG.md | sed -e '/./,$!d')"
-[ -n "$NOTES" ] || die "CHANGELOG.md has no \"## [$VERSION]\" section"
+RENAME=0
+if ! NOTES="$(scripts/changelog-section.sh "$VERSION")"; then
+  grep -q '^## \[Unreleased\]' CHANGELOG.md || die "CHANGELOG.md has no \"## [$VERSION]\" section"
+  NOTES="$(scripts/changelog-section.sh Unreleased)" || die "the \"## [Unreleased]\" section of CHANGELOG.md is empty"
+  RENAME=1
+fi
 echo "release: $TAG from $(git rev-parse --short HEAD)$([ "$BUILD" = 1 ] && echo " built into $OUT")$([ "$DRY" = 1 ] && echo ' (dry run)')"
 
 # --- version ----------------------------------------------------------------------------------------------------
@@ -64,7 +66,12 @@ if [ "$CURRENT" != "$VERSION" ]; then
   run sed -i "0,/^version = \".*\"$/s//version = \"$VERSION\"/" pyproject.toml
   run sed -i "s/^__version__ = \".*\"$/__version__ = \"$VERSION\"/" syncmusic/__init__.py
   run uv lock
-  run git commit -q -m "chore: release $VERSION" -- pyproject.toml uv.lock syncmusic/__init__.py
+fi
+if [ "$RENAME" = 1 ]; then
+  run sed -i "0,/^## \[Unreleased\].*$/s//## [$VERSION] - $(date -u +%F)/" CHANGELOG.md
+fi
+if [ "$CURRENT" != "$VERSION" ] || [ "$RENAME" = 1 ]; then
+  run git commit -q -m "chore: release $VERSION" -- pyproject.toml uv.lock syncmusic/__init__.py CHANGELOG.md
 fi
 
 # --- local build (optional: the release workflow builds and publishes these) ------------------------------------
@@ -83,7 +90,7 @@ if [ "$BUILD" = 1 ]; then
   fi
 fi
 if [ "$DRY" = 1 ]; then
-  echo "+ release notes (the CHANGELOG entry):"
+  echo "+ release notes (the CHANGELOG $([ "$RENAME" = 1 ] && echo "[Unreleased] section" || echo entry)):"
   printf '%s\n' "$NOTES" | sed 's/^/    /'
 fi
 
@@ -94,6 +101,10 @@ NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
 run sed -i "0,/^version = \".*\"$/s//version = \"$NEXT\"/" pyproject.toml
 run sed -i "s/^__version__ = \".*\"$/__version__ = \"$NEXT\"/" syncmusic/__init__.py
 run uv lock
-run git commit -q -m "chore: main is $NEXT (betas until the next release)" -- pyproject.toml uv.lock syncmusic/__init__.py
+if [ "$RENAME" = 1 ] || ! grep -q '^## \[Unreleased\]' CHANGELOG.md; then  # a fresh section above the first version
+  run sed -i '0,/^## \[/s//## [Unreleased]\n\n## [/' CHANGELOG.md
+fi
+run git commit -q -m "chore: main is $NEXT (betas until the next release)" -- pyproject.toml uv.lock syncmusic/__init__.py \
+  CHANGELOG.md
 echo "release: done. Nothing was pushed$([ "$BUILD" = 1 ] && echo ": look at $OUT")."
 echo "Publish: git push origin main $TAG - the release workflow builds every target and the Docker image."

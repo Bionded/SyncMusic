@@ -602,7 +602,12 @@ def test_click_through(seeded, chrome, width):
             assert errors == [], f"{route} {action}: {errors}"
             assert no_horizontal_scroll(page), f"{route} {action}"
             # a press may navigate (Plan again shows the planning screen, then the new plan: a new plan takes
-            # longer while other workers load the host)
+            # longer while other workers load the host); the planning screen's heading is swapped for the new
+            # plan's, so after a navigation the page settles first and a heading caught mid-swap does not count
+            if page.evaluate("location.hash") != "#" + route:
+                with contextlib.suppress(PlaywrightTimeout):
+                    page.wait_for_selector("#content h1", timeout=60_000)
+                settle(page, quiet_ms=500)
             with contextlib.suppress(PlaywrightTimeout):
                 page.wait_for_selector("#content h1", timeout=60_000)
             assert page.locator("#content h1").count() == 1, "\n".join(

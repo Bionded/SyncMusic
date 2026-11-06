@@ -951,7 +951,7 @@ export const actions = {
     toast(t("libs.added", { name }));
     // "Save and scan": the first refresh starts now; the page shows what was created
     const job = await post(`/libraries/${encodeURIComponent(lib.id)}/refresh`).catch(() => null);
-    if (job) ctxJobs.set(job.id, name);
+    if (job) track(job, name, ctx, false);
     const templates = (await get("/templates")).filter((x) => x.default_of === lib.id);
     setHtml(document.getElementById("content"), savedPanel(lib, h, templates));
   },
@@ -1000,15 +1000,13 @@ export const actions = {
       if (!("iconOnly" in el.dataset)) el.querySelector("span").textContent = t("libs.refresh");
       throw e;
     }
-    ctxJobs.set(job.id, name);
-    const now = await get(`/jobs/${encodeURIComponent(job.id)}`); // a small library may be done already
-    if (!["queued", "running"].includes(now.status)) { report(now); ctx.rerender(); }
+    await track(job, name, ctx);
   },
   async refreshAll(el, ctx) {
     // every enabled library reloads now (one job each); the cards show their progress
     el.disabled = true;
     const libs = (ctx.state.libs || []).filter((l) => l.enabled !== false);
-    const started = await Promise.allSettled(libs.map((l) => post(`/libraries/${encodeURIComponent(l.id)}/refresh`).then((job) => ctxJobs.set(job.id, l.name))));
+    const started = await Promise.allSettled(libs.map((l) => post(`/libraries/${encodeURIComponent(l.id)}/refresh`).then((job) => track(job, l.name, ctx, false))));
     const failed = started.filter((r) => r.status === "rejected");
     toast(t("libs.refreshing_all", { n: libs.length - failed.length }));
     if (failed.length) toast(errorMessage(failed[0].reason), "error");
@@ -1082,6 +1080,17 @@ async function devicesUsing(libraryId) {
 
 // refresh jobs started here → a toast when they finish (job.finished carries no result: fetch it)
 const ctxJobs = new Map();
+
+// remember a started refresh; its job.finished may have arrived before the POST returned (a small library on a
+// busy host), so look once: a job already done is reported now instead of keeping its Refresh disabled for good
+async function track(job, name, ctx, redraw = true) {
+  ctxJobs.set(job.id, name);
+  const now = await get(`/jobs/${encodeURIComponent(job.id)}`).catch(() => job);
+  if (!["queued", "running"].includes(now.status)) {
+    report(now);
+    if (redraw && !editing(ctx)) ctx.rerender();
+  }
+}
 
 function report(j) {
   if (!ctxJobs.has(j.id)) return; // reported once, by whichever comes first

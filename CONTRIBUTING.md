@@ -79,7 +79,9 @@ class in `tests/contracts/harness.py` and the suites run against it.
 ## Releases
 `scripts/release.sh X.Y.Z` tags a stable release and moves `main` to the next patch version; every push to `main` is
 published as a beta pre-release `vX.Y.Z-N` by `.github/workflows/release.yml` (details: docs/02-installation.md,
-*Building a release*). Never tag a version that `main` already moved past.
+*Building a release*). Never tag a version that `main` already moved past. Every user-visible change gets a line in
+`CHANGELOG.md` under `## [Unreleased]`: the release turns that section into the version's notes, and the betas
+show it too.
 
 ## Reporting a bug or a player
 Attach the diagnostics bundle (*Settings → System → Collect diagnostics*, or `syncmusic diagnostics`): secrets are

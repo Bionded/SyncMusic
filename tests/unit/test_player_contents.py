@@ -162,6 +162,20 @@ async def test_playback_file_and_refusals(env, tmp_path):
     r = await c.get(f"/api/v1/devices/{dev['id']}/contents/file", params={"key": row["key"]})
     assert r.status_code == 200 and r.content == (tmp_path / "stick" / row["path"]).read_bytes()
     assert r.headers["content-type"] == "audio/mpeg"
+    # a media element's open-ended range is answered in a short part, so it does not hold a connection
+    from syncmusic.api.routes import sync as sync_routes
+
+    data = (tmp_path / "stick" / row["path"]).read_bytes()
+    old, sync_routes.MEDIA_CHUNK = sync_routes.MEDIA_CHUNK, 100
+    try:
+        url = f"/api/v1/devices/{dev['id']}/contents/file"
+        r = await c.get(url, params={"key": row["key"]}, headers={"Range": "bytes=10-"})
+        assert r.status_code == 206 and r.content == data[10:110], r.headers
+        assert r.headers["content-range"] == f"bytes 10-109/{len(data)}"
+        r = await c.get(url, params={"key": row["key"]}, headers={"Range": "bytes=0-4"})
+        assert r.status_code == 206 and r.content == data[:5]
+    finally:
+        sync_routes.MEDIA_CHUNK = old
     # ALAC (Firefox cannot decode it) comes as an MP3 copy; a file that is not media is a 400
     alac = make_music(tmp_path / "alac.m4a", title="x")
     (tmp_path / "stick" / row["path"]).write_bytes(alac.read_bytes())

@@ -168,7 +168,7 @@ def is_newer(candidate: str, running: str) -> bool:
 
 @dataclass
 class UpdateState:
-    running: str = field(default_factory=running_version)
+    running: str = field(default_factory=lambda: running_version())
     commit: str | None = field(default_factory=running_commit)
     install_type: str = field(default_factory=install_type)
     channel: str = "stable"

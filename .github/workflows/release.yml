@@ -2,7 +2,8 @@
 # Releases. A version tag vX.Y.Z publishes a stable release; every push to main publishes a beta pre-release
 # vX.Y.Z-N (X.Y.Z = the version in pyproject.toml, N = this workflow's run number). Both get the single-file web and
 # desktop binaries for every target, SHA256SUMS and the Docker image (ghcr.io/bionded/syncmusic). Stable notes come
-# from the CHANGELOG entry, beta notes are the commit subjects since the last stable release. Only the newest
+# from the CHANGELOG entry, beta notes are its [Unreleased] section plus the commit subjects since the last stable
+# release. Only the newest
 # KEEP_BETAS pre-releases are kept. The app's update check reads these releases (channel stable or beta).
 # After a stable X.Y.Z main says the next patch version (scripts/release.sh does that), so its betas sort after it.
 name: Release
@@ -44,9 +45,8 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             [ "${GITHUB_REF_NAME#v}" = "$version" ] || { echo "::error::tag $GITHUB_REF_NAME but pyproject says $version"; exit 1; }
             tag="$GITHUB_REF_NAME" build="" prerelease=false
-            awk -v v="$version" 'index($0, "## [" v "]") == 1 {on = 1; next} on && /^## \[/ {exit} on {print}' \
-              CHANGELOG.md | sed -e '/./,$!d' > notes.md
-            [ -s notes.md ] || { echo "::error::CHANGELOG.md has no [$version] section"; exit 1; }
+            scripts/changelog-section.sh "$version" > notes.md ||
+              { echo "::error::CHANGELOG.md has no [$version] section"; exit 1; }
           else
             if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
               echo "::error::v$version is released already: bump the version on main (scripts/release.sh does it)"
@@ -54,8 +54,7 @@ jobs:
             fi
             build="$GITHUB_RUN_NUMBER" tag="v$version-$GITHUB_RUN_NUMBER" prerelease=true
             last="$(git tag --list 'v[0-9]*' | grep -v -- '-' | sort -V | tail -1 || true)"
-            { echo "Test build $build of main - may have bugs. Changes since ${last:-the start}:"; echo
-              git log --no-merges --max-count=50 --format='- %s' ${last:+"$last..HEAD"}; } > notes.md
+            scripts/beta-notes.sh "$build" "$last" > notes.md
           fi
           { echo "tag=$tag"; echo "version=$version"; echo "build=$build"; echo "prerelease=$prerelease"; } >> "$GITHUB_OUTPUT"
           cat notes.md

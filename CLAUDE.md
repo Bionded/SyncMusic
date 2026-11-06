@@ -35,7 +35,7 @@ and video from **libraries** through a per-device chain of **processors** onto *
 | `syncmusic/cli/` | the `syncmusic` command |
 | `tests/` | `unit/`, `contracts/` (shared suites every implementation must pass), `integration/`, `webui/`, `hardware/`; fakes of the servers in `tests/fake_*.py` |
 | `packaging/` | single-file builds (`build-web`, `build-desktop`), Docker, systemd unit and installers |
-| `scripts/` | `release.sh`, `test-cleanup.sh`, generators for the settings reference and THIRD-PARTY.md |
+| `scripts/` | `release.sh` (+ `changelog-section.sh`, `beta-notes.sh`), `test-cleanup.sh`, generators for the settings reference and THIRD-PARTY.md |
 | `docs/` | user guide; `docs/dev/` architecture and how to add a device/library/processor |
 | `.github/workflows/` | CI, nightly, mutation and release workflows |
 
@@ -103,8 +103,11 @@ throwaway daemon outside the repository (its own `--config` file and data dir).
 - `scripts/release.sh X.Y.Z [--dry-run]` checks and tags a stable release (annotated tag `vX.Y.Z`) and moves `main`
   to the next patch version. Nothing is pushed: `git push origin main vX.Y.Z` starts the release workflow, which
   builds every binary, the Docker image (amd64 + arm64) and checksums and publishes the release with the notes from
-  `CHANGELOG.md`. `--build` (`--docker`) builds the same files locally first, to look at them.
-- Every push to `main` becomes a beta pre-release `v<version>-<build>` (`.github/workflows/release.yml`);
+  `CHANGELOG.md`. Changes are collected under `## [Unreleased]`; the release commit renames that section to
+  `## [X.Y.Z] - <date>` (an empty one is refused) and the version bump after the tag adds a fresh empty one.
+  `--build` (`--docker`) builds the same files locally first, to look at them.
+- Every push to `main` becomes a beta pre-release `v<version>-<build>` (`.github/workflows/release.yml`) whose notes
+  are the `[Unreleased]` section plus the commit subjects since the last release (`scripts/beta-notes.sh`);
   0.2.0 < 0.2.1-3 < 0.2.1-10 < 0.2.1.
 - The app checks for updates on its channel (Settings → Updates: *Stable* or *Beta*) and can update itself
   (`syncmusic/infra/updates.py`, `syncmusic/infra/self_update.py`). Install one-liner: `install.sh` (`--beta`,

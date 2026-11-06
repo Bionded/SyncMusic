@@ -29,7 +29,8 @@ def repo(tmp_path):
         ["git", "clone", "-q", "--depth", "1", "--no-tags", f"file://{ROOT}", str(dst)], check=True
     )
     _git(dst, "checkout", "-q", "-B", "main")
-    shutil.copy(ROOT / "scripts" / "release.sh", dst / "scripts" / "release.sh")
+    for script in ("release.sh", "changelog-section.sh", "beta-notes.sh"):
+        shutil.copy(ROOT / "scripts" / script, dst / "scripts" / script)
     for name in ("build-web", "build-desktop"):  # builds stubbed: one fake binary per target
         stub = dst / "packaging" / name
         stub.write_text(
@@ -69,11 +70,16 @@ def test_dry_run_changes_nothing(repo):
     assert not (repo / "dist").exists()
 
 
+def _no_unreleased(repo: Path) -> None:
+    (repo / "CHANGELOG.md").write_text("# Changelog\n\n## [0.2.0]\n\nThe first public release.\n")
+    _git(repo, "commit", "-qam", "changelog")
+
+
 @pytest.mark.parametrize(
     ("setup", "args", "error"),
     [
         (lambda r: (r / "x").write_text("x"), ["0.2.0"], "not clean"),
-        (None, ["9.9.9"], 'no "## [9.9.9]" section'),
+        (_no_unreleased, ["9.9.9"], 'no "## [9.9.9]" section'),
         (lambda r: _git(r, "tag", "v0.2.0"), ["0.2.0"], "exists already"),
         (lambda r: _git(r, "checkout", "-qb", "other"), ["0.2.0"], "not on main"),
         (None, ["latest"], "not a version"),
@@ -113,3 +119,69 @@ def test_release_builds_sums_notes_and_tags(repo):
     assert '__version__ = "0.2.1"' in (repo / "syncmusic" / "__init__.py").read_text()
     assert _git(repo, "rev-parse", "HEAD~1") == _git(repo, "rev-parse", "v0.2.0^{commit}")
     assert not _git(repo, "status", "--porcelain")
+
+
+def _changelog(repo: Path, unreleased: str) -> None:
+    """Replace CHANGELOG.md with one that has an [Unreleased] section and a released 0.2.0, committed."""
+    (repo / "CHANGELOG.md").write_text(
+        f"# Changelog\n\nIntro.\n\n## [Unreleased]\n{unreleased}\n## [0.2.0]\n\nThe first public release.\n"
+    )
+    _git(repo, "commit", "-qam", "changelog")
+
+
+def test_release_turns_unreleased_into_the_version(repo):
+    _changelog(repo, "\n### Fixed\n- A fix.\n")
+    r = _release(repo, "0.3.0", "--dry-run")
+    assert r.returncode == 0, r.stderr
+    assert "[Unreleased] section" in r.stdout and "    - A fix." in r.stdout
+    assert "## [0.3.0] - " in r.stdout and not _git(repo, "tag")
+    r = _release(repo, "0.3.0")
+    assert r.returncode == 0, r.stderr
+    text = (repo / "CHANGELOG.md").read_text()
+    head, rest = text.split("## [Unreleased]\n\n## [0.3.0] - ", 1)
+    assert head == "# Changelog\n\nIntro.\n\n" and rest.split("\n", 1)[1].startswith(
+        "\n### Fixed\n- A fix."
+    )
+    assert "## [0.2.0]" in rest
+    tagged = _git(
+        repo, "show", "v0.3.0:CHANGELOG.md"
+    )  # the tag has the version section, no Unreleased
+    assert "## [Unreleased]" not in tagged and "## [0.3.0] - " in tagged
+    assert 'version = "0.3.0"' in _git(repo, "show", "v0.3.0:pyproject.toml")
+    assert 'version = "0.3.1"' in (repo / "pyproject.toml").read_text()
+    assert not _git(repo, "status", "--porcelain")
+
+
+@pytest.mark.parametrize("unreleased", ["", "\n### Added\n\n### Fixed\n"])
+def test_release_refuses_an_empty_unreleased_section(repo, unreleased):
+    _changelog(repo, unreleased)
+    r = _release(repo, "0.3.0", "--dry-run")
+    assert r.returncode != 0 and "[Unreleased]" in r.stderr and "is empty" in r.stderr
+
+
+def test_existing_version_section_keeps_unreleased(repo):
+    _changelog(repo, "\n")
+    r = _release(repo, "0.2.0")
+    assert r.returncode == 0, r.stderr
+    assert (repo / "CHANGELOG.md").read_text().count("## [Unreleased]") == 1
+
+
+def _beta_notes(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["scripts/beta-notes.sh", *args], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout
+
+
+def test_beta_notes_with_and_without_unreleased_entries(repo):
+    _changelog(repo, "\n### Fixed\n- A fix.\n")
+    notes = _beta_notes(repo, "7")
+    assert notes.startswith(
+        "Test build 7 of main - may have bugs.\n\n## Changes since the start\n\n### Fixed"
+    )
+    assert "\n## Commits\n\n- changelog\n" in notes and "## [0.2.0]" not in notes
+    _git(repo, "tag", "v0.2.0")
+    _changelog(repo, "\n### Added\n")
+    notes = _beta_notes(repo, "8", "v0.2.0")
+    assert (
+        notes == "Test build 8 of main - may have bugs.\n\nCommits since v0.2.0:\n\n- changelog\n"
+    )

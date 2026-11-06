@@ -56,8 +56,12 @@ def test_merged_settings_tab(web_server, chrome, tmp_path, width):
     # the danger zone and profile card filter too
     assert page.locator("#formatZone").is_hidden()
     assert page.locator("#profileCard").count() == 0 or page.locator("#profileCard").is_hidden()
-    pad = page.eval_on_selector("[data-ds-search]", "e => getComputedStyle(e).paddingLeft")
-    assert pad == "12px"  # styled like the other inputs
+    # styled like the other inputs; polled: an element read while a redraw swaps it has no computed style
+    page.wait_for_function(
+        "() => { const e = document.querySelector('[data-ds-search]');"
+        " return e && e.isConnected && getComputedStyle(e).paddingLeft === '12px'; }",
+        timeout=10_000,
+    )
     assert page.locator(".savebar:not([hidden])").count() == 0  # searching is no change
     shot(page, f"device-settings-search-{width}")
     search.fill("zzzz")

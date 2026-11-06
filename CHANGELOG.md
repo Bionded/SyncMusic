@@ -3,6 +3,41 @@
 All notable changes to SyncMusic are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Install into one folder, started by hand**: `install.sh --dir DIR [--port N]`. Before, the installer could only set
+  SyncMusic up as a systemd service, which needs root and changes the system. Now everything lives in one folder:
+  the web build, `config.toml`, data, cache, logs, the mount root, a `syncmusic.env` with all paths and the port, and
+  `run.sh` to start it. Running the installer again updates the binary and keeps config, data and port;
+  `--uninstall --dir DIR` removes it (`--purge` also the data). Why: to try SyncMusic, or to run it as a normal user,
+  without a service. Mounting players still needs root or passwordless `sudo` for the block-device tools.
+
+### Fixed
+- **Library Refresh button stayed disabled.** Before: on a small library (or a busy host) the refresh could finish
+  before the request that started it returned; the page then never saw the end of the job and kept the button
+  disabled until a reload. Now the page checks the job once after starting it and reports a job that is already done.
+- **Pages stalled after playing files in the browser player.** Before: a played file was sent as one long download;
+  the browser kept that connection open even after the player was closed, and with its few connections per server
+  used up, later requests of the page hung. Now files for the player are sent in short parts (1 MB), so every
+  connection is released right away.
+- **Screens did not update while a sync was running.** Before: every incoming event (progress comes every 100 ms)
+  restarted the short wait before a redraw, so the screen could wait for a redraw that never came. Now a redraw that
+  is already waiting is kept.
+- **Update check showed the wrong running version** in some cases: the version was read once when the module was
+  loaded instead of when the update state is made. Now it is read each time, so the update status compares against
+  the version that is actually running.
+- **Service installer ended with an error after a successful install.** Before: at exit its clean-up referred to a
+  variable that no longer existed ("unbound variable"), so the script reported an error and left its download
+  folder behind. Now the download folder is removed and the script exits cleanly.
+
+### Changed
+- Beta releases list the changes collected for the next version in their notes, followed by the commit subjects.
+- **README**: new tables of the supported libraries (with what each one takes back from the device: play counts,
+  ratings, favourites, positions) and of the supported devices (tested, untested, beta), and a roadmap. Why: what
+  works with what was spread over several pages.
+- Version on `main` is 0.2.1: builds from `main` are betas of the next release (`0.2.1-<build>`), newer than 0.2.0.
+
 ## [0.2.0]
 
 The first public release.

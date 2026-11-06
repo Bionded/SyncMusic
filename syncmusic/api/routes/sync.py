@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from typing import Any, Literal
 
 from fastapi import APIRouter, Query, Request
@@ -132,6 +133,27 @@ class ApplyRequest(BaseModel):
     confirm_db_limit: bool = False  # a plan over the device database limit
     # the review's choice per playlist conflict, by playlist name
     playlist_choices: dict[str, Literal["merge", "replace", "ignore", "rename"]] = {}
+
+
+MEDIA_CHUNK = 1024 * 1024
+
+
+class ChunkedMediaResponse(FileResponse):
+    """A file for a media element, answered in short ranges: a browser asks for `bytes=N-` and keeps
+    reading the rest only while it plays, so a long answer holds one of its few connections to the
+    server even after the element is gone, and later requests of the page stall. A capped 206 ends
+    at once; the browser asks for the next part when it needs it."""
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        headers = []
+        for name, value in scope.get("headers", []):
+            if name == b"range":
+                m = re.fullmatch(rb"bytes=(\d+)-", value.strip())
+                if m:
+                    start = int(m.group(1))
+                    value = b"bytes=%d-%d" % (start, start + MEDIA_CHUNK - 1)
+            headers.append((name, value))
+        await super().__call__({**scope, "headers": headers}, receive, send)
 
 
 def _error(status: int, code: str, message: str, headers: Any = None, **extra: Any) -> JSONResponse:
@@ -343,7 +365,7 @@ def router(facade: AppFacade) -> APIRouter:
         """The item's file for the browser player; codecs a browser may not play come as MP3."""
         path, media_type = await facade.device_content_media(device_id, key)
         # stat here: a file removed meanwhile is a 404, not FileResponse's RuntimeError
-        return FileResponse(
+        return ChunkedMediaResponse(
             path, media_type=media_type, stat_result=await asyncio.to_thread(os.stat, path)
         )
 

@@ -91,6 +91,28 @@ Logs go to the journal (`journalctl -u syncmusic -f`) and to `<data dir>/logs/sy
 To remove it: `sudo syncmusic --uninstall` (keeps data, cache, logs and config) or `sudo syncmusic --uninstall
 --purge` (deletes them too).
 
+## In one folder, without a service
+No root and no systemd unit: the installer puts the program and everything it keeps into one folder, and you start
+it by hand.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Bionded/SyncMusic/main/install.sh | bash -s -- --dir ~/syncmusic --port 8765
+~/syncmusic/run.sh
+```
+
+The folder holds `syncmusic` (the program; `syncmusic.previous` is the one before the last update), `config.toml`,
+`data/`, `cache/`, `logs/`, `mnt/` (where devices are mounted), `runtime/` (the unpacked program), `syncmusic.env`
+(the folders and the port, read by `run.sh`), `run.sh` and a short `README.txt`. Nothing is written outside it.
+`run.sh` runs in the foreground (Ctrl+C stops it); start it from your own autostart or `tmux` if you want it to keep
+running. `--beta`, `--version X` and `--repo` work as for the service; `--user` and `--install-deps` do not.
+
+Mounting and formatting players needs root or passwordless `sudo` for the block-device tools (see
+[System tools](#system-tools)); without it only network devices and folders work, and `run.sh` says so when it starts.
+
+Running the installer again with the same `--dir` upgrades the program and keeps config, data and the port; the app
+can also update itself (Settings → Updates). To remove it: `… | bash -s -- --uninstall --dir ~/syncmusic` (keeps
+config and data) or add `--purge` to delete the folder completely.
+
 ## Docker
 The image `ghcr.io/bionded/syncmusic` (amd64 and arm64) is published with every release: `latest` is the newest
 stable release, `beta` the newest beta, and each version has its own tag. The compose file
@@ -122,15 +144,16 @@ uv run syncmusic run          # or: uv run syncmusic --help
 
 ### Building a release (maintainers)
 `scripts/release.sh 0.2.0` prepares a release: it checks that you are on a clean `main` and that `CHANGELOG.md` has
-a `## [0.2.0]` section, sets the version, creates the git tag `v0.2.0` and moves `main` on to the next patch version
-(`0.2.1`). Nothing is pushed or published; `--dry-run` shows the steps without changing anything. Then
+a `## [0.2.0]` section or entries under `## [Unreleased]` (renamed to `## [0.2.0] - <date>` in the release commit;
+an empty section is refused), sets the version, creates the git tag `v0.2.0` and moves `main` on to the next patch version
+(`0.2.1`) with a fresh empty `## [Unreleased]` section. Nothing is pushed or published; `--dry-run` shows the steps without changing anything. Then
 `git push origin main v0.2.0`: the release workflow on GitHub builds the web and desktop binaries for x86_64 and
 arm64, the Docker image for both architectures and `SHA256SUMS`, and publishes the release with the notes of the
 changelog entry. To look at the files before publishing, `--build` builds them locally into `dist/release-0.2.0/`
 (with `RELEASE-NOTES.md`; `--docker` adds the arm64 image).
 
 Every push to `main` also publishes a **beta** pre-release `v<version>-<build>` (e.g. `v0.2.1-5`: build 5 on the way
-to 0.2.1) with the commit subjects since the last release as notes; the newest 10 are kept. SyncMusic's update check
+to 0.2.1) with the `[Unreleased]` changelog section and the commit subjects since the last release as notes; the newest 10 are kept. SyncMusic's update check
 offers them when Settings → Updates → *Update channel* is *Beta*. The order is 0.2.0 < 0.2.1-3 < 0.2.1-10 < 0.2.1.
 
 ## Upgrading

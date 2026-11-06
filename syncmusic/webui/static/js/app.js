@@ -172,12 +172,19 @@ function tabStrips(root) {
 }
 
 let timer = null;
+let pendingFor = null; // the view the waiting redraw is for
 function rerender() {
+  // a redraw already waiting covers this ask too: resetting it would starve the screen while events keep coming
+  // (progress every 100 ms)
+  if (timer && pendingFor === current) return;
   clearTimeout(timer);
   // only the view that asked is drawn again: after a navigation the new screen must not be redrawn (and lose what
   // the user selected or typed) because of an event the previous screen followed
   const asked = current;
+  pendingFor = asked;
   timer = setTimeout(() => {
+    timer = null;
+    pendingFor = null;
     if (current !== asked) return;
     if (drawing) again = true;
     else show({ focus: false });
