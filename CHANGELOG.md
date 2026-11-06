@@ -3,7 +3,7 @@
 All notable changes to SyncMusic are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.1] - 2026-11-06
 
 ### Added
 - **Install into one folder, started by hand**: `install.sh --dir DIR [--port N]`. Before, the installer could only set
