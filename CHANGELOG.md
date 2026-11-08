@@ -3,7 +3,7 @@
 All notable changes to SyncMusic are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.2] - 2026-11-08
 
 ### Added
 - Upgrades are supported from 0.2.0 on: a new version updates SyncMusic's database at its first start and keeps all settings, devices, templates and history. A backup of the old database is saved first; if the update fails, the database stays as it was.
