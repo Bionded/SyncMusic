@@ -791,6 +791,29 @@ def test_plan_review_suggests_processors_for_the_plan(device, chrome, width):
     assert page.errors == []
 
 
+def test_plan_review_offers_no_template_the_device_already_runs(device, chrome):
+    """A device with its own chain equal to the suggested template's (defaults spelled out, not linked) gets no
+    suggestion: offering the same processing again is noise."""
+    url, _app, _stick = device
+    page = open_page(chrome, url + "/#/devices/stick/plan", width=1280)
+    page.wait_for_function("/#\\/devices\\/stick\\/plan\\/.+/.test(location.hash)")
+    page.wait_for_selector('[data-count="add"] strong')
+    plan_id = page.evaluate("location.hash.split('/').pop()")
+    sg = _api(url, "POST", "/devices/suggest-processor-template", json={"plan_id": plan_id})
+    tpl = next(t for t in _api(url, "GET", "/processor-templates") if t["id"] == sg["template_id"])
+    own = [{"type": p["type"], "settings": p.get("settings", {})} for p in tpl["processors"]]
+    _api(url, "PATCH", "/devices/stick", json={"processor_template_id": None, "processors": own})
+    page.goto(url + "/#/devices")
+    page.goto(url + "/#/devices/stick/plan")
+    page.wait_for_function(
+        f"location.hash.includes('/plan/') && !location.hash.endsWith({plan_id!r})"
+    )
+    page.wait_for_selector('[data-count="add"] strong')
+    page.wait_for_timeout(500)
+    assert page.locator("[data-plan-suggest]").count() == 0
+    assert page.errors == []
+
+
 @pytest.mark.parametrize("width", [1280, 390])
 def test_a_big_plan_shows_a_sample_and_loads_the_rest(device, chrome, width):
     """the page shows the plan's totals, not the length of its sample; a group whose sample is not

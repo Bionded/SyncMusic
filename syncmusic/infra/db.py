@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """SQLite (WAL) via aiosqlite. A fresh database gets the baseline schema (`migrations/baseline.sql`, schema
-version 1 = SyncMusic 0.2.0); later schema changes are numbered files after it (`002_*.sql`, ...) applied at startup. Until the first public release a schema change bumps the baseline instead and needs a fresh install:
-the daemon refuses a database it does not know rather than guess."""
+version 1 = SyncMusic 0.2.0); later schema changes are numbered files after it (`002_*.sql`, ...) applied at startup, each in its own transaction, after a backup of the database (`backup_dir`). A failed migration
+rolls back and stops the start. The daemon refuses a database it does not know rather than guess."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Iterable
 from importlib import resources
@@ -43,8 +44,14 @@ def _migrations(folder: Traversable | Path) -> list[tuple[int, str]]:
 class Database:
     """Thin async wrapper. One connection, serialised access (SQLite is single-writer anyway)."""
 
-    def __init__(self, path: Path | str, migrations: Traversable | Path | None = None) -> None:
+    def __init__(
+        self,
+        path: Path | str,
+        migrations: Traversable | Path | None = None,
+        backup_dir: Path | None = None,
+    ) -> None:
         self.path = str(path)
+        self.backup_dir = backup_dir  # where a backup goes before migrations are applied
         self.migrations = migrations or _folder()  # tests pass their own folder
         self._conn: aiosqlite.Connection | None = None
 
@@ -78,7 +85,8 @@ class Database:
         current = await self.schema_version()
         steps = _migrations(self.migrations)
         latest = steps[-1][0] if steps else BASELINE
-        if current == 0:
+        fresh = current == 0
+        if fresh:
             if await self._has_tables():
                 raise SchemaError(self._refuse("has tables but no schema version"))
             else:
@@ -89,10 +97,37 @@ class Database:
             raise SchemaError(
                 self._refuse(f"is from a newer SyncMusic (schema {current} > {latest})")
             )
-        for version, sql in steps:
-            if version > current:
-                log.info("applying migration %03d", version)
+        pending = [(v, sql) for v, sql in steps if v > current]
+        if not pending:
+            return
+        backup = None if fresh else await self._backup_before_migrating(current)
+        for version, sql in pending:
+            log.info("applying migration %03d", version)
+            try:
                 await self._apply(sql, version)
+            except Exception as e:
+                if self.conn.in_transaction:
+                    await self.conn.rollback()
+                where = f"; a backup from before the upgrade is {backup}" if backup else ""
+                raise SchemaError(
+                    f"upgrading the database {self.path} failed at migration {version:03d}: {e}. "
+                    f"The database stays at schema {await self.schema_version()}{where}"
+                ) from e
+
+    async def _backup_before_migrating(self, current: int) -> Path | None:
+        """A backup of a database about to be migrated (none for a fresh or in-memory one)."""
+        if self.backup_dir is None or self.path == ":memory:":
+            return None
+        from datetime import UTC, datetime
+
+        from syncmusic.infra import dbbackup  # imports this module
+
+        at = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        dst = self.backup_dir / f"syncmusic-{at}-before-upgrade.sqlite3.gz"
+        await asyncio.to_thread(self.backup_dir.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(dbbackup.copy, self.path, self.backup_dir, dst)
+        log.info("backed the database up to %s before upgrading from schema %d", dst, current)
+        return dst
 
     async def _has_tables(self) -> bool:
         row = await self.fetchone(

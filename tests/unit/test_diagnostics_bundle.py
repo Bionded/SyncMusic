@@ -49,6 +49,8 @@ async def test_bundle_has_parts_and_no_secrets(env):
         "devices.json",
         "checks.json",
         "reports.json",
+        "storage.json",
+        "resources.json",
         "log-tail.txt",
     } <= names
     text = "".join(z.read(n).decode() for n in names)

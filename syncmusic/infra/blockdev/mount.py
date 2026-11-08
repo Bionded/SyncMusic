@@ -495,3 +495,86 @@ async def eject(guard: Guard, disk_path: str, registered: Iterable[str] | None =
             await run_cmd(["eject", disk.path])
         except BlockdevError as e:
             log.warning("eject %s failed: %s", disk.path, e)
+
+
+@dataclass(frozen=True)
+class PartitionMount:
+    partition: str  # /dev/sdX2
+    path: str  # where it is mounted
+    ours: bool  # below the app's mount directory
+
+
+def disk_mounts(disk: BlockDeviceInfo, mount_root: Path | None = None) -> list[PartitionMount]:
+    """Every mountpoint of every partition of `disk` (lsblk lists a partition mounted twice with both paths)."""
+    root = str(mount_root.resolve()) if mount_root is not None else None
+    return [
+        PartitionMount(n.path, mp, root is not None and str(Path(mp).parent) == root)
+        for n in (disk, *disk.children)
+        for mp in n.mountpoints
+        if mp and not mp.startswith("[")  # "[SWAP]"
+    ]
+
+
+class BusyMountError(BlockdevError):
+    """A mountpoint cannot be unmounted because programs still use it."""
+
+    def __init__(self, path: str, holders: list[str]) -> None:
+        who = ", ".join(holders) if holders else "an unknown program"
+        super().__init__(f"{path} is in use by {who}")
+        self.path = path
+        self.holders = holders
+
+
+def mount_holders(path: str, proc: Path = Path("/proc")) -> list[str]:
+    """`name (pid)` of the processes with a cwd, root or open file below `path` (best effort: processes of other
+    users are only visible when the app runs as root)."""
+    prefix = path.rstrip("/") + "/"
+    found: list[str] = []
+    for pid_dir in proc.iterdir():
+        if not pid_dir.name.isdigit():
+            continue
+        links = [pid_dir / "cwd", pid_dir / "root"]
+        with contextlib.suppress(OSError):
+            links += list((pid_dir / "fd").iterdir())
+        for link in links:
+            try:
+                target = os.readlink(link)
+            except OSError:
+                continue
+            if target == path or target.startswith(prefix):
+                try:
+                    name = (pid_dir / "comm").read_text().strip()
+                except OSError:
+                    name = "?"
+                found.append(f"{name} ({pid_dir.name})")
+                break
+    return found
+
+
+async def unmount_everywhere(
+    guard: Guard,
+    disk_path: str,
+    registered: Iterable[str] | None = None,
+    *,
+    lazy: bool = False,
+    mount_root: Path | None = None,
+) -> list[PartitionMount]:
+    """Flush and unmount every mount of every partition of the disk, ours and other programs' (a host
+    automounter). A busy mount raises BusyMountError naming the holders; `lazy` detaches busy mounts instead
+    (`umount -l`, the file system goes away once the last holder closes it). Returns what was unmounted."""
+    disk, _ = guard.check(disk_path, "eject", registered)
+    mounts = disk_mounts(disk, mount_root)
+    for m in mounts:
+        with contextlib.suppress(OSError, BlockdevError):
+            await _flush(m.path)
+    for m in mounts:
+        try:
+            await _umount_retrying(Path(m.path))
+        except BlockdevError as e:
+            if "busy" not in str(e):
+                raise
+            if not lazy:
+                raise BusyMountError(m.path, await asyncio.to_thread(mount_holders, m.path)) from e
+            log.warning("detaching busy mount %s lazily", m.path)
+            await run_cmd(["umount", "-l", m.path])
+    return mounts

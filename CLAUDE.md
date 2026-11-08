@@ -17,8 +17,9 @@ and video from **libraries** through a per-device chain of **processors** onto *
   and other mass-storage players, FTP, Android over MTP (beta). The Compás firmware of the HiBy R1 is a
   non-functional placeholder (`syncmusic/devices/HibyR1/compas.py`), not registered.
 - Processors: transcode, retag, covers, lyrics, video.
-- Version: see `pyproject.toml` (0.2.x, beta). Fresh installs only: there are no database migrations between beta
-  versions yet.
+- Version: see `pyproject.toml` (0.2.x, beta). Upgrades from 0.2.0 on are supported (downgrades are not): every
+  schema change is a numbered migration with an upgrade test, and players synced by an older version keep working
+  (see "Upgrades" below).
 
 ## Repository map
 | Path | What |
@@ -112,6 +113,15 @@ throwaway daemon outside the repository (its own `--config` file and data dir).
 - The app checks for updates on its channel (Settings → Updates: *Stable* or *Beta*) and can update itself
   (`syncmusic/infra/updates.py`, `syncmusic/infra/self_update.py`). Install one-liner: `install.sh` (`--beta`,
   `--version X`, `--port N`); details in `docs/02-installation.md`.
+
+## Upgrades
+- **Database:** a fresh database gets `syncmusic/infra/migrations/baseline.sql` (schema 1 = 0.2.0) plus every
+  numbered migration; an existing one gets the migrations it misses at start, after a backup into the data
+  directory's `backups/` (`*-before-upgrade.sqlite3.gz`). Never edit `baseline.sql` or a released migration: add
+  `NNN_what.sql` with the next number. `tests/unit/test_db_schema.py` upgrades the databases in
+  `tests/fixtures/upgrade/` (written by released versions) and compares the result with a fresh install.
+- **Players:** the on-device manifest and state files of older versions must keep reading and are upgraded in place
+  on the next sync; no change may make a player look foreign or require a wipe.
 
 ## Dependencies worth knowing
 - `pygpod` (iPod database) is a separate library pinned in `pyproject.toml`; fix iPod database bugs there, not with

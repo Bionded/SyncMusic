@@ -24,6 +24,11 @@ class CacheClear(BaseModel):
     kind: Literal["media", "system"] = "media"
 
 
+class StorageClear(BaseModel):
+    item: str | None = None  # one device's / library's share of the part; None = all of it
+    keep: int = 1  # database backups: how many of the newest stay
+
+
 class ValidateRequest(BaseModel):
     """Exactly one of them: a rule set, a single rule, or text (JSON / YAML / .nsp)."""
 
@@ -381,6 +386,29 @@ def router(facade: AppFacade) -> APIRouter:
     async def settings_cache_clear(body: CacheClear | None = None) -> dict[str, Any]:
         """Empty the conversion cache (`media`, the default; 409 while a job runs) or the `system` cache (thumbnails, previews); returns the bytes freed and the new state."""
         return await facade.clear_cache(body.kind if body else "media")
+
+    @r.get("/system/storage")
+    async def system_storage() -> dict[str, Any]:
+        """What the app keeps on disk, part by part (size, paths, clear action, per-device/-library items) and the
+        free space of the file systems involved."""
+        return await facade.storage()
+
+    @r.post("/system/storage/{part}/clear")
+    async def system_storage_clear(part: str, body: StorageClear | None = None) -> dict[str, Any]:
+        """Clear one part (or one item of it); 409 while a job needs that data. Returns the bytes freed and the
+        new report."""
+        b = body or StorageClear()
+        return await facade.storage_clear(part, b.item, b.keep)
+
+    @r.get("/system/resources")
+    async def system_resources() -> dict[str, Any]:
+        """Memory (RSS, children), CPU %, uptime, threads, event-loop lag and the in-memory caches."""
+        return await facade.resources()
+
+    @r.post("/system/resources/free")
+    async def system_resources_free() -> dict[str, Any]:
+        """Drop the in-memory caches rebuilt on demand (409 while a job runs)."""
+        return await facade.free_memory()
 
     @r.get("/settings/ffmpeg")
     async def settings_ffmpeg(path: str | None = None) -> dict[str, Any]:

@@ -381,3 +381,67 @@ async def test_car_mode_playlists_m3u_crlf(tmp_path):
     s.data["paths"][a.track.ref.key()] = ra.path
     await plain.set_playlists(s, [DevicePlaylist(name="Мій топ", refs=[a.track.ref])])
     assert [p.name for p in (dev.mount / "Playlists").iterdir()] == ["Мій топ.m3u8"]
+
+
+async def test_put_track_cost_does_not_grow_with_written_tracks(tmp_path, monkeypatch):
+    """the session's own path keys are built once, not once per written track (a first sync of a big
+    library was quadratic): path_key calls stay linear in the tracks written."""
+    from syncmusic.devices import paths
+
+    dev = _dev(tmp_path)
+    s = await dev.begin()
+    items = [_item(tmp_path, f"Пісня {i}") for i in range(60)]
+    calls = 0
+    real = paths.path_key
+
+    def counting(rel, rules):
+        nonlocal calls
+        calls += 1
+        return real(rel, rules)
+
+    monkeypatch.setattr(paths, "path_key", counting)
+    for item in items:
+        await dev.put_track(s, item)
+    assert calls < 10 * len(items)  # quadratic: ~len(items)**2 / 2 = 1800
+
+
+async def test_moved_own_track_frees_its_old_path(tmp_path):
+    """a track written again under another path no longer owns its old one: an identical foreign file
+    there is taken over, as before the own-key set was kept per session."""
+    dev = _dev(tmp_path)
+    a = _item(tmp_path, "Зірка")
+    s = await dev.begin()
+    ra = await dev.put_track(s, a)
+    moved = a.model_copy(
+        update={
+            "plan": a.plan.model_copy(
+                update={"track": a.track.model_copy(update={"album": "Інший"})}
+            )
+        }
+    )
+    rb = await dev.put_track(s, moved)
+    assert rb.path != ra.path and s.data["ours"] == {k for k in s.data["ours"] if "Інший" in k}
+
+
+async def test_capabilities_resolved_once_per_session(tmp_path, monkeypatch):
+    """writing tracks does not recompute the device capabilities per track; a new session sees changed settings."""
+    dev = _dev(tmp_path)
+    s = await dev.begin()
+    calls = 0
+    real = dev.effective_capabilities
+
+    def counting():
+        nonlocal calls
+        calls += 1
+        return real()
+
+    monkeypatch.setattr(dev, "effective_capabilities", counting)
+    for i in range(5):
+        await dev.put_track(s, _item(tmp_path, f"Пісня {i}"))
+    assert calls == 0
+    await dev.abort(s)
+    monkeypatch.undo()
+    car = _dev(tmp_path, car_mode=True)
+    s2 = await car.begin()
+    ref = await car.put_track(s2, _item(tmp_path, "Ґанок"))
+    assert ref.path.isascii()

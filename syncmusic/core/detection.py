@@ -14,6 +14,7 @@ What happens next (`on_connect` auto/ask/manual) is up to the sync service.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -65,13 +66,15 @@ ManifestProbe = Callable[[BlockDeviceInfo], Awaitable[MountedProbe | None]]
 def manifest_id_at(root: Path) -> str | None:
     """Device id from the manifest under a mounted device root (read only); None if absent/unreadable."""
     try:
-        m = manifest_io.read(root, allow_newer=True)
+        header = manifest_io.read_header(
+            root
+        )  # the header only: a big manifest is never parsed here
     except (manifest_io.ManifestError, OSError) as e:
         log.info("%s: manifest unreadable (%s)", root, e)
         return None
-    if m is None:
+    if header is None:
         return None
-    return m.header.device_uid or m.header.device_id
+    return header.device_uid or header.device_id
 
 
 def manifest_device_id(disk: BlockDeviceInfo) -> str | None:
@@ -148,7 +151,7 @@ class Detector:
         configs = self.configs()
         if is_mtp(disk):  # an MTP player: matched by its USB serial only, never probe-mounted
             return match_registered(disk, configs), []
-        manifest_id = manifest_device_id(disk)
+        manifest_id = await asyncio.to_thread(manifest_device_id, disk)  # file I/O off the loop
         mounted_probes: list[ProbeResult] = []
         if manifest_id is None and existing_mount(disk) is None and self.manifest_probe is not None:
             match = match_registered(disk, configs)

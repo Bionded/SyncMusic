@@ -202,6 +202,7 @@ def plan_with_space(
     now: datetime | None = None,
     library_names: Mapping[str, str] | None = None,
     account_names: Mapping[str, str] | None = None,
+    attached: Collection[str] | None = None,
 ) -> SyncPlan:
     """Plan + space check (+ space steps, + forced trimming). `commit_reserve(n)` = Device.commit_reserve."""
     margin = safety_margin(capacity, device.sync)
@@ -226,6 +227,7 @@ def plan_with_space(
             now=now,
             library_names=library_names,
             account_names=account_names,
+            attached=attached,
         )
         # no margin on a space nobody knows (a % of the UNKNOWN_SPACE sentinel would be terabytes)
         reserve = (0 if capacity >= UNKNOWN_SPACE else margin) + commit_reserve(items_after(p))

@@ -6,13 +6,16 @@ against the manifest:
 - `add`: selected, not on the device (also: in the manifest, but the device reports the file `missing`, e.g. the
   user deleted it on the player - the manifest is the source of truth only for files that still exist);
 - `replace`: on the device, but the source changed (`source_state`) or the processing did (`chain_hash`), or
-  the metadata changed and the device reads tags from the file (a tag-writing processor is in the chain);
+  the metadata changed and the device reads tags from the file (a tag-writing processor is in the chain). A source
+  that was only touched - same size and cover, only its timestamp moved, metadata unchanged (`touched_only`) - is
+  kept instead, with `restamp`: the applier stores the new `source_state` in the manifest;
 - `update_meta`: only metadata changed and the device keeps metadata in its own DB (iPod);
 - `remove`: on the device (manifest = managed by us) and no longer selected - `mirror` mode only;
 - `keep`: everything else (also carries the planned item so the applier can refresh the manifest entry). An item
-  its attached library no longer has, or whose library is no longer attached (detached or removed), is an
+  its library no longer has, or whose library was removed, disabled or cannot be read, is an
   **orphan**: kept in both modes (`orphan=True`); Device settings / Player contents remove it.
-  An item deleted from its (still attached) library is removed instead (`deleted=True`) when the
+  An item of a readable library that no rule selects any more (e.g. its template was unlinked) is just
+  unselected (`remove` in mirror mode). An item deleted from its (still readable) library is removed instead (`deleted=True`) when the
   device's `remove_deleted` is on - unless that library returned nothing, or more than `MASS_VANISH_PCT` % of its
   items on the device vanished at once (a rescan glitch): those stay orphans, with a warning.
 Unmanaged files never appear in a plan. Selected items the device cannot take (media kind, format after the
@@ -37,6 +40,7 @@ from typing import Any
 
 from syncmusic.base.capabilities import DeviceCapabilities
 from syncmusic.core import books
+from syncmusic.core.manifest import is_external
 from syncmusic.core.models import (
     ActionKind,
     DeviceConfig,
@@ -58,6 +62,7 @@ from syncmusic.core.models import (
     RuleTemplate,
     SyncPlan,
     Track,
+    compact_tracks,
     playlist_hash,
 )
 from syncmusic.core.prepare import CAPS_HASH_VERSION, Chain, initial_plan_item, inputs_diff
@@ -91,14 +96,17 @@ META_FIELDS = (
 )
 
 
+# built once: per-item hot path
+_META_JSON = json.JSONEncoder(sort_keys=True, default=str, ensure_ascii=False)
+
+
 def meta_hash(t: Track) -> str:
     data: dict[str, Any] = {f: getattr(t, f) for f in META_FIELDS}
     if t.published is not None and t.kind in (MediaKind.PODCAST, MediaKind.AUDIOBOOK):
         # the release date reaches the device since only these items' hashes change, so episodes
         # already on a device get it with their next update (a metadata write) and nothing else is rewritten
         data["released"] = 1
-    text = json.dumps(data, sort_keys=True, default=str, ensure_ascii=False)
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
+    return hashlib.sha256(_META_JSON.encode(data).encode()).hexdigest()[:16]
 
 
 def meta_snapshot(t: Track) -> dict[str, str]:
@@ -245,7 +253,10 @@ def with_disc_totals(tracks: dict[str, Track]) -> dict[str, Track]:
     for k, t in tracks.items():
         a = album(t)
         if t.disc_total is None and a is not None and a in top:
-            out[k] = t.model_copy(update={"disc_total": top[a]})
+            out[k] = c = t.model_copy(update={"disc_total": top[a]})
+            compact_tracks(
+                (c,)
+            )  # a pending plan keeps the copies: share one fields set, as snapshot tracks do
     return out
 
 
@@ -401,15 +412,23 @@ def plan_sync(
     now: datetime | None = None,
     library_names: Mapping[str, str] | None = None,
     account_names: Mapping[str, str] | None = None,
+    attached: Collection[str] | None = None,
 ) -> SyncPlan:
-    """The plan for one device. `snapshots` = the device's attached libraries (by library id).
+    """The plan for one device. `snapshots` = the libraries read for it (by library id): the attached ones
+    (those its templates draw from; `attached`, default: all snapshots) plus any other enabled library it holds
+    managed items of - an item of such a library that no rule selects any more is unselected (removed in
+    mirror mode), not an orphan.
     `space_steps` enables the transcode `when: space_needed` rules (set by `core/space.py`).
     `missing` = manifest keys whose file is gone from the device (`Device.missing`). `library_names`: by id, for
     the removal reasons. `account_names`: library id → the account the device reads it as (warnings).
 
     Steps: select (rules) → candidates (chain + format check) → device limit → add/replace/keep the selected →
     remove/keep what is on the device but not selected → playlists → warnings and confirmations."""
-    attached = [lid for lid in (device.library_ids or list(snapshots)) if lid in snapshots]
+    attached = [
+        lid
+        for lid in (attached if attached is not None else device.library_ids or list(snapshots))
+        if lid in snapshots
+    ]
     selection = evaluate_ruleset(
         device.rule_set,
         snapshots,
@@ -420,7 +439,7 @@ def plan_sync(
         accounts=account_names,
     )
     tracks = with_disc_totals(
-        {t.ref.key(): t for lid in attached for t in snapshots[lid].tracks.values()}
+        {t.ref.key(): t for snap in snapshots.values() for t in snap.tracks.values()}
     )
     selected = selection.items
     if device.sync.combine_audiobooks:  # a multi-file audiobook as one book with chapters
@@ -490,10 +509,10 @@ def plan_sync(
         )
 
     def gone(key: str, entry: ManifestEntry) -> bool:
-        # gone from its library, or its library is no longer attached / was removed
+        # gone from its library, or its library was not read (removed, disabled, unreadable)
         lid = entry.ref.library_id
         return key not in on_device and (
-            lid not in attached or not snapshots[lid].has(entry.ref.item_id)
+            lid not in snapshots or not snapshots[lid].has(entry.ref.item_id)
         )
 
     # deleted from an attached library: removed, unless the library looks broken
@@ -504,7 +523,7 @@ def plan_sync(
     lib_names = library_names or {}
     deletable = {
         lid
-        for lid in attached
+        for lid in snapshots
         if device.remove_deleted
         and snapshots[lid].tracks
         and not (
@@ -526,6 +545,20 @@ def plan_sync(
     orphaned_from: Counter[str] = Counter()  # library id -> orphans
     for key, entry in entries.items():
         if key in on_device:
+            continue
+        if is_external(
+            entry.ref.library_id
+        ):  # another instance's library: left alone, its space counted
+            actions.append(
+                PlanAction(
+                    kind=ActionKind.KEEP,
+                    ref=entry.ref,
+                    title=entry.path,
+                    entry=entry,
+                    meta_hash=entry.meta_hash,
+                    reason="kept: synced by another installation",
+                )
+            )
             continue
         action = _unselected_action(
             key,
@@ -593,7 +626,7 @@ def plan_sync(
         plan.confirmation_reasons.append(
             "first sync: choose to keep unknown files, adopt matched files or wipe the device"
         )
-    _orphan_warnings(plan, device, attached, snapshots, orphaned_from, per_lib, lib_names, auto)
+    _orphan_warnings(plan, device, snapshots, orphaned_from, per_lib, lib_names, auto)
     plan.removals_over_threshold = over_delete_threshold(
         removals, len(entries), device.delete_threshold_pct
     )
@@ -656,9 +689,7 @@ def _candidates(
             track is None
         ):  # selected from a library that is not attached (cannot happen via `attached`)
             continue
-        base = initial_plan_item(track).model_copy(
-            update={"rules": list(rule_ids), "enable_space_steps": space_steps}
-        )
+        base = initial_plan_item(track, list(rule_ids), space_steps)
         item = chain.plan(base, caps)
         # videos: the `video` processor or the device decides the format, not the audio codec list
         if (
@@ -676,17 +707,28 @@ def _candidates(
         ):
             unsupported.append(f"{track.title} ({item.file.format or 'unknown format'})")
             continue
-        candidates.append(
-            _Candidate(
-                key,
-                track,
-                list(rule_ids),
-                item,
-                chain.chain_hash(base, caps),
-                chain.processing(base, caps),
-            )
-        )
+        chash, processing = chain.hashes(base, caps)
+        candidates.append(_Candidate(key, track, list(rule_ids), item, chash, processing))
     return candidates, unsupported
+
+
+def _source_parts(state: str) -> tuple[str, str, str] | None:
+    """`size:stamp|rest` → (size, stamp, rest) when the stamp is a timestamp (digits: mtime in ns/ms, or an ISO
+    time); None for every other format (e.g. size|etag, size:duration:bitrate)."""
+    head, _, rest = state.partition("|")
+    size, sep, stamp = head.partition(":")
+    if not sep or not size.isdigit():
+        return None
+    if not (stamp.replace(".", "", 1).isdigit() or ("T" in stamp and stamp[:4].isdigit())):
+        return None
+    return size, stamp, rest
+
+
+def touched_only(old: str, new: str) -> bool:
+    """Two source states that differ only in their timestamp: the size and the rest (cover image hash, ...) are
+    the same - a tagger or a rescan touched the file without changing it."""
+    a, b = _source_parts(old), _source_parts(new)
+    return a is not None and b is not None and a[0] == b[0] and a[2] == b[2] and a[1] != b[1]
 
 
 def _selected_action(
@@ -728,7 +770,12 @@ def _selected_action(
         and entry.processing.keys() == c.processing.keys()
         and all(entry.processing[n] == v for n, v in c.processing.items() if n != "device")
     )
-    if entry.source_state != track.source_state:
+    restamp = (
+        entry.source_state != track.source_state
+        and entry.meta_hash == mhash
+        and touched_only(entry.source_state, track.source_state)
+    )
+    if entry.source_state != track.source_state and not restamp:
         kind, reason = ActionKind.REPLACE, "source changed"
     elif entry.chain_hash != chash and not rehash:
         kind, reason = ActionKind.REPLACE, "processing changed"
@@ -767,6 +814,7 @@ def _selected_action(
         processing=c.processing,
         tags_only=tags_only,
         rehash=rehash and kind in (ActionKind.KEEP, ActionKind.UPDATE_META),
+        restamp=restamp and kind in (ActionKind.KEEP, ActionKind.UPDATE_META),
         meta_hash=mhash,
         changes=meta_changes(entry, track, caps, tags)
         if kind is not ActionKind.REPLACE or tags
@@ -833,7 +881,6 @@ def _unselected_action(
 def _orphan_warnings(
     plan: SyncPlan,
     device: DeviceConfig,
-    attached: Collection[str],
     snapshots: Mapping[str, LibrarySnapshot],
     orphaned_from: Counter[str],
     per_lib: Counter[str],
@@ -851,7 +898,7 @@ def _orphan_warnings(
             else f"{orphans} items on the device are gone from their library (orphans): they stay on the "
             "device; remove them in Device settings"
         )
-    for lid in attached:
+    for lid in snapshots:
         if orphaned_from[lid] and (notice := snapshots[lid].notice):
             plan.warnings.append(notice)
         # an empty library (unmounted share, rescan glitch) removes nothing: its items are orphans

@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from syncmusic.base.library import Library
-from syncmusic.core.models import ItemRef, LibrarySnapshot, MediaKind, utcnow
+from syncmusic.core.models import ItemRef, LibrarySnapshot, MediaKind, compact_tracks, utcnow
 from syncmusic.infra.db import Database
 from syncmusic.infra.memory import trim
 
@@ -194,10 +194,12 @@ class SnapshotCache:
             return None
         try:
             raw = await asyncio.to_thread(zlib.decompress, row["data"])
-            return LibrarySnapshot.model_validate_json(raw)
+            snap = LibrarySnapshot.model_validate_json(raw)
         except (zlib.error, ValueError):
             log.warning("library %s: cached snapshot unreadable, ignoring it", library_id)
             return None
+        compact_tracks(snap.tracks.values())
+        return snap
 
     async def store(self, snap: LibrarySnapshot, key: str | None = None) -> None:
         data = await asyncio.to_thread(lambda: zlib.compress(snap.model_dump_json().encode(), 6))
@@ -207,7 +209,16 @@ class SnapshotCache:
             "taken_at = excluded.taken_at, data = excluded.data",
             (key or snap.library_id, snap.state_token, snap.taken_at.isoformat(), data),
         )
+        compact_tracks(snap.tracks.values())
         self._memory[key or snap.library_id] = snap
+
+    def memory_counts(self) -> tuple[int, int]:
+        """(snapshots in memory, tracks in them)."""
+        return len(self._memory), sum(len(s.tracks) for s in self._memory.values())
+
+    def drop_memory(self) -> None:
+        """Forget the snapshots in memory; the next use loads them from the database again."""
+        self._memory.clear()
 
     async def invalidate(self, library_id: str) -> None:
         """The library was edited or removed: nothing of it may be shown any more (nor of devices' own accounts)."""

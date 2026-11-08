@@ -77,6 +77,7 @@ async def test_login_on(setup):
     assert r.status_code == 401 and r.json()["error"] == "auth_required"
     assert (await c.get("/api/v1/health")).status_code == 200
     assert (await c.get("/api/v1/events")).status_code == 401
+    assert (await c.get("/api/v1/version")).status_code == 401  # the UI asks after the login gate
     assert (await c.get("/openapi.json")).status_code == 401
     status = (await c.get("/api/v1/auth")).json()
     assert status["enabled"] and not status["signed_in"] and "tokens" not in status

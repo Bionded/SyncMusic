@@ -102,7 +102,9 @@ async function show({ focus = true } = {}) {
 }
 
 async function draw(my, focus) {
-  const m = match(location.hash);
+  // the address this view is drawn for: read once, the user may navigate on while its module loads
+  const hash = location.hash;
+  const m = match(hash);
   if (!m) {
     current = null;
     renderNav(null, "");
@@ -120,7 +122,7 @@ async function draw(my, focus) {
   // a newer navigation won while this view's module loaded: it must not become `current` (its actions would answer
   // the newer screen's clicks)
   if (my !== seq) return;
-  const ctx = { params: m.params, query: m.query, path: m.path, hash: location.hash, rerender: () => rerender(), state: {} };
+  const ctx = { params: m.params, query: m.query, path: m.path, hash, rerender: () => rerender(), state: {} };
   const same = current && current.ctx.path === ctx.path;
   // keep view state on a re-render of the same screen; another query (a "Copy" draft vs a blank "New")
   // is another screen
@@ -262,6 +264,10 @@ onLiveState((up) => {
 });
 
 $("#brandSub").textContent = t("app.tagline");
+// the instance name under the logo (several instances may sync the same player)
+function showInstance() {
+  get("/version").then((v) => { if (v?.instance?.name) { $("#brandSub").textContent = v.instance.name; $("#brand").title = t("app.instance", { name: v.instance.name }); } }).catch(() => {});
+}
 setHtml($("#brandMark"), logo(24));
 setHtml($("#burger"), icon("menu"));
 drawLive(true);
@@ -294,6 +300,7 @@ drawThemeBtn();
 const access = await get("/auth").catch(() => null);
 if (access?.enabled && !access.signed_in) showLogin();
 else {
+  showInstance(); // after the login gate: a 401 here would reload the page endlessly
   initSidebar();
   initBell();
   initSearch();

@@ -35,7 +35,9 @@ async def integrity_check(svc: SyncService, device_id: str, deep: bool = False) 
         )
         report["summary"] = integrity.summary(report)
         if report["io_error"]:
-            await svc._record_health(cfg, error=f"integrity check: {report['io_error']}")
+            await svc._record_health(
+                cfg, error=f"integrity check: {report['io_error']}", job_id=ctx.info.id
+            )
             raise SyncError(
                 f"the device's storage failed while reading {report['io_error']} - it may be failing; copy "
                 "what you need and check it on a computer",

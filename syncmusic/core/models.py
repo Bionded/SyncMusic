@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -110,6 +111,19 @@ class Track(BaseModel):
     # change detection: anything that changes when the source file changes (size/mtime, etag)
     source_state: str = ""
     extra: dict[str, Any] = {}  # library-specific fields usable by rules (`extra.<key>`)
+
+
+_TRACK_FIELDS_SET: set[str] = set(Track.model_fields)
+_REF_FIELDS_SET: set[str] = set(ItemRef.model_fields)
+
+
+def compact_tracks(tracks: Iterable[Track]) -> None:
+    """Let many long-lived tracks share one "fields set" object: Pydantic keeps a set of the explicitly set field
+    names per instance (~0.7 KB per track, half of a snapshot track's memory). Only `exclude_unset` dumps read it,
+    and no code dumps tracks that way, so marking every field as set changes nothing."""
+    for t in tracks:
+        object.__setattr__(t, "__pydantic_fields_set__", _TRACK_FIELDS_SET)
+        object.__setattr__(t.ref, "__pydantic_fields_set__", _REF_FIELDS_SET)
 
 
 class Playlist(BaseModel):
@@ -257,6 +271,11 @@ class RuleTemplate(BaseModel):
     default_of: str | None = None
     edited: bool = False
     updated_at: UtcDatetime = Field(default_factory=utcnow)
+    # a copy imported from a player: the original's `<instance id>:<template id>`, the installation it came from
+    # and the original's `updated_at` when it was copied ("updated on <name>" when the player has a newer one)
+    origin_uid: str | None = None
+    origin_name: str = ""
+    origin_updated_at: UtcDatetime | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -303,6 +322,10 @@ class LibraryConfig(BaseModel):
     settings: dict[str, Any] = {}
     # extra accounts, account id → account; devices pick one in `DeviceConfig.library_accounts`
     accounts: dict[str, LibraryAccount] = {}
+    # stable id of the source behind it (`Library.source_id`), set when it is first read; never edited.
+    # `source_id_now`: what the source reports now when that differs - the library points somewhere else
+    source_id: str | None = None
+    source_id_now: str | None = None
 
     @field_validator("type")
     @classmethod
@@ -376,6 +399,9 @@ class SyncSettings(BaseModel):
     # full sync writes `gentle_batch_files` files, syncs
     # the file system and pauses `gentle_pause_s`; optional write rate limit. Disk devices only; updates unaffected
     gentle_write: bool = False
+    # unmount other programs' mounts of the device (a host automounter) during the first minute after the app
+    # mounted it; disk devices only
+    unmount_foreign: bool = False
     gentle_batch_files: int = Field(25, ge=1, le=1000)
     gentle_pause_s: float = Field(2.0, ge=0, le=60)
     gentle_rate_mb_s: float | None = Field(None, gt=0, le=1000)
@@ -471,6 +497,8 @@ class AppSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # how this instance is named on devices and in other instances; "" = the host name
+    instance_name: str = Field("", max_length=64)
     cache_max_gb: float = Field(20.0, gt=0)  # processing cache size (LRU eviction above it)
     # combined multi-file audiobooks stay in the cache even for no-cache devices
     cache_combined_books: bool = True
@@ -745,7 +773,29 @@ class DeviceFeedback(BaseModel):
 # Device state, planning, reporting
 # ---------------------------------------------------------------------------------------------
 
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
+
+
+class ManifestLibrary(BaseModel):
+    """A library with items on the device, as the manifest header describes it (no credentials). Entries
+    name it by its header key; `id` is the library id on the instance that last wrote it."""
+
+    id: str = ""
+    source_id: str | None = None
+    type: str = ""
+    name: str = ""
+    url_hint: str = ""
+    instance: str = ""  # id of the instance whose library it is
+    probe: list[dict[str, Any]] = []  # a few items on the device: item_id, title, duration_s
+
+
+class InstanceInfo(BaseModel):
+    """A SyncMusic installation that synced the device (the name is a label; logic uses the id)."""
+
+    id: str
+    name: str = ""
+    app_version: str = ""
+    since: UtcDatetime | None = None  # as the home: when it became the home
 
 
 class Interruption(BaseModel):
@@ -772,6 +822,11 @@ class ManifestHeader(BaseModel):
     # what the entries' `processing` part hashes are made of (Chain.processing_inputs): one copy
     # per hash, so the next plan can say what changed; empty in manifests written before
     processing_inputs: dict[str, dict[str, Any]] = {}
+    # libraries with items on the device by their device-local key ("L1", ...); empty in version 1
+    libraries: dict[str, ManifestLibrary] = {}
+    # the instance that owns the device (set at the first sync) and the one that wrote the manifest last
+    home: InstanceInfo | None = None
+    last_writer: InstanceInfo | None = None
 
 
 class ManifestEntry(BaseModel):
@@ -799,6 +854,9 @@ class ManifestEntry(BaseModel):
     kind: MediaKind = MediaKind.MUSIC
     duration_s: float | None = None
     last_playcount: int = 0
+    # plays read from the device by another installation that does not have this item's library: not sent yet;
+    # the installation whose library it is sends them at its next reverse sync (iPods reset their counters)
+    pending_plays: int = 0
     last_rating: Rating | None = None
     last_position_s: float | None = None
     # the library's favourite last mirrored as a heart (HiBy); None = not yet
@@ -824,6 +882,8 @@ class Manifest(BaseModel):
     # playlists created on the device and saved to a library: name -> that playlist's ItemRef key. Not
     # managed (the forward sync never deletes their file); their base is in `playlist_refs` like a managed one's
     playlist_created: dict[str, str] = {}
+    # library id in `items` -> its key in `header.libraries` (filled when read, extended when written)
+    lib_keys: dict[str, str] = {}
 
     def by_device_ref(self) -> dict[str, ManifestEntry]:
         return {e.device_ref: e for e in self.items.values()}
@@ -985,6 +1045,9 @@ class PlanAction(BaseModel):
     tags_only: bool = False
     # keep: only the caps hash scheme changed, the applier stores the new chain hash
     rehash: bool = False
+    # keep: the source was only touched (timestamp moved, size/cover/metadata the same): the applier stores the
+    # library's new source_state, nothing is copied
+    restamp: bool = False
     meta_hash: str = ""  # of the library metadata (planner.meta_hash)
     orphan: bool = False  # keep: its library no longer has the item
     deleted: bool = False  # remove: deleted from its library

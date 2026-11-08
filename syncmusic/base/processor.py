@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 from abc import ABC, abstractmethod
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel
 
@@ -50,7 +50,16 @@ class Processor(ABC):
         """Do the work on the file in the work dir."""
 
     def settings_hash(self) -> str:
+        # once per processor and settings value (called per item while planning)
         dump = self.settings.model_dump(mode="json")
+        memo: tuple[dict[str, Any], str] | None = getattr(self, "_settings_hash_memo", None)
+        if memo is not None and memo[0] == dump:
+            return memo[1]
+        hashed = self._settings_hash(dict(dump))
+        self._settings_hash_memo = (dump, hashed)
+        return hashed
+
+    def _settings_hash(self, dump: dict[str, Any]) -> str:
         defaults = self.Settings().model_dump(mode="json")
         for name in self.hash_omit_defaults:
             if dump.get(name) == defaults.get(name):

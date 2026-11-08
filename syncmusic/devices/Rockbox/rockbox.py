@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from syncmusic.base.capabilities import CoverSpec, DeviceCapabilities
 from syncmusic.base.context import AppContext
 from syncmusic.base.device import Device, DeviceSession, ProbeResult
+from syncmusic.core import manifest as manifest_io
 from syncmusic.core.manifest import STATE_DIR
 from syncmusic.core.models import (
     DeviceConfig,
@@ -388,8 +389,9 @@ class Rockbox(FileDeviceMixin, Device):
         return rf.play_log_state(await asyncio.to_thread(self._config_text))
 
     async def commit(self, s: DeviceSession, manifest: Manifest) -> None:
-        # before the manifest, which is always written last
-        await asyncio.to_thread(self.write_play_log, self.s.enable_play_log)
+        # before the manifest, which is always written last; the player's config is the home instance's
+        if manifest_io.is_home(manifest):
+            await asyncio.to_thread(self.write_play_log, self.s.enable_play_log)
         await super().commit(s, manifest)
 
     def write_play_log(self, on: bool) -> bool:

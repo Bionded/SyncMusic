@@ -90,6 +90,8 @@ SAMPLES: list[BaseModel] = [
         play_counts={REF.key(): 3},
     ),
     m.ManifestHeader(device_id="dev"),
+    m.ManifestLibrary(id="nav", source_id="subsonic:abc", type="subsonic", instance="i1"),
+    m.InstanceInfo(id="i1", name="alpha", app_version="0.2"),
     m.Interruption(plan_id="p1", done=2, total=5, at=NOW),
     m.ErasedMark(how="wiped", at=NOW, removed=3),
     m.QuietHours(start="23:00", end="07:30"),
@@ -241,3 +243,18 @@ def test_validation_ranges():
             track("1", **bad)
     with pytest.raises(ValidationError):
         DeviceCapabilities().with_overrides({"fromats": ["flac"]})
+
+
+def test_compact_tracks_shares_fields_set_and_keeps_behaviour() -> None:
+    from syncmusic.core.models import ItemRef, Track, compact_tracks
+
+    a = Track(ref=ItemRef(library_id="lib", item_id="1"), title="A", artist="X")
+    b = Track(ref=ItemRef(library_id="lib", item_id="2"), title="B")
+    before = a.model_dump()
+    compact_tracks([a, b])
+    assert a.__pydantic_fields_set__ is b.__pydantic_fields_set__
+    assert a.model_dump() == before
+    a.title = "A2"  # assignment still works
+    c = a.model_copy(update={"album": "Z"})
+    assert c.album == "Z" and b.album is None
+    assert Track.model_validate_json(a.model_dump_json()) == a

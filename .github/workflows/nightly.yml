@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# The slow suite without hardware, nightly and on demand: the web UI in Playwright's Chromium and
+# The slow suite without hardware, on demand: the web UI in Playwright's Chromium and
 # the other slow tests. Not here: hardware (allowlisted USB devices), and the integration tests that need the
 # user's media folder, loop devices with sudo and the compose stack of tests/integration (they run on the
 # development host only).
 name: Nightly
 
 on:
-  schedule:
-    - cron: "17 3 * * *"
+  # on demand only (Actions → Nightly → Run workflow); the schedule is off
   workflow_dispatch:
 
 permissions:

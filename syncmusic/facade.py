@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import getpass
 import json
 import logging
@@ -65,7 +66,12 @@ from syncmusic.core.models import (
 )
 from syncmusic.core.playlist_reverse import Policy
 from syncmusic.core.prepare import Chain
-from syncmusic.core.proc_templates import DEFAULT_PROCESSOR_TEMPLATES, linked_devices, with_tag_step
+from syncmusic.core.proc_templates import (
+    DEFAULT_PROCESSOR_TEMPLATES,
+    linked_devices,
+    same_chain,
+    with_tag_step,
+)
 from syncmusic.core.rules import RuleError, ruleset_from_text, validate_ruleset
 from syncmusic.core.rules.defaults import PREFIX as DEFAULT_PREFIX
 from syncmusic.core.rules.evaluator import resolve_rules
@@ -90,7 +96,16 @@ from syncmusic.core.sync import (
     suggested_processors,
 )
 from syncmusic.core.thumbs import file_cover
-from syncmusic.infra import bundle, dbbackup, diagnostics, discovery, doctor, ffmpeg, self_update
+from syncmusic.infra import (
+    bundle,
+    dbbackup,
+    diagnostics,
+    discovery,
+    doctor,
+    ffmpeg,
+    self_update,
+    storage,
+)
 from syncmusic.infra.blockdev.format import FS_LABELS, filesystem_support
 from syncmusic.infra.blockdev.guard import GuardError
 from syncmusic.infra.blockdev.mount import privilege_route
@@ -344,6 +359,7 @@ class AppFacade:
             "pygpod": pygpod,
             "python": platform.python_version(),
             "host": socket.gethostname(),
+            "instance": {"id": self.app.instance_id, "name": self.app.instance_name},
             "model": _read_text(Path("/proc/device-tree/model")),
             "uptime_s": _uptime_s(),
         }
@@ -378,12 +394,20 @@ class AppFacade:
         return self._with_updated(_public_library(await self._library(library_id)))
 
     async def add_library(self, cfg: LibraryConfig) -> dict[str, Any]:
-        cfg = await self._validate_library(cfg)
+        cfg = await self._validate_library(
+            cfg.model_copy(update={"source_id": None, "source_id_now": None})
+        )
         await self.app.store.put_library(cfg)
         self.app.sync.forget_library(cfg.id)
         self._forget_suggest(cfg.id)
         await self.app.sync.sync_watchers()  # a local folder is watched from now on
-        return _public_library(cfg)
+        # a temporary instance, not cached: nothing outlives the add
+        lib = registry.library_class(cfg.type)(cfg, self.app.ctx)
+        try:
+            sid = await self.app.sync.refresh_source_id(lib, timeout_s=5.0)
+        finally:
+            await lib.close()
+        return _public_library(cfg.model_copy(update={"source_id": sid}))
 
     async def _validate_library(self, cfg: LibraryConfig) -> LibraryConfig:
         """The config as stored: settings checked, a server URL in its final form (`http://` added)."""
@@ -407,6 +431,8 @@ class AppFacade:
         """PATCH: top-level fields replace, `settings` keys merge (a secret left out or sent back as the mask stays
         as it is)."""
         old = await self._library(library_id)
+        # read from the source, never edited
+        changes = {k: v for k, v in changes.items() if k not in ("source_id", "source_id_now")}
         unknown = sorted(set(changes) - set(LibraryConfig.model_fields))
         if unknown:
             raise SyncError(f"unknown library fields: {', '.join(unknown)}", "invalid")
@@ -1478,6 +1504,8 @@ class AppFacade:
                 {"configs": [_public_device(c) for c in cfgs], "live": await self.devices()}
             ),
             "checks.json": dump(await self.diagnostics()),
+            "storage.json": dump(await self.storage()),
+            "resources.json": dump(await self.resources()),
             "reports.json": dump(recent),
             "log-tail.txt": "\n".join(self.logs(2000)) + "\n",
         }
@@ -1648,6 +1676,229 @@ class AppFacade:
         after = await self.app.cache.total_size()
         log.info("cache cleared: %d entries, %d bytes", len(removed), before - after)
         return {"freed": before - after, "entries": len(removed), **await self.cache_info()}
+
+    # --- Settings → System → Storage & resources --------------------------------------------------
+
+    def _busy(self) -> bool:
+        return any(j.finished_at is None for j in self.app.jobs.jobs())
+
+    async def storage(self) -> dict[str, Any]:
+        """What the app keeps on disk, part by part, with the file systems holding it."""
+        cfg = self.app.config
+        settings = await self.app.store.app_settings()
+        db = cfg.data_dir / "syncmusic.sqlite3"
+        logs = cfg.logs
+        backups = self.app.backup_dir(settings)
+        rows = await self.app.db.fetchall(
+            "SELECT library_id, length(data) AS size FROM snapshots ORDER BY size DESC"
+        )
+        runtime = self_update.SERVICE_RUNTIME
+
+        def build() -> list[storage.Part]:
+            parts = [
+                storage.Part(
+                    "database",
+                    "Database",
+                    "settings, devices, history and job logs; never deleted here",
+                    [db, db.with_name(db.name + "-wal")],
+                    action="Compact",
+                ),
+                storage.Part(
+                    "db_backups",
+                    "Database backups",
+                    "automatic and manual backups of the database; the newest one is always kept",
+                    [backups],
+                    action="Delete old",
+                ),
+                storage.Part(
+                    "logs",
+                    "Logs",
+                    "the current log and the rotated older ones",
+                    [logs],
+                    action="Clear old",
+                ),
+                storage.Part(
+                    "media_cache",
+                    "Media cache",
+                    "converted and downloaded files kept for the next sync",
+                    [cfg.cache_dir / "entries"],
+                    action="Clear",
+                ),
+                storage.Part(
+                    "system_cache",
+                    "System cache",
+                    "thumbnails and previews; rebuilt when needed",
+                    self._system_cache_dirs(),
+                    action="Clear",
+                ),
+                storage.Part(
+                    "device_backups",
+                    "Device database backups",
+                    "copies of players' databases taken before a sync: restore points",
+                    [cfg.cache_dir / "device-backups"],
+                    action="Delete",
+                ),
+                storage.Part(
+                    "device_tags",
+                    "Player contents tags",
+                    "tags read from players' files, so Player contents opens fast",
+                    [cfg.cache_dir / "device-tags"],
+                    action="Clear",
+                ),
+                storage.Part(
+                    "library_mirrors",
+                    "Server folder copies",
+                    "local copies of FTP / SMB folder libraries; downloaded again when needed",
+                    [cfg.cache_dir / "library-mirror"],
+                    action="Delete",
+                ),
+                storage.Part(
+                    "temp",
+                    "Temporary files",
+                    "work files of conversions; left over only after a crash",
+                    [cfg.cache_dir / "work"],
+                    action="Clear",
+                ),
+            ]
+            if runtime.is_dir():
+                parts.append(
+                    storage.Part(
+                        "runtime",
+                        "Unpacked program",
+                        "the program files of the installed version (and the previous one)",
+                        [runtime],
+                    )
+                )
+            for part in parts:
+                part.size, part.files = storage.tree_size(part.paths)
+            by_id = {p.id: p for p in parts}
+            by_id["device_backups"].items = storage.subfolders(cfg.cache_dir / "device-backups")
+            by_id["device_tags"].items = (
+                [
+                    {"id": f.stem, "label": f.stem, "size": f.stat().st_size}
+                    for f in sorted((cfg.cache_dir / "device-tags").glob("*.json"))
+                ]
+                if (cfg.cache_dir / "device-tags").is_dir()
+                else []
+            )
+            by_id["library_mirrors"].items = storage.subfolders(cfg.cache_dir / "library-mirror")
+            found = dbbackup.backups(backups)
+            by_id["db_backups"].detail = f"{len(found)} backups" + (
+                f", newest {found[0][1].isoformat(timespec='minutes')}" if found else ""
+            )
+            return parts
+
+        parts = await asyncio.to_thread(build)
+        snap_size = sum(int(r["size"]) for r in rows)
+        parts.insert(
+            3,
+            storage.Part(
+                "snapshots",
+                "Library snapshots",
+                "the libraries' contents as last read, inside the database; reloaded when dropped",
+                [db],
+                size=snap_size,
+                files=len(rows),
+                action="Drop",
+                items=[
+                    {"id": r["library_id"], "label": r["library_id"], "size": int(r["size"])}
+                    for r in rows
+                ],
+            ),
+        )
+        paths = [cfg.data_dir, cfg.cache_dir, logs, backups]
+        out = [p.as_dict() for p in parts]
+        return {
+            "parts": out,
+            "total": sum(
+                p.size for p in parts if p.id != "snapshots"
+            ),  # snapshots are in the database
+            "filesystems": await asyncio.to_thread(storage.filesystems, paths),
+            "busy": self._busy(),
+        }
+
+    async def storage_clear(
+        self, part: str, item: str | None = None, keep: int = 1
+    ) -> dict[str, Any]:
+        """Clear one part (or one device's / library's item of it); returns the bytes freed and the new report.
+        Refused (busy) while a job runs, except for the parts no job uses (system cache, old logs and backups)."""
+        cfg = self.app.config
+        safe_any_time = {"system_cache", "logs", "db_backups"}
+        if part not in safe_any_time and self._busy():
+            raise SyncError("a job is running: clear this when it has finished", "busy")
+        before = {p["id"]: p for p in (await self.storage())["parts"]}
+        if part not in before or before[part]["action"] is None:
+            raise SyncError(f"{part!r} cannot be cleared", "invalid")
+        names = {i["id"] for i in before[part]["items"]}
+        if item is not None and item not in names:
+            raise SyncError(f"{part!r} has no {item!r}", "not_found")
+
+        def rm(path: Path) -> None:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+
+        if part == "media_cache":
+            await self.clear_cache("media")
+        elif part == "system_cache":
+            await self.clear_cache("system")
+        elif part == "database":
+            await self.app.db.execute("VACUUM")
+        elif part == "db_backups":
+            await asyncio.to_thread(
+                dbbackup.prune,
+                self.app.backup_dir(await self.app.store.app_settings()),
+                max(1, keep),
+            )
+        elif part == "logs":
+            for f in await asyncio.to_thread(lambda: list(cfg.logs.glob("syncmusic.log.*"))):
+                await asyncio.to_thread(rm, f)
+        elif part == "snapshots":
+            ids = [item] if item else sorted(names)
+            for lid in ids:
+                await self.app.sync.snapshots.invalidate(lid)
+        else:
+            folder = {
+                "device_backups": cfg.cache_dir / "device-backups",
+                "device_tags": cfg.cache_dir / "device-tags",
+                "library_mirrors": cfg.cache_dir / "library-mirror",
+                "temp": cfg.cache_dir / "work",
+            }[part]
+            target = (
+                folder / (f"{item}.json" if part == "device_tags" else item) if item else folder
+            )
+            await asyncio.to_thread(rm, target)
+        after = await self.storage()
+        now = next(p for p in after["parts"] if p["id"] == part)
+        freed = max(0, before[part]["size"] - now["size"])
+        log.info("storage: %s%s cleared, %d bytes freed", part, f" ({item})" if item else "", freed)
+        return {"freed": freed, **after}
+
+    async def resources(self) -> dict[str, Any]:
+        """Memory and CPU of the process now, the event-loop lag, and the in-memory caches."""
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        await asyncio.sleep(0)
+        lag = loop.time() - t0
+        return {
+            **await asyncio.to_thread(storage.process_memory),
+            **self.app.cpu.read(),
+            "loop_lag_ms": round(lag * 1000, 2),
+            "caches": self.app.sync.memory_caches(),
+            "busy": self._busy(),
+        }
+
+    async def free_memory(self) -> dict[str, Any]:
+        """Drop the in-memory caches that are rebuilt on demand (refused while a job runs)."""
+        if self._busy():
+            raise SyncError("a job is running: free memory when it has finished", "busy")
+        before = (await asyncio.to_thread(storage.process_memory))["rss"]
+        self.app.sync.drop_memory_caches()
+        await asyncio.to_thread(gc.collect)
+        await asyncio.to_thread(storage.trim_memory)
+        after = await self.resources()
+        return {"freed": max(0, before - after["rss"]), **after}
 
     async def ffmpeg_check(self, path: str | None = None) -> dict[str, Any]:
         """Settings → Conversion: version and encoders of the ffmpeg at `path` (default: the one in use)."""
@@ -2048,14 +2299,32 @@ class AppFacade:
         last = full[0].model_dump(mode="json") if full else None
         if last:  # the Overview's "Full report" opens the job that wrote it
             last["job_id"] = (await self.app.store.report_jobs([full[0].id])).get(full[0].id)
+        try:
+            cls = registry.device_class(cfg.type)
+        except KeyError:
+            # a type this version does not know (renamed or removed): the page still
+            # loads, says so and offers Remove
+            return {
+                "config": _public_device(cfg),
+                "unknown_type": True,
+                "libraries": [],
+                "network": False,
+                "usb_mtp": False,
+                "last_report": last,
+                "last_update": update.model_dump(mode="json") if update else None,
+                "erased": None,
+                "health_warning": None,
+                "next_update_check": None,
+                "update": None,
+            }
         return {
+            "unknown_type": False,
             "config": _public_device(cfg),
             # the libraries its templates pull from
             "libraries": await self.app.sync.libraries_of(cfg),
             # a server: nothing to eject; an MTP player can be ejected
-            "network": registry.device_class(cfg.type).network
-            and not registry.device_class(cfg.type).usb_mtp,
-            "usb_mtp": registry.device_class(cfg.type).usb_mtp,
+            "network": cls.network and not cls.usb_mtp,
+            "usb_mtp": cls.usb_mtp,
             # the last full sync; update syncs have their own line
             "last_report": last,
             "last_update": update.model_dump(mode="json") if update else None,
@@ -2063,7 +2332,7 @@ class AppFacade:
             "erased": await self.app.sync.erased(cfg),
             # "Storage may be failing": the plan review warns before writing
             "health_warning": None
-            if registry.device_class(cfg.type).network
+            if cls.network
             else (await self.app.sync.health(cfg.id))["warning"],
             "next_update_check": nxt.isoformat() if nxt else None,
             "update": await update_status.update_state(self.app.sync, cfg),  # the v2 update line
@@ -2153,8 +2422,20 @@ class AppFacade:
             device_type=cls.type_name,
             device_name=req["name"],
         )
+        # the suggestion is what the device already runs (its own chain equals the template's after defaults):
+        # nothing to suggest
+        same = bool(
+            device is not None
+            and s.template_id
+            and (tpl := next((t for t in offered if t.id == s.template_id), None)) is not None
+            and (
+                device.processor_template_id == tpl.id
+                or same_chain(device.processors, tpl.processors)
+            )
+        )
         return {
             "template_id": s.template_id,
+            "same_as_current": same,
             "draft": s.draft.model_dump(mode="json", exclude={"id"}) if s.draft else None,
             "reason": s.reason,
             "candidates": [
@@ -2465,6 +2746,9 @@ class AppFacade:
         job = await self.app.sync.remove_from_device(device_id, keys, exclude)
         return job.model_dump(mode="json")
 
+    async def device_orphans(self, device_id: str) -> list[dict[str, Any]]:
+        return await self.app.sync.orphans(device_id)
+
     async def remove_orphans(self, device_id: str) -> dict[str, Any]:
         return (await self.app.sync.remove_orphans(device_id)).model_dump(mode="json")
 
@@ -2560,9 +2844,27 @@ class AppFacade:
     async def wipe_device(self, device_id: str, confirm: str) -> dict[str, Any]:
         return (await self.app.sync.wipe(device_id, confirm)).model_dump(mode="json")
 
+    async def peek_manifest(self, disk: str | None, mount_path: str | None) -> dict[str, Any]:
+        return await self.app.sync.peek_manifest(disk, mount_path)
+
+    async def device_home(self, device_id: str) -> dict[str, Any]:
+        return await self.app.sync.home_info(device_id)
+
+    async def make_home(self, device_id: str) -> dict[str, Any]:
+        await self.app.sync.make_home(device_id)
+        return await self.app.sync.home_info(device_id)
+
     async def device_health(self, device_id: str) -> dict[str, Any]:
         await self.app.sync.config(device_id)
         return await self.app.sync.health(device_id)
+
+    async def acknowledge_health(self, device_id: str, undo: bool = False) -> dict[str, Any]:
+        await self.app.sync.config(device_id)
+        return await self.app.sync.acknowledge_health(device_id, undo)
+
+    async def clear_health_errors(self, device_id: str) -> dict[str, Any]:
+        await self.app.sync.config(device_id)
+        return await self.app.sync.clear_health_errors(device_id)
 
     async def integrity_check(self, device_id: str, deep: bool = False) -> dict[str, Any]:
         return (await integrity_jobs.integrity_check(self.app.sync, device_id, deep)).model_dump(
@@ -2572,6 +2874,22 @@ class AppFacade:
     async def last_integrity(self, device_id: str) -> dict[str, Any] | None:
         await self.app.sync.config(device_id)
         return await integrity_jobs.last_integrity(self.app.sync, device_id)
+
+    async def device_templates(self, device_id: str) -> list[dict[str, Any]]:
+        return await self.app.sync.device_templates(device_id)
+
+    async def import_device_templates(self, device_id: str, uids: list[str]) -> dict[str, Any]:
+        return {"linked": await self.app.sync.import_device_templates(device_id, uids)}
+
+    async def update_template_copy(self, device_id: str, template_id: str) -> dict[str, Any]:
+        tpl = await self.app.sync.update_template_copy(device_id, template_id)
+        return tpl.model_dump(mode="json")
+
+    async def device_mounts(self, device_id: str) -> list[dict[str, Any]]:
+        return await self.app.sync.mounts(device_id)
+
+    async def unmount_everywhere(self, device_id: str, lazy: bool = False) -> list[dict[str, Any]]:
+        return await self.app.sync.unmount_everywhere(device_id, lazy=lazy)
 
     async def repair_device(self, device_id: str) -> dict[str, Any]:
         return (await self.app.sync.repair(device_id)).model_dump(mode="json")

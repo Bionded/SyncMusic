@@ -182,9 +182,9 @@ def test_umount_of_an_automount_of_an_accepted_device(helper, monkeypatch):
     monkeypatch.setattr(ph, "scan_block_devices", lambda *a: [stick, nvme])
     assert ok(helper, ["umount", "/media/u/STICK"])
     assert refused(helper, ["umount", "/boot/firmware"])
-    assert refused(
-        helper, ["umount", "-l", "/media/u/STICK"]
-    )  # lazy detach: our own mountpoints only
+    # lazy detach of a busy automount (an explicit second step of "Unmount everywhere"): accepted devices only
+    assert ok(helper, ["umount", "-l", "/media/u/STICK"])
+    assert refused(helper, ["umount", "-l", "/boot/firmware"])
 
 
 def test_main_refuses_without_root_and_runs_nothing(monkeypatch, capsys):

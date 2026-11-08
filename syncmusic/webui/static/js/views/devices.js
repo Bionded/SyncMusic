@@ -1,7 +1,7 @@
 // Devices: list of registered devices and unknown drives, and the device page with the tabs Overview,
 // Libraries, Rules, Processors, Settings (Sync behaviour + Device), History. Destructive actions (format, delete) are
 // in a danger zone and need a typed name / a confirmation; nothing is shown as done before the service says so.
-import { html, bytes, when } from "../dom.js";
+import { html, bytes, when, setHtml } from "../dom.js";
 import { t, addStrings } from "../i18n.js";
 import { helpTip } from "../help.js";
 import { get, post, patch, del } from "../api.js";
@@ -96,6 +96,24 @@ addStrings({
   "dev.repair": "Check and repair",
   "dev.repair_wipe": "Wipe…",
   "dev.repairing": "Checking and repairing {name}…",
+  "dev.dz_unmount": "Unmount everywhere",
+  "dev.foreign_title": "Also mounted by the system",
+  "dev.lease_title": "Being synced by {name}",
+  "dev.lease_text": "Another SyncMusic installation has been writing to this player since {since}. A sync started here is refused until it is done.",
+  "dev.foreign_text": "Another program mounted it at {paths}. Two programs writing to it at once can damage the file system; see Troubleshooting to turn the system's automount off, or unmount it everywhere.",
+  "dev.unmount_text": "Unmount the player's partitions everywhere, also where another program (the system's automount) mounted it, so Check and repair, Format or Wipe can run.",
+  "dev.unmount": "Unmount everywhere",
+  "dev.unmount_none": "{name} is not mounted anywhere.",
+  "dev.unmount_title": "Unmount {name} everywhere?",
+  "dev.unmount_list": "Pending writes are flushed first. Mounted at:",
+  "dev.unmount_other": "another program",
+  "dev.unmount_done": "{name} is unmounted everywhere.",
+  "dev.unmount_busy_title": "{name} is still in use",
+  "dev.unmount_busy_text": "{error}. Close it, or detach the mount anyway: it disappears now and the file system is released once that program lets go.",
+  "dev.unmount_lazy": "Detach anyway",
+  "dev.repair_blocked_title": "{name} is also mounted by another program",
+  "dev.repair_blocked_text": "Another program (usually the system's automount) mounted it at {paths}. Check and repair needs it unmounted everywhere; pending writes are flushed first.",
+  "dev.repair_blocked_ok": "Unmount everywhere and continue",
   "dev.gentle": "Gentle",
   "dev.gentle_title": "Gentle write mode is on - open Settings",
   "dev.gentle_why": "The last full sync stopped: the device's storage failed.",
@@ -139,6 +157,15 @@ addStrings({
   "dev.speed_none": "Measured from the next full sync that writes a few MB.",
   "dev.speed_trend": "Write speed of the last full syncs",
   "dev.health_warning": "Storage may be failing",
+  "dev.health_ack": "Acknowledge",
+  "dev.health_acked": "Storage warning acknowledged: it comes back on a new error.",
+  "dev.health_acked_at": "Acknowledged {when}.",
+  "dev.io_list": "Recorded errors",
+  "dev.io_job": "Open job",
+  "dev.io_clear": "Clear error history",
+  "dev.io_clear_title": "Clear the error history of {name}?",
+  "dev.io_clear_text": "Forgets the recorded I/O errors, for example after the storage was replaced or reformatted. Write speeds are kept.",
+  "dev.io_cleared": "Error history cleared.",
   "dev.health_advice": "Copy what you need from the device, run an integrity check, and try gentle write mode (Settings) for CF/SD-modded players.",
   "dev.integrity_stopped": "Stopped",
   "dev.integrity_attention": "Needs attention",
@@ -232,6 +259,14 @@ addStrings({
   "dev.format_ipod": "Only the data partition is formatted; the partition table and the firmware partition stay.",
   // Rockbox calls its format "Wipe": the data partition is reformatted, Rockbox itself is put back
   "dev.wipe": "Wipe…",
+  "dev.dz_home": "Home instance",
+  "dev.home_this": "This SyncMusic is the player's home: only the home wipes or formats it, removes files SyncMusic did not put there and writes player settings.",
+  "dev.home_other": "The player's home is {home}{since}. Wipe, Format and removing files SyncMusic did not put there are left to it.",
+  "dev.make_home": "Make this instance home…",
+  "dev.make_home_title": "Make this instance home of {name}?",
+  "dev.make_home_text": "From now on this SyncMusic is the home. The other installation ({home}) still syncs its own libraries but can no longer wipe or format the player.",
+  "dev.made_home": "This SyncMusic is now the home of {name}.",
+  "dev.not_home_only": "Only the home instance {home} can do this: make this instance home first.",
   "dev.fb_show": "Show what is not delivered",
   "dev.dz_wipe": "Wipe the player",
   "dev.dz_format": "Format the drive",
@@ -270,6 +305,7 @@ addStrings({
   "dev.orphans": "Orphans",
   "dev.orphans_help": "Items on the device whose source is gone from its library, or whose library is no longer attached. Syncs keep them; remove them here.",
   "dev.orphans_none": "No orphans.",
+  "dev.orphans_checking": "Checking for orphans…",
   "dev.orphans_n": "{n} orphans on the device.",
   "dev.orphans_n_one": "{n} orphan on the device.",
   "dev.orphans_offline": "Connect the device to see its orphans.",
@@ -283,6 +319,8 @@ addStrings({
   "dev.bind_text": "The folder is on {disk}. Bind the device to that disk (USB serial / file system id) to make Format possible; the files on it stay this device's.",
   "dev.bound": "{name} is now bound to its disk.",
   "dev.delete": "Delete device…",
+  "dev.unknown_type": "Unknown device type",
+  "dev.unknown_type_text": "This device has the type \"{type}\", which this version of SyncMusic does not know. It cannot be synced; you can delete it and register the player again.",
   "dev.delete_title": "Delete {name}?",
   "dev.delete_text": "SyncMusic forgets the device and its settings. Nothing on the device itself is deleted.",
   "dev.deleted": "{name} was deleted.",
@@ -460,6 +498,8 @@ async function load(ctx) {
     get(`/devices/${encodeURIComponent(id)}`), get("/devices"), get("/device-types"),
   ]);
   ctx.state.cfg = info.config;
+  ctx.state.unknownType = !!info.unknown_type; // a type this version does not know
+  if (ctx.state.unknownType) return;
   ctx.state.libs = info.libraries; // derived from its templates
   ctx.state.lastReport = info.last_report;
   ctx.state.erased = info.erased; // a wipe / format since that sync
@@ -475,6 +515,9 @@ async function load(ctx) {
     next: info.next_update_check };
   ctx.state.live = devices.registered.find((d) => d.id === id) || null;
   ctx.state.type = types.find((x) => x.type === info.config.type) || null;
+  // whose player it is (its manifest): only for a connected disk or folder, a server is not opened for it
+  ctx.state.home = info.network || info.usb_mtp || !ctx.state.live ? null
+    : await get(`/devices/${encodeURIComponent(id)}/home`).catch(() => null);
 }
 
 async function renderDevice(ctx) {
@@ -485,6 +528,11 @@ async function renderDevice(ctx) {
   const tab = TABS.includes(ctx.params.tab) ? ctx.params.tab : "overview";
   await load(ctx);
   const { cfg, live } = ctx.state;
+  if (ctx.state.unknownType) {
+    return html`${pageHead(cfg.name)}
+      <div data-unknown-type>${problemBox({ title: t("dev.unknown_type"), message: t("dev.unknown_type_text", { type: cfg.type }),
+        action: html`<button type="button" class="btn danger small" data-action="remove">${t("dev.delete")}</button>` })}</div>`;
+  }
   const id = encodeURIComponent(cfg.id);
   const updating = live?.update?.state === "running";
   const syncing = !!live?.busy && !updating && !live.ejecting;
@@ -498,6 +546,11 @@ async function renderDevice(ctx) {
   return html`${deviceHeader(ctx, syncing)}
     ${clock ? html`<div class="dev-note" role="status" data-clock-note><span class="dev-note-text">${icon("clock", { size: 16 })}<b>${t("dev.state.clock")}</b>
       <span>${t("dev.clock_text")}</span></span>${indetBar(t("dev.state.clock"))}</div>` : ""}
+    ${live?.lease ? html`<div class="dev-note" role="status" data-lease><span class="dev-note-text">${icon("sync", { size: 16 })}<b>${t("dev.lease_title", { name: live.lease.name })}</b>
+      <span>${t("dev.lease_text", { since: when(live.lease.since) })}</span></span></div>` : ""}
+    ${live?.foreign_mounts?.length ? html`<div class="dev-note" role="status" data-foreign-mounts><span class="dev-note-text">${icon("info", { size: 16 })}<b>${t("dev.foreign_title")}</b>
+      <span>${t("dev.foreign_text", { paths: live.foreign_mounts.join(", ") })}</span></span>
+      <button type="button" class="btn small" data-action="unmountAll" ${live.busy ? "disabled" : ""}>${t("dev.unmount")}</button></div>` : ""}
     ${syncing ? progressStrip(cfg, live.busy, ctx.state.job) : ""}
     ${live?.fs_damaged ? problemBox({ title: t("dev.fs_damaged"), message: t("dev.fs_damaged_text", { error: live.fs_damaged }),
       action: html`<span data-fs-damaged><button type="button" class="btn small" data-action="repairFs" ${live.busy ? "disabled" : ""}>${t("dev.repair")}</button>
@@ -641,7 +694,7 @@ function storage(space, error, idle, connected, sync) {
   if (space.unknown) return html`<div data-space-unknown>${t("dev.space_unknown", { used: bytes(space.used || 0) })}</div>
     ${planned(space)}`;
   const k = space.by_kind || {};
-  const parts = { music: k.music, audiobook: k.audiobook, podcast: k.podcast, video: k.video, other: k.other ?? space.used };
+  const parts = { music: k.music, audiobook: k.audiobook, podcast: k.podcast, video: k.video, others: k.others, other: k.other ?? space.used };
   return html`${capacityBar({ capacity: space.capacity || 0, parts, label: t("dev.capacity", { used: bytes(space.used), free: bytes(space.free), capacity: bytes(space.capacity) }), after: sync })}
     ${planned(space)}
     ${space.db ? html`<div>${dbSizeLine(space.db.size, space.db.limit, space.db.level)}</div>` : ""}
@@ -709,7 +762,12 @@ function healthCard(ctx, idle) {
           : html`<b>${h.usual_mb_s ? t("dev.speed_usual", { last: h.last_mb_s, usual: h.usual_mb_s }) : t("dev.speed_value", { last: h.last_mb_s })}</b>
             <span class="dev-trend" role="img" aria-label="${t("dev.speed_trend")}: ${h.speeds.map((x) => x.mb_s).join(", ")} MB/s">${h.speeds.map((x) =>
               html`<i style="height:${Math.max(8, Math.round((x.mb_s / max) * 100))}%" title="${when(x.at)} · ${x.mb_s} MB/s"></i>`)}</span>`}</div></div>
-    ${h.warning ? html`<div class="callout warn" data-health-warning><b>${t("dev.health_warning")}</b> - ${h.warning}. ${t("dev.health_advice")}</div>` : ""}` : "";
+    ${h.warning ? html`<div class="callout warn" data-health-warning><b>${t("dev.health_warning")}</b> - ${h.warning}. ${t("dev.health_advice")}
+      <div class="toolbar"><button type="button" class="btn small" data-action="healthAck">${t("dev.health_ack")}</button></div></div>`
+      : h.acknowledged_at && h.io_errors ? html`<div class="muted" data-health-acked>${t("dev.health_acked_at", { when: when(h.acknowledged_at) })}</div>` : ""}
+    ${h.errors?.length ? html`<details class="dev-health-group" data-io-list><summary>${t("dev.io_list")} · ${h.errors.length}</summary>
+      <ul>${h.errors.map((x) => html`<li><span class="muted">${when(x.at)}</span> <span class="mono">${x.detail}</span>${x.job_id ? html` <a class="btn small ghost" data-io-job href="#/jobs/${encodeURIComponent(x.job_id)}">${t("dev.io_job")}</a>` : ""}</li>`)}</ul>
+      <div class="toolbar"><button type="button" class="btn small danger" data-action="healthClear">${t("dev.io_clear")}</button></div></details>` : ""}` : "";
   const top = h?.warning ? badge("warn", t("dev.integrity_attention")) : "";
   return html`<section class="card dev-card" data-health>
     <div class="dev-card-head"><h2>${t("dev.health")}</h2>${top || state}</div>
@@ -800,6 +858,13 @@ const TYPE_CARD = {
 const TYPE_KEYS = { android: { base_path: "android_base_path" } };
 const GENTLE = ["gentle_batch_files", "gentle_pause_s", "gentle_rate_mb_s"];
 
+function orphansBody(orphans) {
+  return orphans === null ? html`<p class="muted">${t("dev.orphans_offline")}</p>`
+    : orphans.length ? html`<p>${t("dev.orphans_n", { n: orphans.length })}</p>
+      <div><button type="button" class="btn danger" data-action="removeOrphans">${t("dev.orphans_remove")}</button></div>`
+    : html`<p class="muted">${t("dev.orphans_none")}</p>`;
+}
+
 async function renderDeviceSettings(ctx) {
   const { cfg, type, live } = ctx.state;
   if (!type) return errorBox({ message: `unknown device type ${cfg.type}` }, "");
@@ -823,11 +888,17 @@ async function renderDeviceSettings(ctx) {
   if (idle && type.type === "ipod") {
     try { db = (await get(`/devices/${encodeURIComponent(cfg.id)}/space`)).db; } catch { db = null; }
   }
-  let orphans = null; // gone from their library
+  // orphans (gone from their library) load on their own after the first paint: never block the forms
+  ctx.state.orphans = null;
   if (idle) {
-    try { orphans = (await get(`/devices/${encodeURIComponent(cfg.id)}/contents`)).filter((r) => r.orphan); } catch { orphans = null; }
+    const want = cfg.id;
+    get(`/devices/${encodeURIComponent(cfg.id)}/orphans`).then((rows) => rows, () => null).then((rows) => {
+      if (ctx.state.cfg?.id !== want) return;
+      ctx.state.orphans = rows;
+      const card = document.querySelector("#orphansCard [data-orphans-body]");
+      if (card) setHtml(card, orphansBody(rows));
+    });
   }
-  ctx.state.orphans = orphans;
   let profile = null; // device profile; detection only while connected
   try { profile = await get(`/devices/${encodeURIComponent(cfg.id)}/profile`); } catch { profile = null; }
   let playLog = null;
@@ -875,11 +946,8 @@ async function renderDeviceSettings(ctx) {
   <div class="dev-settings ds-after">
     ${profileCard(profile)}
     <section class="card ds-card" id="orphansCard"><div><h2>${t("dev.orphans")}</h2><p class="ds-sub">${t("dev.orphans_help")}</p></div>
-      ${orphans === null ? html`<p class="muted">${t("dev.orphans_offline")}</p>`
-        : orphans.length ? html`<p>${t("dev.orphans_n", { n: orphans.length })}</p>
-          <div><button type="button" class="btn danger" data-action="removeOrphans">${t("dev.orphans_remove")}</button></div>`
-        : html`<p class="muted">${t("dev.orphans_none")}</p>`}</section>
-    ${dangerZone(cfg, type, live, idle)}</div>`;
+      <div data-orphans-body>${idle ? html`<p class="muted" data-orphans-checking>${t("dev.orphans_checking")}</p>` : orphansBody(null)}</div></section>
+    ${dangerZone(cfg, type, live, idle, ctx.state.home)}</div>`;
 }
 
 // the library account the device signs in as, per attached library that keeps data per user:
@@ -935,6 +1003,29 @@ async function addAccount(select, ctx) {
   ctx.rerender(); // after the library change's re-render, which may still show the old pick
 }
 
+// Unmount everywhere: list every mount (ours and other programs'), confirm once naming them, unmount; a busy
+// mount names its holders and offers a lazy detach as an explicit second step. True when unmounted.
+async function unmountEverywhere(cfg, ask = true) {
+  const id = encodeURIComponent(cfg.id);
+  const { mounts } = await get(`/devices/${id}/mounts`);
+  if (!mounts.length) { toast(t("dev.unmount_none", { name: cfg.name })); return true; }
+  if (ask) {
+    const body = html`<p>${t("dev.unmount_list")}</p><ul class="mono" data-unmount-list>${mounts.map((m) =>
+      html`<li>${m.path} <span class="muted">(${m.partition}${m.ours ? "" : html`, ${t("dev.unmount_other")}`})</span></li>`)}</ul>`;
+    if (!(await confirm({ title: t("dev.unmount_title", { name: cfg.name }), body, ok: t("dev.unmount") }))) return false;
+  }
+  try {
+    await post(`/devices/${id}/unmount-all`);
+  } catch (e) {
+    if (e.code !== "mount_busy") throw e;
+    const lazy = await confirm({ title: t("dev.unmount_busy_title", { name: cfg.name }),
+      message: t("dev.unmount_busy_text", { error: e.message }), ok: t("dev.unmount_lazy"), danger: true });
+    if (!lazy) return false;
+    await post(`/devices/${id}/unmount-all?lazy=true`);
+  }
+  return true;
+}
+
 // players that are wiped instead of formatted (their own system files stay; adds the HiBy)
 const WIPE_TYPES = new Set(["rockbox", "hiby", "android"]);
 const wipeText = (type) => ({ hiby: "dev.wipe_text_hiby", android: "dev.wipe_text_android" })[type] ?? "dev.wipe_text";
@@ -943,17 +1034,31 @@ const formatText = (type) => (type === "hiby" ? "dev.format_text_hiby" : "dev.fo
 // the danger zone: one row per action with its consequence - Wipe for Rockbox (files only,
 // /.rockbox stays), Format for iPods and USB drives, Bind for a folder whose disk is plugged in, Delete for every
 // device; each asks for the typed name
-function dangerZone(cfg, type, live, idle) {
+function dangerZone(cfg, type, live, idle, home) {
   const row = (attrs, title, text, button) => html`<div class="dz-row" ${attrs}><div class="dz-text"><b>${title}</b><span>${text}</span></div>${button}</div>`;
   const rows = [];
+  const other = home?.home && !home.is_home;
+  const homeName = other ? (home.home.name || home.home.id) : "";
+  if (home?.home) {
+    rows.push(row(html`data-dz="home"`, t("dev.dz_home"),
+      other ? t("dev.home_other", { home: homeName, since: home.home.since ? ` (since ${new Date(home.home.since).toLocaleDateString()})` : "" }) : t("dev.home_this"),
+      other ? html`<button type="button" class="btn" data-action="makeHome" ${idle ? "" : "disabled"}>${t("dev.make_home")}</button>` : ""));
+  }
+  // another instance's player: the home-only buttons say why they are off
+  const homeOnly = other ? html`disabled title="${t("dev.not_home_only", { home: homeName })}"` : "";
+  const off = other ? homeOnly : idle ? "" : "disabled";
   if (WIPE_TYPES.has(type.type)) {
     rows.push(row(html`data-dz="wipe"`, t("dev.dz_wipe"), t(wipeText(type.type)),
-      html`<button type="button" class="btn danger" data-action="wipe" ${idle ? "" : "disabled"}>${t("dev.wipe")}</button>`));
+      html`<button type="button" class="btn danger" data-action="wipe" ${off}>${t("dev.wipe")}</button>`));
   }
   // the HiBy has both: Wipe keeps the player's databases, Format starts from an empty volume
   if ((!WIPE_TYPES.has(type.type) || type.type === "hiby") && !type.network && !cfg.mount_path) {
     rows.push(row(html`data-dz="format"`, t("dev.dz_format"), html`${t(formatText(type.type))} <span class="muted">${fsSummary(type)}</span>`,
-      html`<button type="button" class="btn danger" data-action="format" ${idle ? "" : "disabled"}>${t("dev.format")}</button>`));
+      html`<button type="button" class="btn danger" data-action="format" ${off}>${t("dev.format")}</button>`));
+  }
+  if (!type.network && !cfg.mount_path) {
+    rows.push(row(html`data-dz="unmount"`, t("dev.dz_unmount"), t("dev.unmount_text"),
+      html`<button type="button" class="btn" data-action="unmountAll" ${live?.connected && idle ? "" : "disabled"}>${t("dev.unmount")}</button>`));
   }
   if (cfg.mount_path && live?.bindable_disk) {
     rows.push(row(html`data-dz="bind"`, t("dev.dz_bind"), t("dev.bind_text", { disk: live.bindable_disk }),
@@ -1236,6 +1341,25 @@ export const actions = {
     await post(`/devices/${encodeURIComponent(ctx.state.cfg.id)}/integrity${deep ? "?deep=true" : ""}`);
     toast(t("dev.integrity_started", { name: ctx.state.cfg.name }));
   },
+  async healthAck(el, ctx) {
+    const url = `/devices/${encodeURIComponent(ctx.state.cfg.id)}/health/ack`;
+    el.disabled = true;
+    ctx.state.health = await post(url);
+    ctx.rerender();
+    toast(t("dev.health_acked"), "ok", {
+      undo: async () => {
+        ctx.state.health = await post(`${url}?undo=true`);
+        ctx.rerender();
+      },
+    });
+  },
+  async healthClear(el, ctx) {
+    const { cfg } = ctx.state;
+    if (!(await confirm({ title: t("dev.io_clear_title", { name: cfg.name }), message: t("dev.io_clear_text"), ok: t("dev.io_clear"), danger: true }))) return;
+    ctx.state.health = await del(`/devices/${encodeURIComponent(cfg.id)}/health/errors`);
+    ctx.rerender();
+    toast(t("dev.io_cleared"), "ok");
+  },
   async integrityFix(el, ctx) {
     el.disabled = true;
     await post(`/devices/${encodeURIComponent(ctx.state.cfg.id)}/integrity/fix`);
@@ -1243,7 +1367,29 @@ export const actions = {
   },
   async repairFs(el, ctx) { // fsck on the data partition; the job view shows what it fixed
     const { cfg } = ctx.state;
-    await openJob(el, ctx, cfg.id, () => post(`/devices/${encodeURIComponent(cfg.id)}/repair`), t("dev.repairing", { name: cfg.name }));
+    const start = () => post(`/devices/${encodeURIComponent(cfg.id)}/repair`);
+    await openJob(el, ctx, cfg.id, async () => {
+      try {
+        return await start();
+      } catch (e) {
+        if (e.code !== "mounted_elsewhere") throw e;
+        // a host automounter mounted it a second time: fsck needs it unmounted everywhere
+        const { mounts } = await get(`/devices/${encodeURIComponent(cfg.id)}/mounts`);
+        const paths = mounts.filter((m) => !m.ours).map((m) => m.path).join(", ");
+        const ok = await confirm({ title: t("dev.repair_blocked_title", { name: cfg.name }),
+          message: t("dev.repair_blocked_text", { paths }), ok: t("dev.repair_blocked_ok") });
+        if (!ok || !(await unmountEverywhere(cfg, false))) throw Object.assign(new Error(""), { quiet: true });
+        return await start();
+      }
+    }, t("dev.repairing", { name: cfg.name })).catch((e) => { if (!e.quiet) throw e; });
+  },
+  async unmountAll(el, ctx) {
+    el.disabled = true;
+    try {
+      if (await unmountEverywhere(ctx.state.cfg)) toast(t("dev.unmount_done", { name: ctx.state.cfg.name }));
+    } finally {
+      ctx.rerender();
+    }
   },
   async updateNow(el, ctx) {
     el.disabled = true;
@@ -1339,11 +1485,27 @@ export const actions = {
       throw e;
     }
     toast(t(k("dev.formatted"), { name: cfg.name }));
+    // fresh storage: offer to forget the old I/O errors
+    if (ctx.state.health?.io_errors && await confirm({ title: t("dev.io_clear_title", { name: cfg.name }), message: t("dev.io_clear_text"), ok: t("dev.io_clear") })) {
+      await del(`/devices/${encodeURIComponent(cfg.id)}/health/errors`);
+      toast(t("dev.io_cleared"), "ok");
+    }
     ctx.rerender();
   },
   async bind(el, ctx) {
     await post(`/devices/${encodeURIComponent(ctx.state.cfg.id)}/bind-disk`);
     toast(t("dev.bound", { name: ctx.state.cfg.name }));
+    ctx.rerender();
+  },
+  async makeHome(el, ctx) {
+    const { cfg, home } = ctx.state;
+    const name = home.home.name || home.home.id;
+    if (!(await confirm({ title: t("dev.make_home_title", { name: cfg.name }), message: t("dev.make_home_text", { home: name }), ok: t("dev.make_home").replace("…", "") }))) return;
+    el.disabled = true;
+    try {
+      ctx.state.home = await post(`/devices/${encodeURIComponent(cfg.id)}/make-home`);
+    } finally { el.disabled = false; }
+    toast(t("dev.made_home", { name: cfg.name }));
     ctx.rerender();
   },
   async wipe(el, ctx) {
@@ -1362,6 +1524,19 @@ export const actions = {
 
 // list: any device change; device page: changes of this device (editing tabs keep what the user typed); a running
 // job's progress moves the header's progress strip in place on every tab
+function refreshOrphans(ctx, id) {
+  get("/devices").then((all) => {
+    const live = all.registered.find((d) => d.id === id);
+    if (!live?.connected || live.busy || live.ejecting || live.ejected || live.setting_clock || live.no_medium) return null;
+    return get(`/devices/${encodeURIComponent(id)}/orphans`);
+  }).then((rows) => {
+    if (rows === null || rows === undefined || ctx.params.id !== id) return;
+    ctx.state.orphans = rows;
+    const card = document.querySelector("#orphansCard [data-orphans-body]");
+    if (card) setHtml(card, orphansBody(rows));
+  }, () => {});
+}
+
 export function onEvent(ev, ctx, root) {
   const id = ctx.params.id;
   if (!id) {
@@ -1384,6 +1559,11 @@ export function onEvent(ev, ctx, root) {
   // a job of the device (e.g. the update sync on connect) makes it busy and idle again
   if (tab === "contents") {
     if (/^(device\.(clock_done|connected|changed|removed|ejected|ejecting|formatted|error)|job\.(started|finished))$/.test(ev.type)) ctx.rerender();
+    return;
+  }
+  // Settings never re-renders (unsaved edits): only its orphans card follows the device becoming idle again
+  if (tab === "settings") {
+    if (/^(device\.(connected|changed|mounted)|job\.finished|live\.)/.test(ev.type)) refreshOrphans(ctx, id);
     return;
   }
   if (!["overview", "history"].includes(tab)) return;

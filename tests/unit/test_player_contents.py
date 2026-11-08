@@ -5,11 +5,14 @@ selection, an item a rule still selects gets a device exclusion - with a plan th
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from syncmusic.core import manifest as manifest_io
 from syncmusic.core.contents import only_removals
 from syncmusic.core.models import ActionKind, RuleSet
 from syncmusic.core.rules.templates import EXCLUDE_RULE_ID, MANUAL_RULE_ID, manual_ids
 from syncmusic.core.sync import SyncError
+from syncmusic.devices.flashdrive import FlashDrive
 from tests.media import make_music
 from tests.unit.test_api_sync import _apply, _register, env, music  # noqa: F401 - fixtures
 
@@ -272,6 +275,12 @@ async def test_manual_item_stays_and_orphans_are_kept_until_removed(env, music, 
     assert [e.path for e in m.items.values() if e.orphan] == [
         next(r for r in rows if r["orphan"])["path"]
     ]
+    # the light orphan list (Device settings) agrees, without a walk over the device's files
+    with patch.object(FlashDrive, "read_contents", side_effect=AssertionError("walked the device")):
+        light = (await c.get(f"/api/v1/devices/{dev['id']}/orphans")).json()
+    assert [(o["key"], o["path"]) for o in light] == [
+        (r["key"], r["path"]) for r in rows if r["orphan"]
+    ]
 
     r = await c.post(f"/api/v1/devices/{dev['id']}/orphans/remove")
     assert r.status_code == 202, r.text
@@ -283,7 +292,8 @@ async def test_manual_item_stays_and_orphans_are_kept_until_removed(env, music, 
 
 
 async def test_items_of_a_detached_and_removed_library_are_orphans_and_removable(env, tmp_path):
-    """after the library is detached and removed, its items on the device are orphans; Player contents
+    """detached (no rule draws from the library, which still exists): its items are unselected, not
+    orphans; after the library is removed they are orphans; Player contents
     Remove and Remove orphans delete them without any library; a sync plan is still refused."""
     app, c = env
     dev = await _register(c, tmp_path / "stick", name="Stick", rule_set={"rules": []})
@@ -304,11 +314,16 @@ async def test_items_of_a_detached_and_removed_library_are_orphans_and_removable
     r = await c.patch("/api/v1/templates/own-stick", json={"rules": own["rules"]})
     assert r.status_code == 200, r.text
     rows = await _contents(c, dev)
-    assert len(rows) == 2 and all(r["orphan"] and r["manual"] for r in rows)
+    assert len(rows) == 2 and not any(r["orphan"] for r in rows) and all(r["manual"] for r in rows)
+    ctx = await app.sync.plan(dev["id"], removal=True, register=False)
+    assert sorted(a.kind for a in ctx.plan.actions) == ["remove", "remove"]  # mirror: unselected
+    assert not any(a.orphan for a in ctx.plan.actions)
     r = await c.delete("/api/v1/libraries/music")
     assert r.status_code == 204, r.text
     rows = await _contents(c, dev)
     assert len(rows) == 2 and all(r["orphan"] for r in rows)
+    light = (await c.get(f"/api/v1/devices/{dev['id']}/orphans")).json()
+    assert sorted(o["key"] for o in light) == sorted(r["key"] for r in rows)
     r = await c.post(f"/api/v1/devices/{dev['id']}/plan", json={})
     assert r.status_code == 400 and "no templates" in r.json()["message"], r.text
 
@@ -694,3 +709,14 @@ async def test_thumbnail_warm_up_parses_the_manifest_once(env, tmp_path, monkeyp
         r = await c.get(f"{url}/file", params={"key": row["key"]})
         assert r.status_code == 200
     assert reads["manifest"] == 2
+
+
+def test_another_installations_item_is_no_orphan():
+    from syncmusic.core.contents import is_orphan
+    from syncmusic.core.models import ItemRef, ManifestEntry
+
+    ref = ItemRef(library_id="ext:L2", item_id="x")
+    entry = ManifestEntry(ref=ref, device_ref="x", path="x.mp3", size=1)
+    assert not is_orphan(entry, {}, attached=["nd"])
+    mine = entry.model_copy(update={"ref": ItemRef(library_id="gone", item_id="x")})
+    assert is_orphan(mine, {}, attached=["nd"])

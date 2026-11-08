@@ -123,8 +123,9 @@ def removed_played(n: int, message: str) -> str:
 
 
 def update_writes_items(plan: SyncPlan) -> bool:
-    """An update plan that changes items (metadata in the device DB or in the file, removals): always applied."""
-    return any(a.kind is not ActionKind.KEEP for a in plan.actions)
+    """An update plan that changes items (metadata in the device DB or in the file, removals, a touched source
+    whose new state goes into the manifest): always applied."""
+    return any(a.kind is not ActionKind.KEEP or a.restamp for a in plan.actions)
 
 
 def update_signature(plan: SyncPlan) -> str:

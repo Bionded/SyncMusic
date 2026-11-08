@@ -366,7 +366,7 @@ class IPod(Device):
         st = await asyncio.to_thread(os.statvfs, self.mount)
         return st.f_blocks * st.f_frsize
 
-    def commit_reserve(self, manifest_items: int) -> int:
+    def commit_reserve(self, manifest_items: int, caps: DeviceCapabilities | None = None) -> int:
         """The new iTunesDB and ArtworkDB are staged next to the old ones (pygpod's crash-safe save), so
         twice their size, plus the manifest."""
         db = DB_BYTES_PER_TRACK * manifest_items + 64 * 1024

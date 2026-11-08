@@ -247,3 +247,69 @@ async def test_api_suggests_from_a_plans_items(env, tmp_path):
     assert body["free"] > 0 and body["variants"]
     r = await c.post("/api/v1/devices/suggest-processor-template", json={"plan_id": "gone"})
     assert r.status_code == 404
+
+
+def test_same_chain_fills_in_defaults():
+    from syncmusic.core.models import ProcessorSlot
+    from syncmusic.core.proc_templates import same_chain
+
+    tpl = builtin_processor_templates()["builtin-hiby"].processors
+    spelled = [
+        ProcessorSlot(
+            type=s.type,
+            settings=registry.processor_class(s.type)
+            .Settings.model_validate(s.settings)
+            .model_dump(mode="json"),
+        )
+        for s in tpl
+    ]
+    assert same_chain(spelled, tpl)
+    assert same_chain([*spelled, ProcessorSlot(type="lyrics", enabled=False)], spelled)
+    covers = next(i for i, s in enumerate(spelled) if s.type == "covers")
+    other = registry.processor_class("covers").Settings.model_fields
+    changed = [s.model_copy(deep=True) for s in spelled]
+    field = next(k for k, f in other.items() if isinstance(f.default, bool))
+    changed[covers].settings[field] = not changed[covers].settings[field]
+    assert not same_chain(changed, tpl)
+
+
+async def test_api_no_suggestion_of_the_chain_the_device_already_runs(env, tmp_path):
+    """A device with its own chain that equals the suggested template's (defaults spelled out) gets
+    `same_as_current`; a chain that differs in one setting does not."""
+    from tests.contracts.harness import rockbox_tree
+
+    app, c = env
+    body = {"name": "Mini", "mount_path": str(rockbox_tree(tmp_path / "rb")), "type": "rockbox"}
+    dev = (await c.post("/api/v1/devices/register", json=body)).json()["id"]
+    rs = await _as_template(c, "Mini", {"rules": [{"id": "all"}]}, ["music"])
+    assert (await c.patch(f"/api/v1/devices/{dev}", json={"rule_set": rs})).status_code == 200
+    sg = (
+        await c.post("/api/v1/devices/suggest-processor-template", json={"device_id": dev})
+    ).json()
+    tpl = builtin_processor_templates()[sg["template_id"]].processors
+    own = [
+        {
+            "type": s.type,
+            "settings": registry.processor_class(s.type)
+            .Settings.model_validate(s.settings)
+            .model_dump(mode="json"),
+        }
+        for s in tpl
+    ]
+    r = await c.patch(
+        f"/api/v1/devices/{dev}", json={"processor_template_id": None, "processors": own}
+    )
+    assert r.status_code == 200, r.text
+    sg = (
+        await c.post("/api/v1/devices/suggest-processor-template", json={"device_id": dev})
+    ).json()
+    assert sg["same_as_current"] is True
+    retag = next(s for s in own if s["type"] == "retag")
+    field = next(k for k, v in retag["settings"].items() if isinstance(v, bool))
+    retag["settings"][field] = not retag["settings"][field]
+    r = await c.patch(f"/api/v1/devices/{dev}", json={"processors": own})
+    assert r.status_code == 200, r.text
+    sg = (
+        await c.post("/api/v1/devices/suggest-processor-template", json={"device_id": dev})
+    ).json()
+    assert sg["same_as_current"] is False

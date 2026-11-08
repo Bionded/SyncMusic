@@ -4,6 +4,7 @@
 const STRINGS = {
   en: {
     "app.tagline": "your music, on your players",
+    "app.instance": "SyncMusic instance {name}",
     "nav.dashboard": "Dashboard",
     "nav.libraries": "Libraries",
     "nav.devices": "Devices",

@@ -190,7 +190,7 @@ async def _write_many(db: Database) -> None:
 async def test_a_stuck_backup_times_out(tmp_path, monkeypatch):
     db = Database(tmp_path / "db.sqlite3")
     await db.open()
-    monkeypatch.setattr(dbbackup, "_backup", lambda *a: time.sleep(1))
+    monkeypatch.setattr(dbbackup, "copy", lambda *a: time.sleep(1))
     try:
         with pytest.raises(TimeoutError, match="took over"):
             await dbbackup.make(db, tmp_path / "backups", "auto", timeout=0.1)

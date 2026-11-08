@@ -418,6 +418,34 @@ class SmbDevice(Device):
 
         await self._run(work)
 
+    async def read_state(self, name: str) -> bytes | None:
+        rel = f"{manifest_io.STATE_DIR.as_posix()}/{name}"
+        return await self._run(lambda kw: self._read(kw, rel))
+
+    async def write_state(self, name: str, data: bytes) -> None:
+        rel = f"{manifest_io.STATE_DIR.as_posix()}/{name}"
+
+        def work(kw: Any) -> None:
+            self._put_bytes(kw, rel, data)
+
+        await self._run(work)
+
+    async def delete_state(self, name: str) -> None:
+        rel = f"{manifest_io.STATE_DIR.as_posix()}/{name}"
+
+        def work(kw: Any) -> None:
+            self._delete(kw, rel)
+
+        await self._run(work)
+
+    async def write_manifest(self, manifest: Manifest) -> None:
+        data = manifest_io.dumps(manifest).encode("utf-8")
+
+        def work(kw: dict[str, Any]) -> None:
+            self._put_bytes(kw, MANIFEST, data)
+
+        await self._run(work)
+
     async def commit(self, s: DeviceSession, manifest: Manifest) -> None:
         if "playlist_paths" in s.data:
             manifest.playlist_paths = {

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from syncmusic.core.models import MediaKind
+from syncmusic.core.models import ItemRef, MediaKind, Track
 from syncmusic.core.planner import with_disc_totals
 from syncmusic.libraries.folder import _disc_total
 from tests.factories import track
@@ -28,3 +28,17 @@ def test_folder_tag_parsing():
     assert _disc_total("2/3", None) == 3
     assert _disc_total("2", "4") == 4
     assert _disc_total("1", None) is None
+
+
+def test_filled_copies_share_one_fields_set() -> None:
+    """A pending plan keeps the filled-in copies; they must not carry a fields set each."""
+    ts = {
+        t.ref.key(): t
+        for t in (
+            Track(ref=ItemRef(library_id="a", item_id=str(i)), title=f"t{i}", album="X", disc_no=1)
+            for i in range(3)
+        )
+    }
+    out = list(with_disc_totals(ts).values())
+    assert all(t.disc_total == 1 for t in out)
+    assert len({id(t.__pydantic_fields_set__) for t in out}) == 1

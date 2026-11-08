@@ -246,6 +246,19 @@ class SubsonicLibrary(Library, FeedbackSink):
             details={"server": body.get("type"), "version": body.get("serverVersion")},
         )
 
+    async def source_id(self) -> str | None:
+        """`subsonic:<fingerprint>`: the server has no id, but Navidrome's ids are stable per server, so the
+        ids of the alphabetically first albums plus the server type identify it under any URL. New albums at
+        the start make it drift; matching then falls back to probing item ids."""
+        ping = await self.call("ping")
+        body = await self.call("getAlbumList2", type="alphabeticalByName", size=20, offset=0)
+        ids = sorted(str(a.get("id")) for a in body.get("albumList2", {}).get("album", []))
+        if not ids:
+            return None
+        major = str(ping.get("serverVersion") or "").split(".", 1)[0]
+        raw = "|".join([str(ping.get("type") or ""), major, *ids])
+        return "subsonic:" + hashlib.sha1(raw.encode()).hexdigest()[:20]
+
     async def state_token(self) -> str:
         scan = (await self.call("getScanStatus")).get("scanStatus", {})
         indexes = (await self.call("getIndexes")).get("indexes", {})
@@ -320,7 +333,8 @@ class SubsonicLibrary(Library, FeedbackSink):
                 break
             offset += len(page)
         songs = list(by_id.values())
-        tracks = {str(s["id"]): self._track(s) for s in songs}
+        # tens of thousands of models: off the event loop
+        tracks = await asyncio.to_thread(lambda: {str(s["id"]): self._track(s) for s in songs})
         self._cover_ids = {
             i: str(s["coverArt"])
             for i, s in ((str(s["id"]), s) for s in songs)

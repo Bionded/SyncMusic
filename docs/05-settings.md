@@ -76,6 +76,16 @@ What a **newly registered** device starts with; each device can change them late
 | `auto_update` | off | Installing a new version (the single-file program and its service only): `off` - only tell you; `after_syncs` - once no sync runs (automatic syncs wait meanwhile); `now` - at once, running syncs stop and continue after the restart. A new version that does not start is replaced by the previous one again. |
 | `update_channel` | `stable` | Which GitHub releases count as updates: `stable` releases only, or `beta` - also the test builds made from every change. SyncMusic checks once a day and on *Check now*; it shows the new version, what changed and the download for your kind of install (Docker: pull the new image). The configuration file's `update_repo` (default `Bionded/SyncMusic`, `none` = no checks) names the repository - or the full `https://` address of a releases list in GitHub's format, for a mirror. |
 
+**Storage & resources** (under System) lists everything SyncMusic keeps on disk - the database, database
+backups, logs, library snapshots, the media and system cache, copies of players' databases, the tags read for
+*Player contents*, local copies of FTP/SMB folder libraries, temporary files and the unpacked program - each with its
+size, its folder (copy button) and one action to clear it; copies of players' databases and server folders can be
+deleted per device or library. Clearing asks first and says how much it frees; parts a running sync may use can only be
+cleared when no job runs. The database, the configuration and anything on a device are never offered for deletion.
+Below it: memory used, helper processes, CPU now and on average, uptime, threads, response delay and the in-memory caches,
+refreshed every few seconds, with *Free memory now* to drop what is rebuilt on demand (a pending plan that only keeps what is already on the device is dropped too; one with changes stays). The same is available as
+`GET /api/v1/system/storage` and `GET /api/v1/system/resources`.
+
 **Backup** downloads libraries, devices, templates and settings as one file (history, listening data and the cache
 are not in it); passwords and the webhook URL only when you tick *Include passwords* - then keep the file safe.
 **Import / export** moves single device settings and templates between installations; passwords are never exported.
@@ -86,6 +96,10 @@ every session (this one too). **API tokens** for scripts and the command line (e
 needed. The login is not part of a backup and a restore keeps it.
 
 ![Settings → System → Access](img/settings-access.png)
+
+**Appearance → Instance name** (`instance_name`, default empty): what this SyncMusic installation is called (empty: the host name). It is shown
+under the logo and in *About*, next to the installation's id, which is made at the first start and stays the same
+across updates; a fresh install gets a new one.
 
 **Appearance → Theme**: Dark (default), Light or System (follows your device's light/dark setting). Stored in this
 browser only; the sun/moon/monitor button in the top bar switches between the three as well.
@@ -117,6 +131,7 @@ browser only; the sun/moon/monitor button in the top bar switches between the th
 | `no_cache` | from Settings → Sync | No-cache mode for this device (see above). |
 | `no_cache_files`, `no_cache_budget_mb`, `no_cache_file_max_mb` | 4, 1000, 256 | Its memory limits. |
 | `gentle_write` | off | Gentle write mode: write in batches with pauses. |
+| `unmount_foreign` | off | Unmount other programs' mounts of the player (a system automount) during the first minute after SyncMusic mounted it. |
 | `gentle_batch_files` | 25 | Files per batch. |
 | `gentle_pause_s` | 2 | Pause after each batch (seconds). |
 | `gentle_rate_mb_s` | none | Write speed limit in gentle mode (MB/s). |

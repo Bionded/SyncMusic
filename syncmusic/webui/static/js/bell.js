@@ -86,11 +86,15 @@ async function openDrawer() {
     }
     const item = e.target.closest("[data-drawer-item]");
     if (!item) return;
-    closeDrawer();
+    // the drawer's own history entry is replaced by the target screen: a delayed history.back() of a plain close
+    // would race the navigation and undo it on a slow page
+    open?.close(true);
     if (item.dataset.read === "false") {
       try { setUnread((await post("/notifications/read", { ids: [Number(item.dataset.drawerItem)] })).unread); } catch { /* still open it */ }
     }
-    go(item.dataset.link);
+    const target = `#${item.dataset.link}`;
+    if (location.hash === target) go(item.dataset.link);
+    else location.replace(target);
   });
   async function show(read) {
     const r = await get(`/notifications?limit=${DRAWER_ITEMS}`);

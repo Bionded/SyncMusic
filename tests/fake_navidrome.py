@@ -183,6 +183,14 @@ class FakeNavidrome(httpx.AsyncBaseTransport):
             )
         if ep == "startScan":
             return self._ok(scanStatus={"scanning": True, "count": len(self.songs)})
+        if ep == "getAlbumList2":
+            assert q.get("type") == "alphabeticalByName"
+            albums = {s["albumId"]: s.get("album", "") for s in self.songs.values()}
+            rows = sorted(
+                ({"id": k, "name": v} for k, v in albums.items()), key=lambda a: a["name"]
+            )
+            off, n = int(q.get("offset", 0)), int(q.get("size", 10))
+            return self._ok(albumList2={"album": rows[off : off + n]})
         if ep == "getIndexes":
             return self._ok(indexes={"lastModified": 1, "index": []})
         if ep == "search3":

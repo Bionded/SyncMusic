@@ -163,7 +163,7 @@ CREATE TABLE device_health (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id TEXT NOT NULL,
     at TEXT NOT NULL,
-    kind TEXT NOT NULL,          -- 'write' | 'io_error'
+    kind TEXT NOT NULL,          -- 'write' | 'io_error' | 'ack'
     bytes INTEGER NOT NULL DEFAULT 0,
     seconds REAL NOT NULL DEFAULT 0,
     detail TEXT NOT NULL DEFAULT ''

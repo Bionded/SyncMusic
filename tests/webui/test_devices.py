@@ -506,3 +506,22 @@ def test_danger_zone_per_type(server, chrome, tmp_path, width):
     page.wait_for_function("location.hash === '#/devices'")
     assert all(d["id"] != stick for d in _api(url, "GET", "/devices")["registered"])
     assert [e for e in page.errors if "Failed to load resource" not in e] == []
+
+
+def test_unknown_device_type_page_offers_delete(server, chrome, tmp_path):
+    url, app = server
+    target = tmp_path / "old"
+    target.mkdir()
+    cfg = DeviceConfig(id="old-player", type="usb_drive", name="Old player", mount_path=str(target))
+    run_on(app, app.store.put_device(cfg))
+    page = open_page(chrome, url + "/#/devices/old-player/overview")
+    page.wait_for_selector("[data-unknown-type]")
+    assert "usb_drive" in page.locator("[data-unknown-type]").inner_text()
+    shot(page, "device-unknown-type")
+    page.locator('[data-action="remove"]').click()
+    page.fill(".modal input", "Old player")
+    page.locator('.modal [data-ready="true"], .modal button.danger').last.click()
+    page.wait_for_function(
+        "location.hash.startsWith('#/devices') && !location.hash.includes('old-player')"
+    )
+    assert run_on(app, app.store.device("old-player")) is None

@@ -38,7 +38,8 @@ ratings, favourites and positions; what was delivered is cleared on the device (
 - **Jobs** (`infra/jobs.py`): one job per device at a time; progress and log lines are published as **events**
   (`infra/events.py`) to the UI over server-sent events (`api/events.py`).
 - **Store** (`infra/store.py`, `infra/db.py`): SQLite for configs, templates, reports, notifications;
-  `infra/migrations/` holds the schema.
+  `infra/migrations/` holds the schema: `baseline.sql` (0.2.0) and the numbered migrations after it, applied at
+  start after a backup.
 - **Registry** (`core/registry.py`): the explicit table type name → class. No auto-discovery, no plugins.
 - **API** (`api/server.py`, `api/routes/`): REST under `/api/v1`. The CLI (`cli/main.py`) is a thin client of it.
 - **Web UI** (`webui/static/`): plain ES modules, no build step. `js/router.js` maps `#/…` routes to `js/views/*.js`;

@@ -112,10 +112,10 @@ def test_player_contents_tabs_search_and_foreign_items(web_server, chrome, tmp_p
         "1. Група крові",
         "2. Зозуля",
     ]
-    # Only "not from SyncMusic"
+    # Managed by: not from SyncMusic
     page.goto(url + "/#/devices/stick/contents?tab=tracks")
     page.wait_for_selector('input[name="pcItem"]')
-    page.get_by_label("Only “not from SyncMusic”").check()
+    page.get_by_label("Managed by").select_option("foreign")
     page.wait_for_selector("[data-pc-count]:has-text('Shown: 1 of 5')")
     assert page.locator('input[name="pcItem"]').count() == 1
     assert page.locator('[data-pc-tab="tracks"] .pc-n').inner_text() == "1"
@@ -379,3 +379,34 @@ def test_player_contents_grid_list_sort_and_range_select(web_server, chrome, tmp
     page.locator('[data-action=pcView][data-view="grid"]').click()
     page.locator(".pc-grid").wait_for()
     assert [e for e in page.errors if "Failed to load resource" not in e] == []
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_other_installations_items_are_read_only(web_server, chrome, tmp_path, width):
+    """Items another installation put there: filtered by "Managed by", their rows cannot be selected for removal."""
+    url, app = web_server
+    _stick(url, app, tmp_path)
+    items = _api(url, "GET", "/devices/stick/contents")
+    mine = next(i for i in items if not i["foreign"] and i["kind"] == "music")
+    other = {**mine, "key": "ext:L9/x1", "title": "Від іншої", "other_instance": True}
+    page = open_page(chrome, url + "/#/", width)
+    page.route(
+        "**/api/v1/devices/stick/contents",
+        lambda route: route.fulfill(json=[*items, other]),
+    )
+    page.goto(url + "/#/devices/stick/contents?tab=tracks")
+    row = page.locator('tr[data-key="ext:L9/x1"]')
+    row.wait_for()
+    assert "Another installation" in row.inner_text()
+    assert row.get_attribute("data-read-only") is not None
+    assert row.locator('input[name="pcItem"]').is_disabled()
+    page.get_by_label("Select all").check()
+    assert not row.locator('input[name="pcItem"]').is_checked()
+    page.get_by_label("Select all").uncheck()
+    page.get_by_label("Managed by").select_option("others")
+    page.wait_for_selector("[data-pc-count]:has-text('Shown: 1 of')")
+    assert page.locator('input[name="pcItem"]').count() == 1
+    page.get_by_label("Managed by").select_option("mine")
+    page.wait_for_selector("[data-pc-count]:has-text('Shown: 3 of')")
+    shot(page, f"contents-managed-{width}")
+    assert no_horizontal_scroll(page)

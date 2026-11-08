@@ -7,6 +7,7 @@ xdist worker, cannot. This removes, in order:
   Playwright browsers and Xvfb servers of the current user;
 - the compose stack of this checkout (`--all`: every `syncmusic-it-*` stack and container) with its volumes;
 - loop devices whose backing file is an emulated image (their mounts are unmounted first);
+- speed limits (cgroup io.max) left on detached loop devices or on the emulated ones;
 - the temp dirs and files the tests create.
 
 Only loop devices on images under the emulated image root are ever touched, never another block device, and only
@@ -29,7 +30,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from tests.emulated import IMAGE_ROOT
+from tests.emulated import IMAGE_ROOT, clear_loop_limit, limited_loops
 from tests.integration import services
 
 PYTEST_ROOT = Path("/tmp") / f"pytest-of-{getpass.getuser()}"
@@ -178,6 +179,22 @@ def _containers(all_: bool) -> list[str]:
     return [n for n in out.split() if n.startswith(PREFIX) and n.count("-") == 2]
 
 
+def lift_stale_limits(dry_run: bool = False) -> None:
+    """Lift the speed limit (io.max) of every loop device that is no longer attached: a killed run leaves it,
+    and it would slow down the next user of that loop number."""
+    attached = {
+        Path(f"/sys/class/block/{Path(d['name']).name}/dev").read_text().strip()
+        for d in json.loads(
+            subprocess.run(["losetup", "-J"], capture_output=True, text=True).stdout or "{}"
+        ).get("loopdevices", [])
+    }
+    for maj_min in limited_loops():
+        if maj_min not in attached:
+            print(("would " if dry_run else "") + f"lift the speed limit of loop {maj_min}")
+            if not dry_run:
+                clear_loop_limit(maj_min)
+
+
 def run(dry_run: bool, all_: bool, force: bool) -> int:
     def do(what: str, cmd: list[str]) -> None:
         print(("would " if dry_run else "") + what)
@@ -229,6 +246,8 @@ def run(dry_run: bool, all_: bool, force: bool) -> int:
         for target in out.split():
             do(f"unmount {target}", ["sudo", "-n", "umount", target])
         do(f"detach {dev}", ["sudo", "-n", "losetup", "-d", dev])
+
+    lift_stale_limits(dry_run)
 
     if IMAGE_ROOT.is_dir() and not IMAGE_ROOT.is_mount():
         for entry in sorted(IMAGE_ROOT.iterdir()):

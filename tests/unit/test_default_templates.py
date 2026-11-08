@@ -122,6 +122,8 @@ def test_the_abs_defaults_select_by_listening_state():
         track("b3", "abs", kind=MediaKind.AUDIOBOOK),
         track("e1", "abs", kind=MediaKind.PODCAST, series="P"),
         track("e2", "abs", kind=MediaKind.PODCAST, series="P", position_s=5.0),
+        track("e3", "abs", kind=MediaKind.PODCAST, series="P", position_s=600.0, finished=False),
+        track("e4", "abs", kind=MediaKind.PODCAST, series="P", position_s=900.0, finished=True),
     ]
     snaps = {"abs": snapshot(books, "abs")}
     tpls = {t.id: t for t in generated(ABS)}
@@ -131,10 +133,11 @@ def test_the_abs_defaults_select_by_listening_state():
         return sorted(evaluate_ruleset(rs, snaps, tpls).items)
 
     assert sel("all-books") == ["abs/b1", "abs/b2", "abs/b3"]
-    assert sel("all-podcasts") == ["abs/e1", "abs/e2"]
+    assert sel("all-podcasts") == ["abs/e1", "abs/e2", "abs/e3", "abs/e4"]
     assert sel("unfinished-books") == ["abs/b1", "abs/b3"]
     assert sel("books-in-progress") == ["abs/b1"]
-    assert sel("unlistened-episodes") == ["abs/e1"]
+    # started but not finished episodes stay until they are finished
+    assert sel("unlistened-episodes") == ["abs/e1", "abs/e2", "abs/e3"]
 
 
 async def test_added_edited_deleted_and_removed_with_the_library(env, music):

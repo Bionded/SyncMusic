@@ -38,6 +38,8 @@ addStrings({
   "field.no_cache_file_max_mb.help": "Larger files (videos, long lossless albums) are written to a temporary file on this computer's disk and deleted after the copy.",
   "field.combine_audiobooks": "Combine audiobooks",
   "field.combine_audiobooks.help": "A book of several files goes onto the device as one .m4b with a chapter per file (books above 3.8 GB as parts). Off: the files stay in the book's folder. Changing it replaces the book on the next sync. Default: on for an iPod, off for other players.",
+  "field.unmount_foreign": "Unmount other mounts when connected",
+  "field.unmount_foreign.help": "For systems that mount every USB drive on their own (Umbrel, a desktop's automount): during the first minute after SyncMusic mounted the player, other programs' mounts of it are unmounted. A mount in use is left alone. Two programs writing to one FAT volume can damage it.",
   "field.gentle_write": "Gentle write mode",
   "field.gentle_write.help": "For players that hang during a sync, e.g. iPods with a CF or SD card. Slower: files are written in batches with pauses. Applies from the next time the device is mounted; automatic updates are not affected.",
   "field.gentle_batch_files": "Files per batch",

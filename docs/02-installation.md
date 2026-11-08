@@ -157,11 +157,14 @@ to 0.2.1) with the `[Unreleased]` changelog section and the commit subjects sinc
 offers them when Settings → Updates → *Update channel* is *Beta*. The order is 0.2.0 < 0.2.1-3 < 0.2.1-10 < 0.2.1.
 
 ## Upgrading
-SyncMusic 0.2.0 has **no database migrations yet**: a later version may need a fresh start. To
-upgrade, stop SyncMusic, replace the binary (or `git pull` and `uv sync`), and start it again. A database
-SyncMusic cannot open is refused at start with a message instead of being changed. If a release
-note says a fresh start is needed, move the data directory away first and set SyncMusic up again - your libraries
-and the music on your players are not affected, only SyncMusic's own settings.
+Upgrades from 0.2.0 on keep everything: settings, devices, templates and history, and the players stay registered.
+Update from Settings → Updates, or stop SyncMusic, replace the binary (or `git pull` and `uv sync`) and start it
+again. At the first start of a new version SyncMusic updates its database and first saves a copy of the old one in
+the data directory's `backups/` folder (`…-before-upgrade.sqlite3.gz`). If the update
+fails, SyncMusic does not start and names that backup; the database stays as it was.
+
+Going back to an older version is not supported: an older SyncMusic refuses a database a newer one has updated. To
+go back anyway, restore the backup made before the upgrade.
 
 ## Security
 By default SyncMusic has **no login**: anyone who can reach its port can change its settings and write to connected

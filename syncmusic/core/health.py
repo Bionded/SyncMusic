@@ -4,7 +4,8 @@
 The sync service records a `write` sample (bytes, seconds spent writing) after every full sync that wrote at least
 MIN_SAMPLE_BYTES, and an `io_error` whenever a sync or an integrity check stopped on the device's storage. The
 warning says the storage may be failing when an I/O error happened in the last 30 days, or when the last sync wrote
-at less than half the median speed of the syncs before it (at least 3 of them)."""
+at less than half the median speed of the syncs before it (at least 3 of them). The user can acknowledge the
+warning (an `ack` record): it stays hidden until an I/O error or a write sample newer than the acknowledgement."""
 
 from __future__ import annotations
 
@@ -19,11 +20,13 @@ DROP = 0.5
 
 
 def summary(records: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
-    """{io_errors, last_io_error, speeds [{at, mb_s}], last_mb_s, usual_mb_s, warning} from the records of the last
+    """{io_errors, last_io_error, errors, acknowledged_at, speeds [{at, mb_s}], last_mb_s, usual_mb_s, warning} from the records of the last
     30 days (oldest first)."""
     cut = (now - WINDOW).isoformat()
     recent = [r for r in records if r["at"] >= cut]
     errors = [r for r in recent if r["kind"] == "io_error"]
+    acks = [r["at"] for r in recent if r["kind"] == "ack"]
+    acked_at = acks[-1] if acks else None
     speeds = [
         {"at": r["at"], "mb_s": round(r["bytes"] / r["seconds"] / 1e6, 2)}
         for r in recent
@@ -33,14 +36,26 @@ def summary(records: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
     before = [x["mb_s"] for x in speeds[:-1]]
     usual = round(statistics.median(before), 2) if len(before) >= 3 else None
     warning = None
-    if errors:
+    new_errors = [r for r in errors if acked_at is None or r["at"] > acked_at]
+    if new_errors:
         n = len(errors)
         warning = f"{n} I/O error{'s' if n != 1 else ''} in the last 30 days"
-    elif last is not None and usual and last < usual * DROP:
+    elif (
+        last is not None
+        and usual
+        and last < usual * DROP
+        and (acked_at is None or speeds[-1]["at"] > acked_at)
+    ):
         warning = f"the last sync wrote at {last} MB/s, usually {usual} MB/s"
     return {
         "io_errors": len(errors),
         "last_io_error": errors[-1] if errors else None,
+        # newest first: the health card lists them
+        "errors": [
+            {"at": r["at"], "detail": r["detail"], "job_id": r.get("job_id")}
+            for r in reversed(errors)
+        ],
+        "acknowledged_at": acked_at,
         "speeds": speeds,
         "last_mb_s": last,
         "usual_mb_s": usual,

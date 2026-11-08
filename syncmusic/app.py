@@ -4,22 +4,25 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import socket
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
 from syncmusic import __version__
 from syncmusic.base.context import AppContext
-from syncmusic.core.models import AppSettings
+from syncmusic.core import manifest
+from syncmusic.core.models import AppSettings, LibraryConfig, ManifestLibrary
 from syncmusic.core.prepare import Preparer
 from syncmusic.core.snapshots import SnapshotCache
 from syncmusic.core.sync import SCHEDULE_TICK_S, SyncService
-from syncmusic.infra import dbbackup, ffmpeg, self_update
+from syncmusic.infra import dbbackup, ffmpeg, self_update, storage
 from syncmusic.infra.auth import Auth
 from syncmusic.infra.blockdev.guard import Guard
 from syncmusic.infra.blockdev.identify import BlockDeviceInfo
@@ -29,7 +32,7 @@ from syncmusic.infra.config import BootstrapConfig
 from syncmusic.infra.db import Database
 from syncmusic.infra.events import EventBus
 from syncmusic.infra.housekeeping import LowDisk, disk_free, prune_logs
-from syncmusic.infra.jobs import JobRunner
+from syncmusic.infra.jobs import JobInfo, JobRunner
 from syncmusic.infra.log import BusLogHandler
 from syncmusic.infra.notify import Notifications
 from syncmusic.infra.store import Store
@@ -45,15 +48,20 @@ class Application:
     def __init__(self, config: BootstrapConfig) -> None:
         self.config = config
         self.bus = EventBus()
-        self.db = Database(config.data_dir / "syncmusic.sqlite3")
+        self.db = Database(
+            config.data_dir / "syncmusic.sqlite3", backup_dir=config.data_dir / "backups"
+        )
         self.jobs = JobRunner(self.bus)
         self.guard = Guard(config.device_allowlist, allow_loop=config.allow_loop_devices)
         self.ctx = AppContext(
             config=config, db=self.db, bus=self.bus, jobs=self.jobs, guard=self.guard
         )
         self.store = Store(self.db)
+        self.instance_id = ""  # set at start (Store.instance_id)
+        self.cpu = storage.CpuMeter()  # Storage & resources: CPU % since the last reading
+        self.instance_name = socket.gethostname()
         self.auth = Auth(self.db)  # optional login
-        self.jobs.on_finished = self.store.put_job
+        self.jobs.on_finished = self._job_finished
         self.jobs.on_update = self.store.put_job
         self.cache = ProcessingCache(self.db, config.cache_dir)
         self.sync = SyncService(
@@ -109,7 +117,10 @@ class Application:
         logging.getLogger().addHandler(self._log_handler)
         for info in self.jobs.restore(await self.store.recent_jobs()):
             await self.store.put_job(info)  # cut off by a crash: stored as failed
+        self.instance_id = await self.store.instance_id()
         self.apply_settings(await self.store.app_settings(), starting=True)
+        self.store.on_libraries_changed = self.update_manifest_context
+        await self.update_manifest_context()
         await self.notifications.start()
         await self.sync.add_tag_steps()
         await self.sync.load()
@@ -273,6 +284,14 @@ class Application:
             self.on_restart()
         return u.latest
 
+    async def _job_finished(self, job: JobInfo) -> None:
+        """Store the finished job, freeze the survivors for the garbage collector when no other job runs, then hand the memory the
+        job freed back to the system."""
+        await self.store.put_job(job)
+        if not any(j.finished_at is None for j in self.jobs.jobs()):
+            storage.freeze_gc()
+        await asyncio.to_thread(storage.trim_memory)
+
     def backup_dir(self, settings: AppSettings) -> Path:
         """Where the database backups go."""
         return (
@@ -302,6 +321,8 @@ class Application:
         """Delete sync history, rotated logs and notifications older than the Settings say;
         at start and hourly."""
         self._housekept = time.monotonic()
+        if not any(j.finished_at is None for j in self.jobs.jobs()):
+            storage.collect_frozen()  # the one full collection, between jobs
         settings = await self.store.app_settings()
         rows = await self.store.prune_history(
             datetime.now(UTC) - timedelta(days=settings.history_days)
@@ -331,6 +352,19 @@ class Application:
             log.warning("the disk holding %s has %d bytes free", self.config.cache_dir, free)
             self.bus.publish("storage.low", free=free, limit=limit, path=str(self.config.cache_dir))
 
+    async def update_manifest_context(self) -> None:
+        """What device manifests need to map their libraries to ours (after a library or alias change)."""
+        libraries = await self.store.libraries()
+        manifest.set_context(
+            manifest.Context(
+                instance_id=self.instance_id,
+                instance_name=self.instance_name,
+                app_version=__version__,
+                libraries={c.id: _manifest_library(c) for c in libraries},
+                aliases=await self.store.library_aliases(),
+            )
+        )
+
     def apply_settings(self, settings: AppSettings, starting: bool = False) -> None:
         """Runtime settings. The number of processing threads changes only at start (no job runs)."""
         self.cache.max_bytes = int(
@@ -342,6 +376,10 @@ class Application:
             settings.inbox_events,
             settings.quiet_hours,
         )
+        self.instance_name = settings.instance_name or socket.gethostname()
+        ctx = manifest.context()
+        if ctx.instance_id and ctx.instance_name != self.instance_name:
+            manifest.set_context(dataclasses.replace(ctx, instance_name=self.instance_name))
         self.jobs.set_device_job_limit(settings.max_device_syncs)
         self.sync.preparer.cache_books = settings.cache_combined_books
         self.sync.snapshots.policy = settings.snapshot_refresh
@@ -380,3 +418,16 @@ class Application:
         await self.db.close()
         self.started = False
         log.info("SyncMusic stopped")
+
+
+def _manifest_library(cfg: LibraryConfig) -> ManifestLibrary:
+    """How a device's manifest describes our library: no credentials, no account names."""
+    hint = str(cfg.settings.get("url") or "")
+    if hint:
+        parts = urlsplit(hint)
+        hint = (
+            urlunsplit((parts.scheme, parts.hostname or "", "", "", "")) if parts.hostname else ""
+        )
+        if parts.port and hint:
+            hint += f":{parts.port}"
+    return ManifestLibrary(source_id=cfg.source_id, type=cfg.type, name=cfg.name, url_hint=hint)

@@ -165,3 +165,19 @@ def test_metadata_view_page_and_download():
         ("position", "10", "20", "to_library"),
     ]
     assert len(rows) == 7
+
+
+def test_sample_counts_other_installations_kept_items():
+    from syncmusic.core.models import ActionKind, ItemRef, ManifestEntry, PlanAction, SyncPlan
+
+    def keep(lib: str, size: int) -> PlanAction:
+        ref = ItemRef(library_id=lib, item_id="x")
+        entry = ManifestEntry(ref=ref, device_ref="x", path="x.mp3", size=size)
+        return PlanAction(kind=ActionKind.KEEP, ref=ref, title="x", entry=entry)
+
+    plan = SyncPlan(
+        id="p", device_id="d", actions=[keep("nd", 5), keep("ext:L2", 7), keep("ext:L3", 3)]
+    )
+    from syncmusic.core import plan_view
+
+    assert plan_view.sample(plan)["others"] == {"count": 2, "bytes": 10}

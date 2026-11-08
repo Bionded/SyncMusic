@@ -431,6 +431,7 @@ async def test_device_space_by_media_kind(env, tmp_path):
         "/api/v1/devices/my-flash/manual-selection", json={"library_id": "music", "ids": ids}
     )
     plan = (await c.post("/api/v1/devices/my-flash/plan", json={})).json()
+    assert plan["others"] == {"count": 0, "bytes": 0}  # the Keep card's other-installations line
     await _apply(app, c, plan["id"], first_sync="keep")
     space = (await c.get("/api/v1/devices/my-flash/space")).json()
     kinds = space["by_kind"]
@@ -444,11 +445,15 @@ async def test_device_space_by_media_kind(env, tmp_path):
         m = await read(cfg, device)
         e = next(iter(m.items.values()))
         m.items["video"] = e.model_copy(update={"kind": MediaKind.VIDEO, "size": 7})
+        # an item another installation keeps here is its own segment, not music
+        ref = e.ref.model_copy(update={"library_id": "ext:elsewhere"})
+        m.items["ext"] = e.model_copy(update={"ref": ref, "size": 11})
         return m
 
     app.sync._read_manifest = _with_video
     r = await c.get("/api/v1/devices/my-flash/space")
     assert r.status_code == 200 and r.json()["by_kind"]["video"] == 7
+    assert r.json()["by_kind"]["others"] == 11 and r.json()["by_kind"]["music"] == sizes
     del app.sync._read_manifest
     # the Overview's Full report opens the job that wrote the last report
     last = (await c.get("/api/v1/devices/my-flash")).json()["last_report"]
@@ -647,3 +652,14 @@ async def test_register_takes_the_combine_audiobooks_default(env, tmp_path):
     assert flash["sync"]["combine_audiobooks"] is False
     ipod = await _register(c, ipod_tree(tmp_path / "ipod"), name="iPod", type="ipod")
     assert ipod["sync"]["combine_audiobooks"] is True
+
+
+async def test_big_json_responses_are_gzipped(env):
+    app, c = env
+    r = await c.get("/api/v1/device-types", headers={"Accept-Encoding": "gzip"})
+    assert r.status_code == 200 and r.json()  # httpx decodes it transparently
+    assert r.headers.get("content-encoding") == "gzip"
+    small = await c.get("/api/v1/version", headers={"Accept-Encoding": "gzip"})
+    assert "content-encoding" not in small.headers  # below the minimum size
+    plain = await c.get("/api/v1/device-types", headers={"Accept-Encoding": "identity"})
+    assert "content-encoding" not in plain.headers

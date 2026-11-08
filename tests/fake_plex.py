@@ -91,7 +91,7 @@ class FakePlex(httpx.AsyncBaseTransport):
             return self._container(machineIdentifier=MACHINE_ID, version="1.41.0")
         if path == "/library/sections":
             return self._container(Directory=[
-                {"key": "1", "title": "Music", "type": "artist", "updatedAt": self.updated, "scannedAt": self.updated},
+                {"key": "1", "title": "Music", "type": "artist", "uuid": "sec-uuid-1", "updatedAt": self.updated, "scannedAt": self.updated},
                 {"key": "2", "title": "Movies", "type": "movie", "updatedAt": 5},
             ])  # fmt: skip
         if path == "/library/sections/1/all":

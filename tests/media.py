@@ -10,6 +10,7 @@ import atexit
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,20 @@ ENCODERS: dict[str, list[str]] = {
     ".m4a": ["-c:a", "aac", "-b:a", "96k"],
     ".opus": ["-c:a", "libopus", "-b:a", "64k"],
 }
+
+
+def _prune_stale_templates(max_age: float = 6 * 3600) -> None:
+    """Remove template dirs left behind by earlier runs (xdist workers skip atexit)."""
+    now = time.time()
+    for old in Path(tempfile.gettempdir()).glob("sd-media-*"):
+        try:
+            if now - old.stat().st_mtime > max_age:
+                shutil.rmtree(old, ignore_errors=True)
+        except OSError:
+            pass
+
+
+_prune_stale_templates()
 _TEMPLATES = Path(tempfile.mkdtemp(prefix="sd-media-"))
 # one dir per session; removed at exit so runs do not pile up in /tmp
 atexit.register(shutil.rmtree, _TEMPLATES, ignore_errors=True)

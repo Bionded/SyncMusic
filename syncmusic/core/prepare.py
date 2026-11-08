@@ -19,9 +19,11 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
+import os
 import shutil
 import time
 import uuid
@@ -54,9 +56,13 @@ MEDIA_NAME = "media"  # file name stem of the processed track inside a cache ent
 ORIGINAL_NAME = "original"
 
 
-def initial_plan_item(track: Track) -> PlanItem:
+def initial_plan_item(
+    track: Track, rules: list[str] | None = None, enable_space_steps: bool = False
+) -> PlanItem:
     """The plan item of an unprocessed track: the library file as it is."""
-    ext = Path(track.path).suffix.lstrip(".").lower() if track.path else ""
+    ext = (
+        os.path.splitext(track.path)[1].lstrip(".").lower() if track.path else ""
+    )  # no Path per item
     if not ext:
         ext = FORMAT_EXT.get(track.format, track.format or "bin")
     file = PlannedFile(
@@ -68,14 +74,36 @@ def initial_plan_item(track: Track) -> PlanItem:
         sample_rate=track.sample_rate,
         bit_depth=track.bit_depth if track.format in LOSSLESS else None,
     )
-    return PlanItem(track=track, file=file)
+    return PlanItem(
+        track=track,
+        file=file,
+        steps=[],
+        sidecars=[],
+        sidecar_bytes=0,
+        rules=list(rules or []),
+        enable_space_steps=enable_space_steps,
+    )
 
 
 def base_item(item: PlanItem) -> PlanItem:
     """The unprocessed form of a (possibly planned) item: same track, rules and space-step flag."""
-    return initial_plan_item(item.track).model_copy(
-        update={"rules": list(item.rules), "enable_space_steps": item.enable_space_steps}
-    )
+    return initial_plan_item(item.track, item.rules, item.enable_space_steps)
+
+
+@functools.lru_cache(maxsize=64)
+def _device_key(caps_hash: str, space_steps: bool) -> str:
+    """The "device" part of `processing`: the same for every item of a plan, so hashed once."""
+    return make_key("device", [caps_hash, space_steps])[:16]
+
+
+@functools.lru_cache(maxsize=1024)
+def _processor_key(type_name: str, version: object, key: object) -> str:
+    return make_key("processor", [type_name, version, key])[:16]
+
+
+@functools.lru_cache(maxsize=1024)
+def _chain_key(parts: tuple[Any, ...]) -> str:
+    return make_key("chain", parts)[:16]  # tuples serialise like the lists they came from
 
 
 def _json_default(o: object) -> object:
@@ -131,6 +159,16 @@ class Chain:
 
     def __init__(self, processors: Sequence[Processor]) -> None:
         self.processors = list(processors)
+        # caps_hash per capabilities object (the object is kept, so its id is not reused): one hash per plan,
+        # not one per item
+        self._caps_hashes: dict[int, tuple[DeviceCapabilities, str]] = {}
+
+    def _caps_hash(self, caps: DeviceCapabilities) -> str:
+        hit = self._caps_hashes.get(id(caps))
+        if hit is None or hit[0] is not caps:
+            hit = (caps, caps_hash(caps))
+            self._caps_hashes[id(caps)] = hit
+        return hit[1]
 
     @classmethod
     def from_slots(cls, slots: Sequence[ProcessorSlot], ctx: AppContext | None = None) -> Chain:
@@ -151,8 +189,9 @@ class Chain:
     def _parts(self, item: PlanItem, caps: DeviceCapabilities) -> list[Any] | None:
         # Always fold from the unprocessed item: callers may pass an already planned item (the applier passes
         # `PlanAction.item`), on which a processor would add no step and drop out of the key.
-        item = base_item(item)
-        parts: list[Any] = [caps_hash(caps), item.enable_space_steps]
+        if item.steps:  # an item without steps is the unprocessed one already (the planner's case)
+            item = base_item(item)
+        parts: list[Any] = [self._caps_hash(caps), item.enable_space_steps]
         for p in self.processors:
             planned = p.plan(item, caps)
             if len(planned.steps) == len(item.steps):
@@ -167,12 +206,33 @@ class Chain:
     def processing(self, item: PlanItem, caps: DeviceCapabilities) -> dict[str, str]:
         """The parts of `chain_hash` by name: "device" (caps + space steps) and one per processor
         that plans a step. Comparing two of them names what changed; {} when the output is not cacheable."""
-        parts = self._parts(item, caps)
+        return self._processing(self._parts(item, caps))
+
+    @staticmethod
+    def _processing(parts: list[Any] | None) -> dict[str, str]:
         if parts is None:
             return {}
-        out = {"device": make_key("device", parts[:2])[:16]}
-        out.update((p[0], make_key("processor", p)[:16]) for p in parts[2:])
+        out = {"device": _device_key(parts[0], parts[1])}
+        for p in parts[2:]:
+            try:
+                out[p[0]] = _processor_key(*p)
+            except TypeError:  # an unhashable cache key from a processor
+                out[p[0]] = make_key("processor", p)[:16]
         return out
+
+    def hashes(self, item: PlanItem, caps: DeviceCapabilities) -> tuple[str, dict[str, str]]:
+        """`chain_hash` and `processing` of the item in one pass over the chain (the planner needs both)."""
+        parts = self._parts(item, caps)
+        return self._chain_hash(parts), self._processing(parts)
+
+    @staticmethod
+    def _chain_hash(parts: list[Any] | None) -> str:
+        if parts is None:
+            return make_key("chain", "uncacheable")[:16]
+        try:  # the parts repeat across the items of a plan: hash each distinct one once
+            return _chain_key(tuple(tuple(p) if isinstance(p, list) else p for p in parts))
+        except TypeError:  # an unhashable cache key from a processor
+            return make_key("chain", parts)[:16]
 
     def processing_inputs(
         self, item: PlanItem, caps: DeviceCapabilities
@@ -215,8 +275,7 @@ class Chain:
         Only processors that plan a step for the item count, so adding or changing a processor that does not
         apply to it (a FLAC-only transcode rule for an MP3) keeps the item on the device.
         """
-        parts = self._parts(item, caps)
-        return make_key("chain", parts if parts is not None else "uncacheable")[:16]
+        return self._chain_hash(self._parts(item, caps))
 
     def cache_key(self, item: PlanItem, caps: DeviceCapabilities) -> str | None:
         """Cache key of the processed output (None = not cacheable)."""
@@ -473,7 +532,9 @@ class Preparer:
         name = f"{ORIGINAL_NAME}.{ext}"
         tmp = work_dir / name
         size = 0
-        f = await asyncio.to_thread(tmp.open, "wb")
+        # opened here, not in a thread: a cancel while a thread waits to open it would create the file after the
+        # cleanup of the cancelled prepare (left behind in the work folder)
+        f = tmp.open("wb")  # noqa: ASYNC230
         try:
             async for chunk in src:
                 await asyncio.to_thread(f.write, chunk)

@@ -161,6 +161,7 @@ async def test_sync_service_drops_mount_when_disk_removed(monkeypatch, tmp_path)
         _waiting={"flash": {"reason": "on_connect: ask", "plan_id": None}},
         _clock_set={"flash": 1.0},
         _clock_tasks={},
+        _foreign_tasks={},
         drop_plans=lambda device_id: None,
         _mtp_open={},
     )

@@ -38,7 +38,6 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 |---|---|
 | Max cache size | Converted files are kept for the next sync; the oldest go first above this size. |
 | Always cache combined audiobooks | Combining a book from many files means re-encoding hours of audio (often 20–60 min per book on this computer). Keep the result in the media cache even for devices without the cache, so it is done once. Uses about as much space as the books themselves. |
-| System cache | Cover thumbnails and previews, shared by all players. No limit; rebuilt when needed. |
 | Keep sync history | Reports and jobs; each device's last sync stays. |
 | Keep logs | Older rotated log files are deleted. |
 | Warn when the disk is below | A notification when the disk holding SyncMusic's data and cache runs low. Empty: no warning. |

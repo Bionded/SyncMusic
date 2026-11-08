@@ -197,12 +197,14 @@ def test_cache_and_space(web_server, chrome, tmp_path):
     del app.cache._pinned["k1"]
     page.reload()
     page.wait_for_selector("[data-cache]")
-    page.get_by_role("button", name="Clear cache").click()
-    assert "Frees 2.0 MB" in page.locator(".modal").inner_text()
-    page.locator(".modal").get_by_role("button", name="Clear cache").click()
-    page.wait_for_selector(".toast:has-text('Cache cleared · 2.0 MB freed.')")
-    assert page.locator("[data-cache-line]").inner_text().startswith("0 B of 20 GB")
-    assert page.get_by_role("button", name="Clear cache").is_disabled()
+    page.locator("[data-part-row=media_cache]").get_by_role("button", name="Clear").click()
+    assert "Frees about 2.0 MB" in page.locator(".modal").inner_text()
+    page.locator(".modal").get_by_role("button", name="Clear").click()
+    page.wait_for_selector(".toast:has-text('Media cache: 2.0 MB freed.')")
+    page.wait_for_function(
+        "document.querySelector('[data-cache-line]').innerText.startsWith('0 B of 20 GB')"
+    )
+    assert page.locator("[data-part-row=media_cache] [data-part-size]").inner_text() == "0 B"
     _field(page, "history_days").fill("30")
     _field(page, "log_days").fill("7")
     _field(page, "disk_warn_gb").fill("")
@@ -212,22 +214,49 @@ def test_cache_and_space(web_server, chrome, tmp_path):
     assert [e for e in page.errors if "Failed to load resource" not in e] == []
 
 
-def test_system_cache(web_server, chrome):
-    """the system cache (thumbnails, previews) shows its size; Clear empties it after a confirmation."""
+def test_storage_and_resources(web_server, chrome):
+    """Storage & resources lists every part with its size and exactly one clear button per part on the whole
+    page; Clear asks with the size, frees the part and updates its row; a device item is deleted alone; the memory
+    table shows numbers and Free memory drops the in-memory caches."""
     url, app = web_server
-    shared = app.config.cache_dir / "thumbs" / "shared"
+    cache = app.config.cache_dir
+    shared = cache / "thumbs" / "shared"
     shared.mkdir(parents=True, exist_ok=True)
     (shared / "a.jpg").write_bytes(b"x" * 3000)
-    page = open_page(chrome, url + "/#/settings", 390)
-    page.wait_for_selector("[data-sys-cache]")
-    assert page.locator("[data-sys-used]").inner_text() == "3.0 KB"
-    page.locator("[data-sys-cache]").get_by_role("button", name="Clear").click()
-    assert "Frees 3.0 KB" in page.locator(".modal").inner_text()
+    for dev, n in (("pod", 5000), ("Плеєр", 2000)):
+        (cache / "device-backups" / dev).mkdir(parents=True, exist_ok=True)
+        (cache / "device-backups" / dev / "db").write_bytes(b"x" * n)
+    for width in (1280, 390):
+        page = open_page(chrome, url + "/#/settings", width)
+        page.wait_for_selector("[data-storage]")
+        rows = page.locator("[data-part-row]")
+        assert rows.count() >= 10
+        for part in ("system_cache", "media_cache"):
+            # one button for the part on the whole page (no Clear next to the cache settings any more)
+            assert page.locator(f"[data-action=storageClear][data-part={part}]").count() == 1
+        assert page.locator("[data-action=clearCache], [data-action=clearSysCache]").count() == 0
+        assert (
+            page.locator("[data-part-row=system_cache] [data-part-size]").inner_text() == "3.0 KB"
+        )
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+        assert page.locator("[data-res=rss]").inner_text().endswith("MB")
+    page.locator("[data-part-row=system_cache]").get_by_role("button", name="Clear").click()
+    assert "Frees about 3.0 KB" in page.locator(".modal").inner_text()
     page.locator(".modal").get_by_role("button", name="Clear", exact=True).click()
-    page.wait_for_selector(".toast:has-text('Cache cleared · 3.0 KB freed.')")
-    assert page.locator("[data-sys-used]").inner_text() == "0 B"
-    assert page.locator("[data-sys-cache] button").is_disabled()
+    page.wait_for_selector(".toast:has-text('System cache: 3.0 KB freed.')")
+    assert page.locator("[data-part-row=system_cache] [data-part-size]").inner_text() == "0 B"
     assert not shared.exists()
+    item = page.locator("[data-part-row=device_backups] [data-part-item=pod]")
+    item.get_by_role("button", name="Delete").click()
+    assert "restore points" in page.locator(".modal").inner_text()
+    page.locator(".modal").get_by_role("button", name="Delete").click()
+    page.wait_for_selector(".toast:has-text('5.0 KB freed.')")
+    assert (
+        not (cache / "device-backups" / "pod").exists()
+        and (cache / "device-backups" / "Плеєр").exists()
+    )
+    page.get_by_role("button", name="Free memory now").click()
+    page.wait_for_selector(".toast:has-text('of memory freed.')")
     assert [e for e in page.errors if "Failed to load resource" not in e] == []
 
 

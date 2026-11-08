@@ -191,7 +191,7 @@ class Helper:
 
     def _umount(self, args: list[str]) -> None:
         if args[:1] == ["-l"]:
-            self._exact(args[1:], 1, lambda: self.mountpoint(args[1]))  # stale mounts: ours only
+            self._exact(args[1:], 1, lambda: self.umount_target(args[1]))
         else:
             self._exact(args, 1, lambda: self.umount_target(args[0]))
 

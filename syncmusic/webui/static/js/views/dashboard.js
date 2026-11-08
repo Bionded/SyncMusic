@@ -65,6 +65,8 @@ addStrings({
   "dash.error_title": "{name}: {error}",
   "dash.error_sub": "Open the device to see what happened; the log has the details.",
   "dash.open_device": "Open device",
+  "dash.health_ack": "Acknowledge",
+  "dash.health_acked": "Storage warning acknowledged for {name}: it comes back on a new error.",
   "dash.details": "Details",
   "dash.no_templates_title": "{name} has no templates",
   "dash.no_templates_sub": "Choose what goes on it to sync it.",
@@ -282,7 +284,8 @@ function needRows(reg, unknown, gentle, libraries, last = {}, updates = null, ch
   // storage that may be failing: the device's Storage health card says why and what to do
   for (const d of reg.filter((x) => x.health_warning)) {
     add(html`data-need="health" data-device="${d.id}"`, "er", icon("warn", { size: 17 }), t("dash.health_title", { name: d.name }),
-      d.health_warning, dev(d), html`<a class="btn small over" href="${dev(d)}">${t("dash.open_device")}</a>`);
+      d.health_warning, dev(d), html`<a class="btn small over" href="${dev(d)}">${t("dash.open_device")}</a>`,
+      html`<button type="button" class="btn small ghost over" data-action="healthAck" data-id="${d.id}" data-name="${d.name}">${t("dash.health_ack")}</button>`);
   }
   // listening data that did not reach its library: the device page opens its "Not delivered" list
   for (const d of reg.filter((x) => x.feedback_pending || x.feedback_dropped)) {
@@ -461,6 +464,20 @@ export const actions = {
       el.textContent = t("job.cancel");
       toast(errorMessage(e), "error");
     }
+  },
+  // hide "storage may be failing" until a newer error; Undo takes the acknowledgement back
+  async healthAck(el, ctx) {
+    const { id, name } = el.dataset;
+    el.disabled = true;
+    const url = `/devices/${encodeURIComponent(id)}/health/ack`;
+    await post(url);
+    el.closest("[data-need]")?.remove();
+    toast(t("dash.health_acked", { name }), "ok", {
+      undo: async () => {
+        await post(`${url}?undo=true`);
+        ctx.rerender();
+      },
+    });
   },
   async gentleOn(el, ctx) {
     const { id, name } = el.dataset;

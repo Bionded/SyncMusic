@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable
+import uuid
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -73,6 +74,12 @@ def _play_key(sink: str, p: PlayEvent) -> tuple[str, str, str, str, str]:
 class Store:
     def __init__(self, db: Database) -> None:
         self.db = db
+        # called after a library or a library alias changed (the app refreshes the manifest context)
+        self.on_libraries_changed: Callable[[], Awaitable[None]] | None = None
+
+    async def _libraries_changed(self) -> None:
+        if self.on_libraries_changed is not None:
+            await self.on_libraries_changed()
 
     # --- libraries ---------------------------------------------------------------------------
 
@@ -93,6 +100,7 @@ class Store:
             "updated_at = excluded.updated_at",
             (cfg.id, cfg.type, cfg.name, int(cfg.enabled), cfg.model_dump_json(), now, now),
         )
+        await self._libraries_changed()
 
     async def delete_library(self, library_id: str) -> None:
         """Its untouched default templates go with it (they are generated); edited ones are rows of `templates`."""
@@ -100,6 +108,7 @@ class Store:
         await self.db.execute(
             "DELETE FROM deleted_default_templates WHERE library_id = ?", (library_id,)
         )
+        await self._libraries_changed()
 
     # --- devices -----------------------------------------------------------------------------
 
@@ -253,6 +262,39 @@ class Store:
             for k, v in settings.model_dump(mode="json").items()
         )
 
+    async def instance_id(self) -> str:
+        """This installation's id: a uuid made at the first start, kept in the database (a fresh
+        install gets a new one; a copied config file does not clone it). Not part of `AppSettings`."""
+        row = await self.db.fetchone("SELECT value FROM settings WHERE key = 'instance_id'")
+        if row:
+            return str(json.loads(row["value"]))
+        new = uuid.uuid4().hex
+        await self.db.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('instance_id', ?)",
+            (json.dumps(new),),
+        )
+        row = await self.db.fetchone("SELECT value FROM settings WHERE key = 'instance_id'")
+        return str(json.loads(row["value"])) if row else new
+
+    async def library_aliases(self) -> dict[str, str]:
+        """Libraries of other instances matched to ours: their source id -> our library id
+        (`core.library_match`). A settings row of its own, not part of `AppSettings`."""
+        row = await self.db.fetchone("SELECT value FROM settings WHERE key = 'library_aliases'")
+        return dict(json.loads(row["value"])) if row else {}
+
+    async def put_library_alias(self, source_id: str, library_id: str | None) -> None:
+        """Remember (or, with None, forget) that `source_id` is our library `library_id`."""
+        aliases = await self.library_aliases()
+        if library_id is None:
+            aliases.pop(source_id, None)
+        else:
+            aliases[source_id] = library_id
+        await self.db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('library_aliases', ?)",
+            (json.dumps(aliases),),
+        )
+        await self._libraries_changed()
+
     async def ignored_disks(self) -> list[str]:
         """Unknown disks the user chose to ignore: their keys, see `SyncService.disk_key`. A
         settings row of its own, not part of `AppSettings` (not a setting the Settings page edits)."""
@@ -268,21 +310,41 @@ class Store:
     # --- storage health ------------------------------------------------------
 
     async def add_health(
-        self, device_id: str, kind: str, bytes_: int = 0, seconds: float = 0.0, detail: str = ""
+        self,
+        device_id: str,
+        kind: str,
+        bytes_: int = 0,
+        seconds: float = 0.0,
+        detail: str = "",
+        job_id: str | None = None,
     ) -> None:
         await self.db.execute(
-            "INSERT INTO device_health (device_id, at, kind, bytes, seconds, detail) VALUES (?, ?, ?, ?, ?, ?)",
-            (device_id, utcnow().isoformat(), kind, bytes_, seconds, detail),
+            "INSERT INTO device_health (device_id, at, kind, bytes, seconds, detail, job_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (device_id, utcnow().isoformat(), kind, bytes_, seconds, detail, job_id),
         )
 
     async def health(self, device_id: str, since: datetime) -> list[dict[str, Any]]:
         """The device's health records since `since`, oldest first."""
         rows = await self.db.fetchall(
-            "SELECT at, kind, bytes, seconds, detail FROM device_health WHERE device_id = ? AND at >= ? "
+            "SELECT at, kind, bytes, seconds, detail, job_id FROM device_health WHERE device_id = ? AND at >= ? "
             "ORDER BY at, id",
             (device_id, since.isoformat()),
         )
         return [dict(r) for r in rows]
+
+    async def delete_health(self, device_id: str, kind: str, newest_only: bool = False) -> None:
+        """Drop the device's records of `kind` (`newest_only`: just the latest one - Undo of an acknowledge)."""
+        if newest_only:
+            await self.db.execute(
+                "DELETE FROM device_health WHERE id = (SELECT id FROM device_health WHERE device_id = ? AND kind = ? "
+                "ORDER BY at DESC, id DESC LIMIT 1)",
+                (device_id, kind),
+            )
+        else:
+            await self.db.execute(
+                "DELETE FROM device_health WHERE device_id = ? AND kind = ?", (device_id, kind)
+            )
 
     # --- backup -------------------------------------------------------------
 

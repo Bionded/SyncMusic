@@ -412,3 +412,28 @@ async def test_cached_original_kept_while_another_sync_stores_the_same_track(
         assert w.steps_done == ["transcode"]
     assert seen == [True], "the other sync's store removed the original in use"
     await lib.close()
+
+
+def test_hashes_match_chain_hash_and_processing_and_follow_changes():
+    track = Track(
+        ref=ItemRef(library_id="lib", item_id="1"),
+        title="Пісня",
+        format="flac",
+        size_bytes=10,
+        path="a.flac",
+    )
+    item = initial_plan_item(track)
+    chain = Chain.from_slots(
+        [ProcessorSlot(type="transcode", settings={"rules": [{"from": ["flac"], "to": "aac"}]})]
+    )
+    assert chain.hashes(item, CAPS) == (chain.chain_hash(item, CAPS), chain.processing(item, CAPS))
+    # the planned item hashes the same as the unprocessed one
+    assert chain.hashes(chain.plan(item, CAPS), CAPS) == chain.hashes(item, CAPS)
+    before = chain.chain_hash(item, CAPS)
+    # memoised settings and caps hashes still see a changed value
+    other_caps = CAPS.model_copy(update={"formats": {"mp3", "aac", "flac", "ogg"}})
+    assert chain.chain_hash(item, other_caps) != before
+    p = chain.processors[0]
+    old = p.settings_hash()
+    p.settings = p.settings.model_copy(update={"rules": [*p.settings.rules, p.settings.rules[0]]})
+    assert p.settings_hash() != old

@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from typing import Any
 
+from syncmusic.core.manifest import is_external
 from syncmusic.core.models import (
     ActionKind,
     DeviceContents,
@@ -36,6 +37,33 @@ from syncmusic.core.rules.templates import (
 FOREIGN_PREFIX = (
     "device:"  # row key of an item SyncMusic did not put on the device: "device:<device_ref>"
 )
+
+
+def is_orphan(
+    entry: ManifestEntry, snapshots: Mapping[str, LibrarySnapshot], attached: Collection[str]
+) -> bool:
+    """Gone from its library (read, and no longer has it) or its library was removed or disabled
+    (`attached` = the enabled libraries). An item of an enabled library no rule selects is not an orphan, nor is
+    an item of another installation's library (it manages those)."""
+    if is_external(entry.ref.library_id):
+        return False
+    if entry.ref.library_id not in attached:
+        return True
+    snap = snapshots.get(entry.ref.library_id)
+    return snap is not None and snap.track(entry.ref.item_id) is None
+
+
+def orphans(
+    manifest: Manifest, snapshots: Mapping[str, LibrarySnapshot], attached: Collection[str]
+) -> list[dict[str, Any]]:
+    """The orphan rows (key, title, path, size) from the manifest alone, sorted by path."""
+    rows = [
+        {"key": key, "title": e.path.rsplit("/", 1)[-1], "path": e.path, "size": e.size}
+        for key, e in manifest.items.items()
+        if is_orphan(e, snapshots, attached)
+    ]
+    rows.sort(key=lambda r: str(r["path"]).casefold())
+    return rows
 
 
 def contents(
@@ -91,11 +119,9 @@ def contents(
             # when SyncMusic wrote it (the grid's "recently added" sort); None: not from SyncMusic
             "synced_at": entry.synced_at.isoformat() if entry is not None else None,
             "manual": entry is not None and MANUAL_RULE_ID in entry.rules,
-            "orphan": entry is not None
-            and (
-                entry.ref.library_id not in attached
-                or (snapshots.get(entry.ref.library_id) is not None and t is None)
-            ),
+            "orphan": entry is not None and is_orphan(entry, snapshots, attached),
+            # put there by another installation from a library this one does not have: read-only here
+            "other_instance": entry is not None and is_external(entry.ref.library_id),
             "foreign": entry is None,
             "missing": item is None,
             # a video: its show / season / episode from the library, for grouping by show

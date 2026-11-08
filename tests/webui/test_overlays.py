@@ -77,6 +77,41 @@ def test_drawer_traps_focus_closes_and_returns_focus(web_server, chrome):
     assert page.errors == []
 
 
+@pytest.mark.parametrize("width", [1280, 390])
+def test_drawer_closes_on_back_and_on_navigation(web_server, chrome, width):
+    """Back closes an open drawer and stays on the page; a screen change closes it; closing it with × leaves no
+    extra history entry (one Back then leaves the page)."""
+    url, _ = web_server
+    page = open_page(chrome, url + "/#/devices", width=width)
+    page.wait_for_selector("#content[data-route='/devices'] h1")
+    page.locator("#bell").click()
+    page.wait_for_selector(".drawer[data-drawer='bell']")
+    page.go_back()
+    page.wait_for_selector(".drawer", state="detached")
+    assert page.evaluate("location.hash") == "#/devices"
+    assert page.locator("#content[data-route='/devices'] h1").is_visible()
+
+    page.locator("#bell").click()
+    page.wait_for_selector(".drawer[data-drawer='bell']")
+    page.evaluate("location.hash = '#/settings'")  # what a sidebar link does
+    page.wait_for_selector("#content[data-route='/settings'] h1")
+    assert page.locator(".drawer").count() == 0
+
+    page.goto(url + "/#/libraries")
+    page.wait_for_selector("#content[data-route='/libraries'] h1")
+    page.evaluate("location.hash = '#/devices'")
+    page.wait_for_selector("#content[data-route='/devices'] h1")
+    page.locator("#bell").click()
+    page.wait_for_selector(".drawer[data-drawer='bell']")
+    page.locator(".drawer [data-drawer-close]").click()
+    page.wait_for_selector(".drawer", state="detached")
+    page.wait_for_timeout(200)
+    assert page.evaluate("location.hash") == "#/devices"
+    page.go_back()
+    page.wait_for_selector("#content[data-route='/libraries'] h1")
+    assert page.errors == []
+
+
 def test_toast_with_undo(web_server, chrome):
     url, _ = web_server
     page = open_page(chrome, url)

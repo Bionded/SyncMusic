@@ -10,6 +10,13 @@ and the image deleted. The builders lay out what the real device has:
 - `ipod_mini()`: DOS table, type-0 firmware partition (random bytes) + FAT32 data partition, iPod_Control;
 - `rockbox()`: the mini layout with /.rockbox (rockbox-info.txt, a codec, config.cfg) on the data partition.
 
+Speed: a loop image on the NVMe is far faster than a real player behind USB. `attach(..., speed="sd_player")` (or
+`SM_EMU_SPEED=real`, which gives every disk its kind's profile from SPEED_OF_KIND) caps the loop device's read and
+write bandwidth and IOPS with cgroup v2 `io.max` in the top-level slices (system.slice, user.slice), so every
+process that touches it is throttled: the app, its privileged helper, mkfs, fsck and the kernel writeback of its
+dirty pages. The limit is keyed by the loop device number, which survives mounts; it is lifted on unplug/detach
+and by scripts/test-cleanup.sh. Without a profile (the default, or `SM_EMU_SPEED=fast`) nothing is limited.
+
 Only these loop devices are ever written: the guard (`emulated_guard()`) accepts a loop device only when its
 serial is in tests/emulated.toml, and no real disk carries those serials. Needs passwordless sudo (`needs_sudo`).
 """
@@ -54,6 +61,95 @@ EROS_INFO = (
 )
 
 
+# read/write bandwidth in MB/s and IOPS (the IOPS cap stands in for the per-request latency of a slow controller)
+SPEED_PROFILES: dict[str, dict[str, float]] = {
+    "usb2_stick": {"read_mb_s": 30, "write_mb_s": 10, "iops": 2000},
+    "sd_player": {
+        "read_mb_s": 20,
+        "write_mb_s": 8,
+        "iops": 500,
+    },  # SD card behind a player (HiBy R1)
+    "ipod_hdd": {"read_mb_s": 15, "write_mb_s": 12, "iops": 100},  # 1.8" disk of a mini/Classic
+    "ipod_ssd": {
+        "read_mb_s": 25,
+        "write_mb_s": 20,
+        "iops": 2000,
+    },  # flash-modded iPod (USB 2.0 bridge)
+    "usb3_fast": {"read_mb_s": 200, "write_mb_s": 100, "iops": 10000},
+}
+SPEED_OF_KIND = {
+    "emulated_flash": "usb2_stick",
+    "emulated_ipod_classic": "ipod_ssd",
+    "emulated_ipod_mini": "ipod_hdd",
+    "emulated_rockbox": "ipod_hdd",
+    "emulated_rockbox_eros": "sd_player",
+    "emulated_hiby": "sd_player",
+}
+IO_SLICES = (Path("/sys/fs/cgroup/system.slice"), Path("/sys/fs/cgroup/user.slice"))
+
+
+def speed_for(kind: str, speed: str | None) -> str | None:
+    """The profile an attached `kind` gets: SM_EMU_SPEED=fast turns every limit off, =real gives every disk
+    without an explicit `speed` its kind's profile; otherwise the explicit `speed` (None = unlimited)."""
+    env = os.environ.get("SM_EMU_SPEED", "")
+    if env == "fast":
+        return None
+    if speed is None and env == "real":
+        return SPEED_OF_KIND.get(kind)
+    if speed is not None and speed not in SPEED_PROFILES:
+        raise ValueError(f"unknown speed profile {speed!r}")
+    return speed
+
+
+def _maj_min(dev: str) -> str:
+    return Path(f"/sys/class/block/{Path(dev).name}/dev").read_text().strip()
+
+
+def io_max_line(maj_min: str, profile: str | None) -> str:
+    if profile is None:
+        return f"{maj_min} rbps=max wbps=max riops=max wiops=max"
+    p = SPEED_PROFILES[profile]
+    mb = 1024**2
+    return (
+        f"{maj_min} rbps={int(p['read_mb_s'] * mb)} wbps={int(p['write_mb_s'] * mb)}"
+        f" riops={int(p['iops'])} wiops={int(p['iops'])}"
+    )
+
+
+def set_speed(dev: str, profile: str | None) -> None:
+    """Cap (or with None: uncap) the bandwidth of loop device `dev` for every process on the host."""
+    if not dev.startswith("/dev/loop"):
+        raise ValueError(f"speed limits only for loop devices, not {dev}")
+    line = io_max_line(_maj_min(dev), profile)
+    for slice_ in IO_SLICES:
+        if (slice_ / "io.max").exists():
+            sh("tee", str(slice_ / "io.max"), input=line + "\n")
+
+
+def limited_loops() -> list[str]:
+    """`MAJ:MIN` of loop devices (major 7) that carry an io.max limit in a top-level slice."""
+    found: set[str] = set()
+    for slice_ in IO_SLICES:
+        try:
+            text = (slice_ / "io.max").read_text()
+        except OSError:
+            continue
+        found |= {line.split()[0] for line in text.splitlines() if line.startswith("7:")}
+    return sorted(found)
+
+
+def clear_loop_limit(maj_min: str) -> None:
+    for slice_ in IO_SLICES:
+        if (slice_ / "io.max").exists():
+            subprocess.run(
+                ["sudo", "-n", "tee", str(slice_ / "io.max")],
+                input=io_max_line(maj_min, None) + "\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+
 def _sudo_ok() -> bool:
     try:
         return (
@@ -92,6 +188,7 @@ class EmulatedDisk:
     kind: str  # entry in tests/emulated.toml
     dev: str  # /dev/loopN ("" while unplugged)
     image: Path
+    speed: str | None = None  # SPEED_PROFILES entry applied to the loop device (kept across replug)
 
     @property
     def serial(self) -> str:
@@ -118,9 +215,12 @@ def attach(
     layout: str | None = None,
     sector_size: int | None = None,
     image_dir: Path | None = None,
+    speed: str | None = None,
 ) -> Iterator[EmulatedDisk]:
     """A loop device with the identity of `kind`; `layout` is an sfdisk script for the image. `image_dir` puts the
-    sparse image elsewhere (e.g. on a small tmpfs: when that is full, the device fails writes with EIO)."""
+    sparse image elsewhere (e.g. on a small tmpfs: when that is full, the device fails writes with EIO). `speed`
+    is a SPEED_PROFILES name that caps its bandwidth like the real device (see speed_for for SM_EMU_SPEED)."""
+    speed = speed_for(kind, speed)
     ident = IDENTITIES[kind]
     IMAGE_ROOT.mkdir(parents=True, exist_ok=True)
     detach_stale()
@@ -142,8 +242,10 @@ def attach(
     losetup = ["losetup", "--find", "--show", "--partscan"]
     if sector_size:
         losetup += ["--sector-size", str(sector_size)]
-    disk = EmulatedDisk(kind, sh(*losetup, str(image)), image)
+    disk = EmulatedDisk(kind, sh(*losetup, str(image)), image, speed)
     try:
+        if speed:
+            set_speed(disk.dev, speed)
         if layout is not None and sector_size:
             # other sector sizes: partition the loop device, which has them (sfdisk < 2.40, e.g. Ubuntu 24.04,
             # has no --sector-size for an image file); sfdisk re-reads the table of the device itself
@@ -174,6 +276,7 @@ def detach_stale() -> None:
             fresh = False
         if not fresh:
             _unmount_all(d["name"])
+            clear_loop_limit(_maj_min(d["name"]))
             subprocess.run(
                 ["sudo", "-n", "losetup", "-d", d["name"]], check=False, capture_output=True
             )
@@ -200,6 +303,8 @@ def remove_stale_dirs() -> None:
 def unplug(disk: EmulatedDisk) -> None:
     """Pull the emulated device out: unmount what is left and detach the loop device (the image stays)."""
     _unmount_all(disk.dev)
+    if disk.speed:
+        clear_loop_limit(_maj_min(disk.dev))
     subprocess.run(["sudo", "-n", "losetup", "-d", disk.dev], check=False, capture_output=True)
     sh("udevadm", "settle", "--timeout=10")
     disk.dev = ""
@@ -208,6 +313,8 @@ def unplug(disk: EmulatedDisk) -> None:
 def replug(disk: EmulatedDisk) -> None:
     """Plug the same image in again (it may get another loop device)."""
     disk.dev = sh("losetup", "--find", "--show", "--partscan", str(disk.image))
+    if disk.speed:
+        set_speed(disk.dev, disk.speed)
     sh("udevadm", "settle", "--timeout=10")
 
 

@@ -373,6 +373,44 @@ def test_detached_library_items_are_orphans():
     assert any("orphan" in w for w in plan.warnings)
 
 
+def test_items_of_a_library_no_template_draws_from_any_more_are_unselected():
+    """unlinking the last template of a library that still exists and reads fine: its items on the device
+    are unselected - removed in mirror mode (counted toward the delete threshold), kept as managed items in
+    additive mode - never orphans; an item that is also gone from that library is the usual orphan."""
+    chain = Chain([])
+    music = _tracks()[:2]
+    pods = [
+        track(f"p{i}", library_id="abs", kind=MediaKind.PODCAST, source_state="s") for i in range(8)
+    ]
+    gone = track("pg", library_id="abs", kind=MediaKind.PODCAST, source_state="s")
+    m = _manifest([_entry(t, chain, FILE_CAPS) for t in [*music, *pods, gone]])
+    snaps = {"lib": snapshot(music), "abs": snapshot(pods)}
+
+    def plan(mode, **kw):
+        return plan_sync(
+            _device(mode=mode, **kw),
+            snaps,
+            m,
+            FILE_CAPS,
+            chain,
+            now=NOW,
+            attached=["lib"],
+            auto=True,
+        )
+
+    mirror = plan("mirror", remove_deleted=False)
+    by = {a.ref.item_id: a for a in mirror.actions}
+    assert all(by[t.ref.item_id].kind == ActionKind.REMOVE for t in pods)
+    assert not any(by[t.ref.item_id].orphan for t in pods)
+    assert by["pg"].orphan and by["pg"].kind == ActionKind.KEEP
+    assert mirror.removals_over_threshold and mirror.needs_confirmation  # 8 of 11 managed items
+    additive = {a.ref.item_id: a for a in plan("additive", remove_deleted=False).actions}
+    assert all(additive[t.ref.item_id].kind == ActionKind.KEEP for t in pods)
+    assert not any(additive[t.ref.item_id].orphan for t in pods)
+    deleted = {a.ref.item_id: a for a in plan("mirror", remove_deleted=True).actions}
+    assert deleted["pg"].kind == ActionKind.REMOVE and deleted["pg"].deleted
+
+
 def test_playlists_only_with_items_on_device():
     tracks = _tracks()
     pl = Playlist(
@@ -782,3 +820,75 @@ def test_over_delete_threshold_with_an_empty_device():
 
     assert not over_delete_threshold(1, 0, 10)
     assert over_delete_threshold(2, 10, 10) and not over_delete_threshold(1, 10, 10)
+
+
+ND_OLD = "25974407:2026-10-24T04:47:57.456540391Z|img=710ea7abd9502420"
+ND_NEW = "25974407:2026-11-07T03:30:01.148664626Z|img=710ea7abd9502420"
+
+
+def test_touched_only_compares_source_state_by_parts():
+    from syncmusic.core.planner import touched_only
+
+    assert touched_only(ND_OLD, ND_NEW)  # Subsonic/Navidrome: only updatedAt moved
+    assert not touched_only(ND_OLD, ND_NEW.replace("25974407", "25974408"))  # size
+    assert not touched_only(ND_OLD, ND_NEW.replace("img=710e", "img=999e"))  # cover image
+    assert not touched_only(ND_OLD, ND_OLD)
+    assert touched_only("4096:1700000000000000000", "4096:1700000099000000000")  # folder mtime_ns
+    assert touched_only("4096:1700000000000.5|cover=a", "4096:1700000099000|cover=a")  # ABS mtimeMs
+    assert not touched_only("4096:180:320", "4096:181:320")  # size:duration:bitrate is no timestamp
+    assert not touched_only("4096|etag1", "4096|etag2")  # Jellyfin: the etag names the content
+    assert not touched_only("s1", "s2")
+
+
+def _touched(t, **kw):
+    return t.model_copy(update={"source_state": ND_NEW, **kw})
+
+
+def test_a_touched_source_is_kept_and_restamped():
+    chain = Chain([])
+    base = [
+        track(str(i), title=f"T{i}", artist="A", size_bytes=25974407, source_state=ND_OLD)
+        for i in range(1, 5)
+    ]
+    m = _manifest([_entry(t, chain, FILE_CAPS) for t in base])
+    now = [
+        _touched(base[0]),  # only the timestamp
+        _touched(base[1], source_state=ND_NEW.replace("25974407", "25974408")),  # size
+        _touched(base[2], source_state=ND_NEW.replace("img=710e", "img=999e")),  # cover
+        _touched(base[3], title="T4 (remaster)"),  # timestamp + metadata
+    ]
+    plan = _plan(_device(), now, m)
+    acts = {a.ref.item_id: a for a in plan.actions}
+    assert acts["1"].kind is ActionKind.KEEP and acts["1"].restamp
+    assert acts["2"].kind is ActionKind.REPLACE and acts["2"].reason == "source changed"
+    assert acts["3"].kind is ActionKind.REPLACE and acts["3"].reason == "source changed"
+    assert acts["4"].kind is ActionKind.REPLACE and not acts["4"].restamp
+
+
+def test_a_touched_source_survives_an_update_plan():
+    """With the same metadata the device DB needs nothing: keep + restamp; an update plan keeps the restamp
+    (the manifest gets the new state, so a periodic update does not look at the touch again)."""
+    from syncmusic.core.plan_adjust import update_only, update_writes_items
+
+    chain = Chain([])
+    t = track("1", title="One", artist="A", size_bytes=4096, source_state=ND_OLD)
+    m = _manifest([_entry(t, chain, IPOD_CAPS)])
+    plan = _plan(_device(), [_touched(t)], m, caps=IPOD_CAPS)
+    a = plan.actions[0]
+    assert a.kind is ActionKind.KEEP and a.restamp
+    upd = update_only(plan)
+    assert upd.actions[0].restamp and update_writes_items(upd)
+
+
+def test_other_instances_items_are_kept_in_mirror_mode_and_never_orphans():
+    tracks, chain = _tracks()[:2], Chain([])
+    foreign = track("x1", title="Foreign", source_state="x").model_copy(
+        update={"ref": ItemRef(library_id="ext:L2", item_id="x1")}
+    )
+    m = _manifest([_entry(t, chain, FILE_CAPS) for t in [*tracks, foreign]])
+    for missing in (set(), {foreign.ref.key()}):
+        plan = _plan(_device(_only(tracks)), tracks, m, missing=missing)
+        (a,) = [a for a in plan.actions if a.ref.library_id == "ext:L2"]
+        assert a.kind == ActionKind.KEEP and not a.orphan and a.entry is not None
+        assert not plan.count(ActionKind.REMOVE)
+        assert not any("orphan" in w for w in plan.warnings)

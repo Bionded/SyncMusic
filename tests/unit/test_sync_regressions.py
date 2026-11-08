@@ -142,7 +142,8 @@ async def test_manifest_of_another_registration_needs_confirmation(env, tmp_path
     old_uid = manifest_io.read(tmp_path / "flash").header.device_uid
     assert old_uid == first["identity"]["manifest_device_id"] and old_uid
     assert (await c.delete("/api/v1/devices/flash")).status_code == 204
-    second = await _register(c, tmp_path / "flash", name="Flash")
+    # "keep files": a new identity (the default would continue with the device's manifest)
+    second = await _register(c, tmp_path / "flash", name="Flash", continuity="keep")
     assert second["id"] == "flash" and second["identity"]["manifest_device_id"] != old_uid
     plan = (await c.post("/api/v1/devices/flash/plan")).json()
     assert plan["needs_confirmation"] and not plan["first_sync"]
@@ -829,3 +830,27 @@ async def test_rockbox_registered_by_unmounted_disk_keeps_identity(env):
     ident = r.json()["identity"]
     assert ident["usb_serial"] == "MINI1" and ident["fs_uuid"] == "C5D6-E7F8"
     assert app.sync.detector.connected["sdy"].data_partition == "/dev/sdy2"
+
+
+async def test_saving_rules_does_not_rematch_disks_but_an_identity_change_does(
+    env, tmp_path, monkeypatch
+):
+    """a rule / settings change of a device never re-reads connected disks (their manifests);
+    a change of what matching uses (identity, type, folder) does."""
+    app, c = env
+    await _register(c, tmp_path / "flash", name="Flash")
+    calls = []
+
+    async def spy() -> None:
+        calls.append(1)
+
+    monkeypatch.setattr(app.sync.detector, "rematch", spy)
+    r = await c.patch("/api/v1/devices/flash", json={"rule_set": {"rules": [], "mode": "additive"}})
+    assert r.status_code == 200, r.text
+    r = await c.patch("/api/v1/devices/flash", json={"delete_threshold_pct": 30})
+    assert r.status_code == 200, r.text
+    assert calls == []
+    assert (await app.sync.config("flash")).delete_threshold_pct == 30
+    r = await c.patch("/api/v1/devices/flash", json={"identity": {"fs_uuid": "1234-ABCD"}})
+    assert r.status_code == 200, r.text
+    assert calls == [1]

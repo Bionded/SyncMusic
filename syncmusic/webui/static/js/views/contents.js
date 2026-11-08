@@ -34,13 +34,19 @@ addStrings({
   "pc.play_failed": "Cannot play {title} in the browser.",
   "pc.manual": "Added by hand",
   "pc.orphan": "Orphan: source gone",
+  "pc.other_instance": "Another installation",
   "pc.foreign": "Not from SyncMusic",
   "pc.missing": "File missing",
   "pc.remove": "Remove from device…",
   "pc.none_selected": "Select items to remove first.",
   "pc.selected": "{n} selected",
   "pc.clear": "Clear",
-  "pc.only_foreign": "Only “not from SyncMusic”",
+  "pc.managed": "Managed by",
+  "pc.managed.all": "Anyone",
+  "pc.managed.mine": "This installation",
+  "pc.managed.others": "Other installations",
+  "pc.managed.foreign": "Not from SyncMusic",
+  "pc.read_only": "Managed by another installation: it removes this item",
   "pc.tracks_link": "{n} tracks",
   "pc.tracks_link_one": "{n} track",
   "pc.remove_title": "Remove {n} from {name}?",
@@ -184,7 +190,7 @@ function lengthCell(it) {
   return html`<span style="white-space:nowrap" title="${t("pc.position_title", { at })}">${it.duration_s ? t("pc.position", { at, length: length(it.duration_s) }) : at}</span>${lib}`;
 }
 
-const marks = (it) => html`${it.manual ? html` <small class="muted">· ${t("pc.manual")}</small>` : ""}${it.orphan ? html` ${badge("warn", t("pc.orphan"))}` : ""}${it.foreign ? html` ${badge("neutral", t("pc.foreign"))}` : ""}${it.missing ? html` ${badge("error", t("pc.missing"))}` : ""}`;
+const marks = (it) => html`${it.manual ? html` <small class="muted">· ${t("pc.manual")}</small>` : ""}${it.orphan ? html` ${badge("warn", t("pc.orphan"))}` : ""}${it.other_instance ? html` ${badge("neutral", t("pc.other_instance"))}` : ""}${it.foreign ? html` ${badge("neutral", t("pc.foreign"))}` : ""}${it.missing ? html` ${badge("error", t("pc.missing"))}` : ""}`;
 
 // the picture in the item's file; a missing file has none
 const thumbUrl = (deviceId, it) => (it && !it.missing ? `/api/v1/devices/${encodeURIComponent(deviceId)}/contents/thumb?${new URLSearchParams({ key: it.key })}` : null);
@@ -203,13 +209,17 @@ function coverCard(deviceId, g, tab) {
     <label class="pc-cover"><input type="checkbox" data-change="pcSelectGroup" value="${g.id}" aria-label="${t("pc.select_group", { name: g.name })}">
       <span class="pc-art">${src ? html`<img src="${src}" alt="" loading="lazy" decoding="async">` : ""}</span>
       ${foreign ? html`<span class="pc-foreign">${icon("info", { size: 12 })}${t("pc.foreign")}</span>` : ""}</label>
-    ${g.items.map((it) => html`<input type="checkbox" name="pcItem" value="${it.key}" data-group="${g.id}" hidden>`)}
+    ${g.items.map((it) => html`<input type="checkbox" name="pcItem" value="${it.key}" data-group="${g.id}" hidden ${it.other_instance ? "disabled" : ""}>`)}
     <b class="pc-title" title="${g.name}">${g.name}</b>
     <span class="pc-sub">${g.sub ? html`<span title="${g.sub}">${g.sub}</span> · ` : ""}<a href="${href}">${t(n === 1 ? "pc.tracks_link_one" : "pc.tracks_link", { n })}</a></span></div>`;
 }
 
+const MANAGED = ["all", "mine", "others", "foreign"];
+const MANAGED_BY = { all: () => true, mine: (i) => !i.foreign && !i.other_instance, others: (i) => i.other_instance, foreign: (i) => i.foreign };
+
 function trackRow(deviceId, it, group) {
-  return html`<tr data-key="${it.key}"><td><input type="checkbox" name="pcItem" data-change="pcPick" value="${it.key}" data-group="${group || ""}" aria-label="${it.title}"></td>
+  const ro = it.other_instance;
+  return html`<tr data-key="${it.key}" ${ro ? html`data-read-only` : ""}><td><input type="checkbox" name="pcItem" data-change="pcPick" value="${it.key}" data-group="${group || ""}" aria-label="${it.title}" ${ro ? html`disabled title="${t("pc.read_only")}"` : ""}></td>
     <td class="thumb-cell">${thumbOf(deviceId, it)}</td>
     ${it.kind === "video" ? html`<td>${episodeOf(it) ? html`<span class="muted mono">${episodeOf(it)} </span>` : ""}${it.title}${marks(it)}</td>`
       : html`<td>${it.track_number ? html`<span class="muted mono">${it.track_number}. </span>` : ""}${it.title}${marks(it)}</td><td>${it.artist || ""}</td><td>${it.album || ""}</td>`}
@@ -227,9 +237,11 @@ export async function renderContents(ctx) {
   const items = await get(`/devices/${encodeURIComponent(cfg.id)}/contents`);
   const tabs = tabsFor(type?.capabilities || {}, items);
   const q = (ctx.query.get("q") || "").trim();
-  const onlyForeign = ctx.query.get("foreign") === "1";
+  // who manages an item: this installation, another one (read-only here) or nobody (not from SyncMusic)
+  const managed = MANAGED.includes(ctx.query.get("managed")) ? ctx.query.get("managed") : ctx.query.get("foreign") === "1" ? "foreign" : "all";
+  const onlyForeign = managed !== "all";
   const needle = q.toLocaleLowerCase();
-  const pool = onlyForeign ? items.filter((i) => i.foreign) : items;
+  const pool = items.filter(MANAGED_BY[managed]);
   const ofKind = (sp) => pool.filter((i) => (sp.kind ? i.kind === sp.kind : true));
   // videos count as items: a show is not one "album"
   const countOf = (x) => (TABS[x].group && x !== "videos" ? groupsOf(TABS[x], ofKind(TABS[x])).length : ofKind(TABS[x]).length);
@@ -242,7 +254,7 @@ export async function renderContents(ctx) {
   const sortable = spec.group && !["playlist", "show"].includes(spec.group);
   const shown = needle ? ofTab.filter((i) => [i.title, i.artist, i.album_artist, i.album, i.show].some((x) => (x || "").toLocaleLowerCase().includes(needle))) : ofTab;
   const base = `#/devices/${encodeURIComponent(cfg.id)}/contents`;
-  const link = (params) => `${base}?${new URLSearchParams({ ...params, ...(onlyForeign ? { foreign: "1" } : {}), ...(sort !== "default" && params.tab === tab ? { sort } : {}) })}`;
+  const link = (params) => `${base}?${new URLSearchParams({ ...params, ...(onlyForeign ? { managed } : {}), ...(sort !== "default" && params.tab === tab ? { sort } : {}) })}`;
   let body, total, page;
   const perPage = covers ? COVERS_PER_PAGE : spec.group ? GROUPS_PER_PAGE : TRACKS_PER_PAGE;
   if (!spec.group) {
@@ -271,7 +283,8 @@ export async function renderContents(ctx) {
       <label class="sr" for="pcQ">${t(searchKey)}</label>
       <input id="pcQ" type="search" value="${q}" placeholder="${t(searchKey)}" style="flex:1;min-width:200px;padding:9px;border-radius:9px;border:1px solid var(--line);background:var(--panel2)">
       <button class="btn" type="submit">${t("pc.search_btn")}</button>
-      <label class="checkrow" style="margin:0"><input type="checkbox" data-change="pcForeign" ${onlyForeign ? "checked" : ""}> ${t("pc.only_foreign")}</label></form>
+      <label class="pc-sort"><span class="muted">${t("pc.managed")}</span>
+        <select class="lb-sort" data-change="pcManaged" aria-label="${t("pc.managed")}">${MANAGED.map((x) => html`<option value="${x}" ${x === managed ? "selected" : ""}>${t(`pc.managed.${x}`)}</option>`)}</select></label></form>
     <div class="toolbar" style="margin-bottom:10px;justify-content:space-between">
       <span class="muted" data-pc-count>${needle || onlyForeign ? t("pc.shown", { shown: shown.length, n: items.length }) : t("pc.count", { n: items.length })}</span>
       <span class="toolbar" style="margin:0;gap:10px">${sortable ? html`<label class="pc-sort"><span class="muted">${t("pc.sort")}</span>
@@ -311,13 +324,13 @@ function updateSelbar() {
 let lastBox = null, shiftClick = false;
 document.addEventListener("click", (e) => { shiftClick = e.shiftKey; }, true);
 function pickRange(el) {
-  const sel = el.dataset.change === "pcSelectGroup" ? 'input[data-change="pcSelectGroup"]' : 'input[name="pcItem"][data-change="pcPick"]';
+  const sel = el.dataset.change === "pcSelectGroup" ? 'input[data-change="pcSelectGroup"]' : 'input[name="pcItem"][data-change="pcPick"]:not(:disabled)';
   const boxes = [...document.querySelectorAll(sel)];
   if (shiftClick && lastBox && lastBox !== el && boxes.includes(lastBox)) {
     const [a, b] = [boxes.indexOf(lastBox), boxes.indexOf(el)].sort((x, y) => x - y);
     for (const x of boxes.slice(a, b + 1)) {
       x.checked = el.checked;
-      if (x.dataset.change === "pcSelectGroup") document.querySelectorAll(`input[name="pcItem"][data-group="${CSS.escape(x.value)}"]`).forEach((y) => { y.checked = el.checked; });
+      if (x.dataset.change === "pcSelectGroup") document.querySelectorAll(`input[name="pcItem"][data-group="${CSS.escape(x.value)}"]:not(:disabled)`).forEach((y) => { y.checked = el.checked; });
     }
   }
   lastBox = el;
@@ -347,23 +360,24 @@ export const contentsActions = {
   pcSearch(form, ctx) {
     const q = form.querySelector("#pcQ").value.trim();
     const tab = ctx.query.get("tab");
-    const foreign = ctx.query.get("foreign") === "1";
-    const params = new URLSearchParams({ ...(tab ? { tab } : {}), ...(q ? { q } : {}), ...(foreign ? { foreign: "1" } : {}) });
+    const managed = ctx.query.get("managed");
+    const params = new URLSearchParams({ ...(tab ? { tab } : {}), ...(q ? { q } : {}), ...(managed ? { managed } : {}) });
     go(`/devices/${encodeURIComponent(ctx.params.id)}/contents${String(params) ? `?${params}` : ""}`);
   },
-  pcForeign(el, ctx) {
+  pcManaged(el, ctx) {
     const params = new URLSearchParams(ctx.query);
     params.delete("page");
-    if (el.checked) params.set("foreign", "1"); else params.delete("foreign");
+    params.delete("foreign");
+    if (el.value !== "all") params.set("managed", el.value); else params.delete("managed");
     go(`/devices/${encodeURIComponent(ctx.params.id)}/contents?${params}`);
   },
   pcSelectGroup(el) {
     pickRange(el);
-    document.querySelectorAll(`input[name="pcItem"][data-group="${CSS.escape(el.value)}"]`).forEach((x) => { x.checked = el.checked; });
+    document.querySelectorAll(`input[name="pcItem"][data-group="${CSS.escape(el.value)}"]:not(:disabled)`).forEach((x) => { x.checked = el.checked; });
     updateSelbar();
   },
   pcSelectAll(el) {
-    document.querySelectorAll('input[name="pcItem"], input[data-change="pcSelectGroup"]').forEach((x) => { x.checked = el.checked; });
+    document.querySelectorAll('input[name="pcItem"]:not(:disabled), input[data-change="pcSelectGroup"]').forEach((x) => { x.checked = el.checked; });
     updateSelbar();
   },
   pcPick(el) { pickRange(el); updateSelbar(); },

@@ -178,6 +178,11 @@ class AudiobookshelfLibrary(Library, FeedbackSink):
             )
         return HealthStatus(ok=True, details={"user": r.json().get("username")})
 
+    async def source_id(self) -> str | None:
+        """`abs:<library uuid>[,…]`: ABS library ids are UUIDs, unique across servers."""
+        ids = sorted(str(lib["id"]) for lib in await self._libraries())
+        return "abs:" + ",".join(ids) if ids else None
+
     async def _libraries(self, all_: bool = False) -> list[dict[str, Any]]:
         libs = [
             lib

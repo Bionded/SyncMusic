@@ -13,6 +13,7 @@ import uvicorn
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from starlette.exceptions import HTTPException
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from syncmusic import __version__
@@ -82,6 +83,9 @@ def create_api(
     api.include_router(v1)
     if ui is not None:
         api.add_middleware(_UiDispatch, ui=ui)
+    # JSON (Player contents: megabytes on big devices), JS and CSS shrink 5-10x; event streams, audio and images
+    # are excluded by the middleware itself, big bodies are compressed in a worker thread
+    api.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
     api.add_middleware(auth_routes.AuthGate, auth=lambda: facade.app.auth, local_ok=local_ok)
     api.add_middleware(RequestGuard, allowed_hosts=allowed_hosts)  # outermost: also guards the UI
     return api

@@ -17,6 +17,7 @@ Mounting and formatting devices needs root, or passwordless `sudo` for the block
 | `uv run pytest -n auto -m "not hardware and not slow and not integration"` | the fast suite: unit, contract and fake-service tests (run it before a PR) |
 | `uv run pytest -m integration` | Navidrome, Audiobookshelf, Samba, FTP in Docker compose (`tests/integration/compose.yaml`, needs Docker) |
 | `uv run pytest -m emulated` | device scenarios on loop images that look like USB players (`tests/emulated.py`, needs `sudo -n`) |
+| `SM_EMU_SPEED=real uv run pytest -m emulated` | the same at the speed of real players: every emulated disk gets its kind's bandwidth limit (`SPEED_PROFILES` in `tests/emulated.py`, cgroup v2 `io.max`); `SM_EMU_SPEED=fast` turns all limits off |
 | `uv run pytest -m ui` | Playwright web UI tests (`uv run playwright install chromium` once) |
 | `uv run pytest -m slow` | everything slow: UI, builds, soak tests |
 | `uv run pytest -m hardware` | real USB devices - **only** the ones you list in `tests/hardware.toml` (git-ignored; copy `tests/hardware.example.toml` or generate it from the players your SyncMusic knows: `syncmusic devices allowlist --all -o tests/hardware.toml`; without it nothing is collected) |
@@ -69,6 +70,10 @@ class in `tests/contracts/harness.py` and the suites run against it.
   most base → implementation plus an optional shared mixin.
 - English everywhere; UI strings go through the i18n table in `syncmusic/webui/static/js/i18n.js`.
 - New files start with `# SPDX-License-Identifier: GPL-3.0-or-later`.
+- **Database changes are migrations.** Add `syncmusic/infra/migrations/NNN_what.sql` (the next number; never edit
+  `baseline.sql` or a released migration). The upgrade test in `tests/unit/test_db_schema.py` must still pass: it
+  upgrades the databases of released versions in `tests/fixtures/upgrade/` and compares the schema with a fresh
+  install; extend its checks when your migration moves data.
 
 ## Commits and pull requests
 - Small commits with conventional messages: `feat(devices): …`, `fix(sync): …`, `test: …`, `docs: …`.

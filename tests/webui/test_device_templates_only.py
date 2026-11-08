@@ -101,26 +101,34 @@ def test_templates_decide_the_libraries(device, chrome, width):
 
 @pytest.mark.parametrize("width", [1280, 390])
 def test_the_picker_adds_removes_and_saves(device, chrome, width):
-    """Add template opens a searchable drawer grouped by library with the
+    """Add template opens a searchable inline picker grouped by library with the
     linked ones greyed; × removes with Undo; nothing is stored before Save; Discard brings the saved list back."""
     url = device
     page = open_page(chrome, url + "/#/devices/stick/rules", width=width)
     page.wait_for_selector('[data-tpl-row="default.music.all"]')
     assert page.locator(".savebar").is_hidden()
     page.locator('[data-tpls] [data-action="rulesAdd"]').first.click()
-    drawer = page.locator('[data-drawer="tplpick"]')
-    drawer.wait_for()
-    assert drawer.locator('[data-pick="default.music.all"]').is_disabled()  # linked already
-    assert "Added" in drawer.locator('[data-pick="default.music.all"]').inner_text()
+    panel = page.locator("[data-pick-panel]")
+    panel.wait_for()
+    assert panel.locator('[data-pick="default.music.all"]').is_disabled()  # linked already
+    assert "Added" in panel.locator('[data-pick="default.music.all"]').inner_text()
     page.fill("#tplPickQ", "zzz")
-    drawer.locator(".dt-pick-none").wait_for()
+    panel.locator(".dt-pick-none").wait_for()
     page.fill("#tplPickQ", "")
-    assert drawer.locator('[data-pick-group="other"]').count() == 1
+    assert panel.locator('[data-pick-group="other"]').count() == 1
     assert no_horizontal_scroll(page)
     shot(page, f"device-templates-picker-{width}")
-    drawer.locator('[data-pick="default.other.all"]').click()
-    assert drawer.locator('[data-pick="default.other.all"]').is_disabled()
-    drawer.locator("[data-pick-done]").click()
+    panel.locator('[data-pick="default.other.all"]').click()
+    assert panel.locator('[data-pick="default.other.all"]').is_disabled()
+    # picking is part of the page, not a dialog: the Save bar is there while the picker stays open
+    assert page.locator("[aria-modal]").count() == 0 and panel.is_visible()
+    assert page.locator(".savebar").is_visible()
+    assert (
+        page.locator('[data-tpls] [data-action="rulesAdd"]').first.get_attribute("aria-expanded")
+        == "true"
+    )
+    panel.locator("[data-pick-done]").click()
+    assert panel.is_hidden()
     _matches(page, 3)
     assert page.locator(".savebar").is_visible()
     assert _api(url, "GET", "/devices/stick")["config"]["rule_set"]["template_ids"] == [

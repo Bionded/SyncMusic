@@ -211,6 +211,26 @@ def cached_tags(f: Path, st: os.stat_result) -> tuple[dict[str, str], float | No
     return tags, duration
 
 
+TAG_STORE_DIR = "device-tags"  # under the app's cache dir: <device id>.json
+
+
+def load_tag_store(path: Path) -> dict[str, list[Any]]:
+    """Tags of a device's files kept across restarts: device-relative path -> [mtime_ns, size, tags,
+    duration]. A missing or broken file is an empty store."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_tag_store(path: Path, store: dict[str, list[Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(store, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def _number(value: str | None) -> int | None:
     """'3', '3/12', '2001-05-01' → 3, 3, 2001; None when there is no leading number."""
     digits = ""
@@ -277,6 +297,13 @@ class FileDeviceMixin:
         assert isinstance(self, Device)
         return self.effective_capabilities().path_rules
 
+    def _session_rules(self, s: DeviceSession) -> PathRules:
+        """The path rules resolved when the session opened: per-item calls must not recompute the capabilities."""
+        rules = s.data.get("rules")
+        if rules is None:
+            rules = s.data["rules"] = self._rules()
+        return rules
+
     def _playlist_dir(self) -> str:
         """Folder of the playlists we write: the setting `playlist_dir` where a device has it (Rockbox)."""
         return getattr(self.settings, "playlist_dir", None) or paths.PLAYLIST_DIR
@@ -284,6 +311,15 @@ class FileDeviceMixin:
     def _playlist_format(self) -> tuple[str, str]:
         """(extension, line end) of the playlists we write; UTF-8 `.m3u8` unless a device says otherwise."""
         return ".m3u8", "\n"
+
+    def _tag_store_path(self) -> Path | None:
+        """Where Player contents keeps the tags it read from this device, so a restart does not read every
+        file again; None without an app context (tests, tools)."""
+        ctx = getattr(self, "ctx", None)
+        config = getattr(self, "config", None)
+        if ctx is None or config is None:
+            return None
+        return Path(ctx.cache_dir) / TAG_STORE_DIR / f"{config.id}.json"
 
     def _walk(self) -> list[Path]:
         """All files on the device except our state dir and hidden/system folders."""
@@ -342,7 +378,8 @@ class FileDeviceMixin:
         """Manifest entries whose track file no longer exists (one stat per entry)."""
 
         def work() -> set[str]:
-            return {k for k, e in manifest.items.items() if not (self.mount / e.path).is_file()}
+            root, isfile, join = str(self.mount), os.path.isfile, os.path.join  # no Path per entry
+            return {k for k, e in manifest.items.items() if not isfile(join(root, e.path))}
 
         return await asyncio.to_thread(work)
 
@@ -350,7 +387,27 @@ class FileDeviceMixin:
         """Every media file on the device with its tags (also files other tools put there) and the
         playlists in the playlist folder (`Playlists/`) with their members."""
 
+        store_path = self._tag_store_path()
+        if store_path is not None and getattr(self, "_tag_store", None) is None:
+            self._tag_store = await asyncio.to_thread(load_tag_store, store_path)
+        store: dict[str, list[Any]] = getattr(self, "_tag_store", None) or {}
+
+        def tags_of(f: Path, rel: str, st: os.stat_result) -> tuple[dict[str, str], float | None]:
+            hit = store.get(rel)
+            if (
+                isinstance(hit, list)
+                and len(hit) == 4
+                and hit[0] == st.st_mtime_ns
+                and hit[1] == st.st_size
+            ):
+                return hit[2], hit[3]
+            tags, duration = cached_tags(f, st)
+            store[rel] = [st.st_mtime_ns, st.st_size, tags, duration]
+            return tags, duration
+
         def work() -> DeviceContents:
+            fresh: set[str] = set()
+            new = 0
             items = []
             for f in sorted(self._walk()):
                 if f.suffix.lower() not in MEDIA_EXTS:
@@ -361,7 +418,10 @@ class FileDeviceMixin:
                     log.debug("skipping %s: %s", f, e)
                     continue
                 rel = self._rel(f)
-                tags, duration = cached_tags(f, st)
+                hit = store.get(rel)
+                tags, duration = tags_of(f, rel, st)
+                new += store.get(rel) is not hit
+                fresh.add(rel)
 
                 top = PurePosixPath(rel).parts[0].casefold()
                 items.append(
@@ -388,6 +448,14 @@ class FileDeviceMixin:
                 for p in (self.mount / self._playlist_dir()).glob("*")
                 if p.suffix.lower() in (".m3u8", ".m3u") and p.is_file()
             )
+            gone = set(store) - fresh
+            for rel in gone:
+                del store[rel]
+            if store_path is not None and (new or gone or not store_path.exists()):
+                try:
+                    save_tag_store(store_path, store)
+                except OSError as e:
+                    log.debug("tag cache of %s not saved: %s", self.mount, e)
             known = {i.device_ref for i in items}
             return DeviceContents(
                 items=items,
@@ -410,7 +478,7 @@ class FileDeviceMixin:
             s.data["inflight_removed"] = manifest_io.clean_inflight(self.mount, manifest)
             for f in self.mount.rglob(f"{TMP_PREFIX}*"):
                 f.unlink(missing_ok=True)
-            rules = self._rules()
+            rules = s.data["rules"] = self._rules()
             s.data["taken"] = {paths.path_key(self._rel(f), rules) for f in self._walk()}
             # ItemRef key -> relative path of tracks on the device (manifest + this session)
             s.data["paths"] = {k: e.path for k, e in (manifest.items if manifest else {}).items()}
@@ -419,7 +487,7 @@ class FileDeviceMixin:
         return await asyncio.to_thread(work)
 
     async def put_track(self, s: DeviceSession, item: PreparedItem) -> DeviceTrackRef:
-        rules = self._rules()
+        rules = self._session_rules(s)
         size = item.path.stat().st_size
         if rules.max_file_size is not None and size > rules.max_file_size:
             raise FileTooLarge(
@@ -431,7 +499,7 @@ class FileDeviceMixin:
         old = s.data["paths"].get(item.track.ref.key())
         adopt = False
         if old is None or paths.path_key(old, rules) != paths.path_key(rel, rules):
-            ours = {paths.path_key(p, rules) for p in s.data["paths"].values()}
+            ours = self._ours(s, rules)
             key = paths.path_key(rel, rules)
             adopt = (
                 key in taken
@@ -465,12 +533,26 @@ class FileDeviceMixin:
                 counts[parent] = counts.get(parent, 0) + 1
             taken.add(paths.path_key(w, rules))
         s.data["paths"][item.track.ref.key()] = rel
+        if (known := s.data.get("ours")) is not None:
+            # its old path is no longer ours (as when the set is built from `paths`)
+            if old is not None:
+                known.discard(paths.path_key(old, rules))
+            known.add(paths.path_key(rel, rules))
         return DeviceTrackRef(
             device_ref=rel,
             path=rel,
             size=dest.stat().st_size,
             sidecars=written if adopt else written[1:],
         )
+
+    def _ours(self, s: DeviceSession, rules: PathRules) -> set[str]:
+        """Path keys of the session's own tracks (manifest + written so far), built once per session: rebuilding it
+        per written track made a first sync quadratic in the number of tracks."""
+        ours: set[str] | None = s.data.get("ours")
+        if ours is None:
+            ours = {paths.path_key(p, rules) for p in s.data["paths"].values()}
+            s.data["ours"] = ours
+        return ours
 
     def _folder_counts(self, s: DeviceSession, rules: PathRules) -> dict[str, int]:
         """Entries per folder (path key of the parent) of the session's taken paths, counted once."""
@@ -502,7 +584,7 @@ class FileDeviceMixin:
     ) -> DeviceTrackRef | None:
         """Tags-only re-process: patch the changed bytes of the file in place and rewrite its
         sidecars; None (a normal replace) when the size changed or the changed range is large."""
-        rules = self._rules()
+        rules = self._session_rules(s)
         dest = self.mount / ref.path
         if not ref.path or not dest.is_file() or dest.stat().st_size != item.path.stat().st_size:
             return None
@@ -535,7 +617,7 @@ class FileDeviceMixin:
         )
 
     async def remove_track(self, s: DeviceSession, ref: DeviceTrackRef) -> None:
-        rules = self._rules()
+        rules = self._session_rules(s)
         base = self.mount.resolve()
 
         def inside(rel: str) -> Path | None:
@@ -571,6 +653,7 @@ class FileDeviceMixin:
         for key, rel in list(s.data["paths"].items()):
             if rel == ref.path:
                 del s.data["paths"][key]
+                s.data.pop("ours", None)  # rebuilt on the next use
 
     async def remove_playlists(self, s: DeviceSession, names: list[str]) -> None:
         """The player's own playlist files of these names (`playlist_files` names them by their file) go."""

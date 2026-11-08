@@ -98,6 +98,25 @@ def _binary_id(binary: Path) -> str:
     raise InstallError(f"{binary} is not a SyncMusic binary (no ID= line)")
 
 
+def _binary_id_or_none(binary: Path) -> str | None:
+    try:
+        return _binary_id(binary)
+    except (OSError, InstallError):
+        return None
+
+
+def prune_runtimes(runtime: Path, keep: set[str]) -> int:
+    """Remove unpacked runtimes not named in `keep` (the new and the replaced version stay)."""
+    if not runtime.is_dir():
+        return 0
+    removed = 0
+    for d in runtime.iterdir():
+        if d.is_dir() and d.name not in keep and not d.name.startswith("."):
+            shutil.rmtree(d, ignore_errors=True)
+            removed += 1
+    return removed
+
+
 def _program(root: Path, echo: Echo) -> tuple[list[str], Path]:
     """The command that starts SyncMusic after the install and the root helper it uses."""
     binary = os.environ.get("SYNCMUSIC_BINARY")
@@ -105,6 +124,7 @@ def _program(root: Path, echo: Echo) -> tuple[list[str], Path]:
         return [sys.executable, "-m", "syncmusic"], Path(sys.executable).parent / HELPER
     target = _under(root, BIN)
     target.parent.mkdir(parents=True, exist_ok=True)
+    previous_id = _binary_id_or_none(target)
     if Path(binary).resolve() != target.resolve():
         shutil.copyfile(binary, target.with_name(target.name + ".tmp"))
         target.with_name(target.name + ".tmp").chmod(0o755)
@@ -122,6 +142,9 @@ def _program(root: Path, echo: Echo) -> tuple[list[str], Path]:
     runtime_id = _binary_id(target)
     if r.returncode != 0 or not (runtime / runtime_id / ".complete").exists():
         raise InstallError(f"could not unpack {target} into {runtime}: {r.stderr.strip()}")
+    removed = prune_runtimes(runtime, {runtime_id, previous_id} - {None})
+    if removed:
+        echo(f"Removed {removed} old runtime(s) from {runtime}")
     return [str(BIN)], RUNTIME / runtime_id / "python" / "bin" / HELPER
 
 

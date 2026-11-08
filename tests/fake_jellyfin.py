@@ -127,7 +127,9 @@ class FakeJellyfin(httpx.AsyncBaseTransport):
         if path == "/Users":
             return httpx.Response(200, json=[{"Id": USER_ID, "Name": "Admin"}])
         if path == "/System/Info":
-            return httpx.Response(200, json={"ServerName": "fake", "Version": "10.10.7"})
+            return httpx.Response(
+                200, json={"ServerName": "fake", "Version": "10.10.7", "Id": "f00dfeedf00dfeed"}
+            )
         if path == "/Items":
             return httpx.Response(200, json=self._query(q))
         if m := re.fullmatch(r"/Playlists/([^/]+)/Items", path):

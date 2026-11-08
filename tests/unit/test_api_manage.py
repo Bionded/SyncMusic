@@ -233,6 +233,7 @@ async def _first_run(app, api) -> None:
     async with AsyncClient(transport=ASGITransport(app=api), base_url="http://t") as c:
         defaults = (await c.get("/api/v1/settings")).json()
         assert defaults == {
+            "instance_name": "",
             "cache_max_gb": 20.0,
             "cache_combined_books": True,
             "concurrency": None,

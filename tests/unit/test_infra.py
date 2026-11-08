@@ -35,14 +35,15 @@ def test_redact():
 async def test_db_migrations(tmp_path):
     db = Database(tmp_path / "x.sqlite3")
     await db.open()
-    assert await db.schema_version() >= 1
+    version = await db.schema_version()
+    assert version >= 1
     await db.execute("INSERT INTO settings(key, value) VALUES (?, ?)", ("a", "1"))
     row = await db.fetchone("SELECT value FROM settings WHERE key='a'")
     assert row["value"] == "1"
     await db.close()
     db2 = Database(tmp_path / "x.sqlite3")
     await db2.open()  # re-open: the schema is not created again (tests/unit/test_db_schema.py)
-    assert await db2.schema_version() == 1
+    assert await db2.schema_version() == version
     assert (await db2.fetchone("SELECT value FROM settings WHERE key='a'"))["value"] == "1"
     await db2.close()
 

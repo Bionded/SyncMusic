@@ -19,7 +19,7 @@ addStrings({
   "cap.kind.audiobook": "Audiobooks",
   "cap.kind.video": "Video",
   "cap.kind.podcast": "Podcasts",
-  "cap.kind.video": "Video",
+  "cap.kind.others": "Other installations",
   "cap.kind.other": "Other",
 });
 
@@ -122,8 +122,8 @@ export function indetBar(label) {
   return html`<span class="bar indet" role="progressbar" aria-label="${label}"><i></i></span>`;
 }
 
-const KINDS = ["music", "audiobook", "podcast", "video", "other"];
-const KIND_VARS = { music: "--k-mu", audiobook: "--k-ab", podcast: "--k-po", video: "--k-vi", other: "--k-ot" };
+const KINDS = ["music", "audiobook", "podcast", "video", "others", "other"];
+const KIND_VARS = { music: "--k-mu", audiobook: "--k-ab", podcast: "--k-po", video: "--k-vi", others: "--k-oi", other: "--k-ot" };
 
 /** Capacity split by media kind: `parts` {kind: bytes}; free space hatched; a legend in words (never colour alone);
  * `after` (html) ends the legend's row on the right (the device Overview's Sync). */
@@ -262,13 +262,24 @@ export function drawer({ title, body = "", label = "" }) {
   let done;
   const closed = new Promise((r) => { done = r; });
   let untrap = null;
-  const close = () => {
+  // a history entry of its own: Back (a phone's back gesture) closes the drawer instead of leaving the page, and
+  // any screen change closes it too
+  history.pushState({ ...(history.state || {}), drawer: id }, "");
+  const ours = () => history.state?.drawer === id;
+  const onNav = () => close(true);
+  const close = (navigated = false) => {
     if (!back.isConnected) return;
     back.remove();
     untrap();
-    if (previous && previous.focus) previous.focus();
+    window.removeEventListener("popstate", onNav);
+    window.removeEventListener("hashchange", onNav);
+    // closed on screen (×, Escape, a button): drop its entry - unless the caller navigates right away
+    if (navigated !== true) setTimeout(() => { if (ours()) history.back(); }, 0);
+    if (previous && previous.focus && previous.isConnected) previous.focus();
     done();
   };
+  window.addEventListener("popstate", onNav);
+  window.addEventListener("hashchange", onNav);
   untrap = trapKeys(back, close);
   back.addEventListener("click", (e) => {
     if (e.target === back || e.target.closest("[data-drawer-close]")) close();

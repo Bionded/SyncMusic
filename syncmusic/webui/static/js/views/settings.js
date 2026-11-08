@@ -119,16 +119,32 @@ const STRINGS = {
   "set.cache_line": "{used} of {max}{inuse} · disk {pct} % full",
   "set.cache_in_use": " (in use by a sync)",
   "set.cache_label": "Media cache: {used} of {max}",
-  "set.clear": "Clear cache",
-  "set.clear_title": "Clear the media cache?",
-  "set.clear_text": "Frees {size}. The next sync converts the files again, which takes longer.",
-  "set.cleared": "Cache cleared · {size} freed.",
-  "set.sys_cache": "System cache",
-  "set.sys_cache_sub": "Cover thumbnails and previews, shared by all players. No limit; rebuilt when needed.",
-  "set.sys_used": "{size}",
-  "set.sys_clear": "Clear",
-  "set.sys_clear_title": "Clear the system cache?",
-  "set.sys_clear_text": "Frees {size}. Covers and previews are made again when they are next shown.",
+  "set.sec.res": "Storage & resources",
+  "set.res_disk": "On disk",
+  "set.res_total": "{size} in total",
+  "set.res_fs": "{path}: {free} free of {total}",
+  "set.res_copy": "Copy the path",
+  "set.res_copied": "Path copied.",
+  "set.res_busy": "A job is running: parts it may use can be cleared when it has finished.",
+  "set.res_item_clear": "Delete",
+  "set.res_confirm_title": "{action}: {label}?",
+  "set.res_confirm_text": "Frees about {size}.",
+  "set.res_confirm_db": "Compacts the database (frees unused space inside it). Takes a moment; nothing is deleted.",
+  "set.res_confirm_backups": "Deletes every database backup except the newest one (about {size} in all backups).",
+  "set.res_confirm_devbak": "These are restore points of the players' databases. Frees about {size}.",
+  "set.res_done": "{label}: {size} freed.",
+  "set.res_mem": "Memory and CPU",
+  "set.res_rss": "Memory used",
+  "set.res_children": "Helper processes",
+  "set.res_cpu": "CPU now / on average",
+  "set.res_uptime": "Running for",
+  "set.res_threads": "Threads",
+  "set.res_lag": "Response delay",
+  "set.res_caches": "In-memory caches",
+  "set.res_cache_line": "entries: {entries} · items: {items}",
+  "set.res_free": "Free memory now",
+  "set.res_free_sub": "Drops what is rebuilt when needed: library contents in memory, Player contents, file tags. Plans stay.",
+  "set.res_freed": "{size} of memory freed.",
   "set.history": "Keep sync history",
   "set.history_sub": "Reports and jobs; each device's last sync stays.",
   "set.logs_keep": "Keep logs",
@@ -150,6 +166,8 @@ const STRINGS = {
   "set.refresh.sync": "Every sync",
   "set.refresh.hourly": "Hourly",
   "set.refresh.manual": "Manually",
+  "set.instance": "Instance name",
+  "set.instance_sub": "How this SyncMusic is named on players it syncs and in other instances. Empty: the host name. Id:",
   "set.ffmpeg": "ffmpeg",
   "set.ffmpeg_sub": "Empty: the ffmpeg on the PATH. Its ffprobe must be next to it.",
   "set.ffmpeg_check": "Check",
@@ -438,10 +456,40 @@ function cacheBar(c) {
       aria-label="${t("set.cache_label", { used: bytes(c.used), max: gb(c.max) })}"><i style="width:${pct}%"></i></span></div>`;
 }
 
-// the system cache: its size and a Clear button, no limit
-function sysCache(c) {
-  return html`<span class="set-inline" data-sys-cache><span class="muted" data-sys-used>${t("set.sys_used", { size: bytes(c?.system || 0) })}</span>
-    <button type="button" class="btn small" data-action="clearSysCache" ${c?.system ? "" : "disabled"}>${t("set.sys_clear")}</button></span>`;
+// Storage & resources: one row per part on disk with its size, path and its one clear action
+function storageBox(st) {
+  if (!st) return "";
+  const btn = (p, item, size, label) => html`<button type="button" class="btn small" data-action="storageClear" data-part="${p.id}"
+    ${item ? html`data-item="${item}"` : ""} data-label="${label}" data-size="${size}" data-verb="${item ? t("set.res_item_clear") : p.action}"
+    ${!size && p.id !== "database" ? "disabled" : ""}>${item ? t("set.res_item_clear") : p.action}</button>`;
+  return html`<div class="set-storage" data-storage><div class="ds-row"><span class="ds-label">${t("set.res_disk")}<small>${t("set.res_total", { size: bytes(st.total) })}
+      ${st.filesystems.map((f) => html` · ${t("set.res_fs", { path: f.path, free: bytes(f.free), total: bytes(f.total) })}`)}</small></span></div>
+    ${st.busy ? html`<p class="muted" data-storage-busy>${t("set.res_busy")}</p>` : ""}
+    <div class="set-io-list">${st.parts.map((p) => html`<div class="set-io-row set-part" data-part-row="${p.id}">
+      <span class="set-part-main"><b>${p.label}</b> <small class="muted">${p.hint}${p.detail ? html` · ${p.detail}` : ""}</small>
+        <span class="set-part-path"><code class="mono">${p.paths[0]}</code><button type="button" class="iconbtn" data-action="copyPath" data-path="${p.paths[0]}"
+          title="${t("set.res_copy")}" aria-label="${t("set.res_copy")}">${icon("copy", { size: 14 })}</button></span>
+        ${p.items.length > 1 || (p.items.length && p.id !== "snapshots") ? html`<span class="set-part-items">${p.items.map((i) => html`<span class="set-part-item" data-part-item="${i.id}">
+          <span class="mono">${i.label}</span> <small class="muted">${bytes(i.size)}</small>${btn(p, i.id, i.size, `${p.label} · ${i.label}`)}</span>`)}</span>` : ""}</span>
+      <span class="set-part-size" data-part-size>${bytes(p.size)}</span>
+      <span>${p.action ? btn(p, null, p.size, p.label) : ""}</span></div>`)}</div></div>`;
+}
+
+function duration(s) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h} h ${m} min` : `${m} min`;
+}
+
+// memory and CPU of the process, refreshed every few seconds while the page is open
+function resourcesBox(r) {
+  if (!r) return "";
+  const rows = [["rss", bytes(r.rss)], ["children", r.children ? `${r.children} · ${bytes(r.children_rss)}` : "0"],
+    ["cpu", `${r.cpu_percent} % / ${r.cpu_percent_avg} %`], ["uptime", duration(r.uptime_s)], ["threads", r.threads], ["lag", `${r.loop_lag_ms} ms`]];
+  return html`<div class="set-res" data-resources><div class="ds-row"><span class="ds-label">${t("set.res_mem")}</span></div>
+    <table class="table set-res-table"><tbody>${rows.map(([k, x]) => html`<tr><td>${t(`set.res_${k}`)}</td><td class="mono" data-res="${k}">${x}</td></tr>`)}
+      ${r.caches.map((c) => html`<tr><td>${t("set.res_caches")}: ${c.label}</td><td class="mono" data-res-cache="${c.id}">${t("set.res_cache_line", { entries: c.entries, items: c.items })}</td></tr>`)}</tbody></table>
+    <div class="ds-row"><span class="ds-label">${t("set.res_free")}<small>${t("set.res_free_sub")}</small></span>
+      <button type="button" class="btn small" data-action="freeMemory" ${r.busy ? "disabled" : ""}>${t("set.res_free")}</button></div></div>`;
 }
 
 // "Found ffmpeg 6.1.1 · encoders: aac alac …", or why it does not run
@@ -547,26 +595,32 @@ function accessMsg(root, text) {
   m.hidden = !text;
 }
 
-function general() {
+function general(v, version) {
   const now = window.syncmusicTheme.mode();
+  const inst = version.instance || {};
   // the theme is not a stored setting: buttons, applied at once (outside the Save bar's form)
-  return sub("general", html`<div id="themeCard">${row(t("set.theme"), t("set.theme_note"), html`<div class="seg" role="radiogroup" aria-label="${t("set.theme")}">${window.syncmusicTheme.modes.map((x) =>
+  return sub("general", html`<div class="field" data-set-row><label for="set-instance_name">${t("set.instance")}</label>
+    <input id="set-instance_name" type="text" maxlength="64" value="${v.instance_name ?? ""}" placeholder="${version.host || ""}"
+      autocomplete="off" spellcheck="false" aria-describedby="set-instance_name-h">
+    <div class="hint" id="set-instance_name-h">${t("set.instance_sub")} <span class="mono" data-instance-id>${inst.id || ""}</span></div></div>
+    <div id="themeCard">${row(t("set.theme"), t("set.theme_note"), html`<div class="seg" role="radiogroup" aria-label="${t("set.theme")}">${window.syncmusicTheme.modes.map((x) =>
     html`<button type="button" role="radio" aria-checked="${x === now}" data-action="theme" data-value="${x}">${t(`set.theme_${x}`)}</button>`)}</div>`)}</div>`);
 }
 
 export const nav = "settings";
 
 export async function render(ctx) {
-  const [meta, v, version, cache, ffinfo, upd, dbb, access] = await Promise.all([get("/settings/schema"), get("/settings"), get("/version"),
+  const [meta, v, version, cache, ffinfo, upd, dbb, access, store, res] = await Promise.all([get("/settings/schema"), get("/settings"), get("/version"),
     get("/settings/cache").catch(() => null), get("/settings/ffmpeg").catch(() => null), get("/updates").catch(() => null),
-    get("/db-backups").catch(() => null), get("/auth").catch(() => null)]);
+    get("/db-backups").catch(() => null), get("/auth").catch(() => null), get("/system/storage").catch(() => null),
+    get("/system/resources").catch(() => null)]);
   ctx.state.devices = (await get("/devices").catch(() => null))?.registered || [];
   ctx.state.values = v;
   const index = html`<nav class="set-index" aria-label="${t("set.jump")}">${SECTIONS.map((s, i) =>
     html`<a href="#/settings" data-action="jump" data-sec="${s}" ${i === 0 ? html`aria-current="true"` : ""}>${t(`set.sec.${s}`)}</a>`)}</nav>
     <label class="set-jump"><select data-change="jumpSelect" aria-label="${t("set.jump")}">${SECTIONS.map((s) =>
       html`<option value="${s}">${t(`set.sec.${s}`)}</option>`)}</select></label>`;
-  const about = [["version", version.version], ["pygpod", version.pygpod], ["python", version.python], ["host", version.host],
+  const about = [["version", version.version], ["pygpod", version.pygpod], ["python", version.python], ["host", version.host], ["instance", version.instance?.name],
     ["model", version.model], ["uptime", uptime(version.uptime_s)]].filter(([, x]) => x);
   return html`${pageHead(t("nav.settings"), t("set.sub", { version: version.version, host: version.host || "localhost" }),
     html`<a class="btn" href="#/logs">${icon("logs", { size: 16 })}${t("set.logs")}</a>`)}
@@ -604,11 +658,9 @@ export async function render(ctx) {
             html`<option value="${n}" ${n === v.convert_nice ? "selected" : ""}>${t(`set.nice.${n}`)}</option>`)}</select>`)}`)}`)}
         ${section("storage", html`
           ${sub("cache", html`${cacheBar(cache)}
-          ${row(t("set.cache_max"), t("set.cache_max_sub"), html`${num("cache_max_gb", v.cache_max_gb, { unit: "GB" })}
-            <button type="button" class="btn small" data-action="clearCache" ${cache?.used ? "" : "disabled"}>${t("set.clear")}</button>`)}
+          ${row(t("set.cache_max"), t("set.cache_max_sub"), num("cache_max_gb", v.cache_max_gb, { unit: "GB" }))}
           <label class="ds-check" data-set-row><input type="checkbox" id="set-cache_combined_books" ${v.cache_combined_books ? "checked" : ""}>
             <span class="ds-label">${t("set.cache_books")}<small>${t("set.cache_books_sub")}</small></span></label>
-          ${row(t("set.sys_cache"), t("set.sys_cache_sub"), sysCache(cache))}
           ${row(t("set.history"), t("set.history_sub"), num("history_days", v.history_days, { unit: t("set.days") }))}
           ${row(t("set.logs_keep"), t("set.logs_keep_sub"), num("log_days", v.log_days, { unit: t("set.days") }))}
           ${row(t("set.disk_warn"), t("set.disk_warn_sub"), num("disk_warn_gb", v.disk_warn_gb, { unit: "GB", placeholder: t("set.limit_ph") }))}`)}
@@ -642,8 +694,9 @@ export async function render(ctx) {
             <span class="ds-num"><input type="time" id="set-quiet_start" class="ds-time" value="${v.quiet_hours?.start || "23:00"}" aria-label="${t("set.quiet_from")}" ${v.quiet_hours ? "" : "disabled"}>
               ${t("set.to")} <input type="time" id="set-quiet_end" class="ds-time" value="${v.quiet_hours?.end || "07:30"}" aria-label="${t("set.quiet_to")}" ${v.quiet_hours ? "" : "disabled"}></span></div>`)}
         ${section("system", html`
-          ${general()}
+          ${general(v, version)}
           ${sub("access", accessBox(access))}
+          ${sub("res", html`<div data-nosave>${storageBox(store)}${resourcesBox(res)}</div>`)}
           ${sub("maint", html`
           ${row(t("set.loglevel"), t("set.loglevel_sub"), html`<select id="set-log_level" class="set-select" aria-label="${t("set.loglevel")}">${LOG_LEVELS.map((l) =>
             html`<option value="${l}" ${l === (v.log_level || "") ? "selected" : ""}>${t(`set.loglevel.${l}`)}</option>`)}</select>`)}
@@ -680,6 +733,16 @@ export async function render(ctx) {
 export function mounted(ctx, root) {
   const form = root.querySelector("[data-set-form]");
   if (!form) return;
+  if (root.querySelector("[data-resources]")) {
+    const hash = location.hash;
+    const timer = setInterval(async () => {
+      const box = root.querySelector("[data-resources]");
+      if (!box || !box.isConnected || location.hash !== hash) { clearInterval(timer); return; }
+      if (document.hidden || box.contains(document.activeElement)) return;
+      const r = await get("/system/resources").catch(() => null);
+      if (r && box.isConnected) box.outerHTML = String(resourcesBox(r));
+    }, 5000);
+  }
   // the download link follows "Include passwords"
   root.querySelector("#set-backup_secrets")?.addEventListener("change", (e) => {
     root.querySelector("[data-backup-dl]").href = `/api/v1/settings/backup${e.target.checked ? "?secrets=true" : ""}`;
@@ -816,6 +879,7 @@ async function save(ctx, form) {
     default_eject_after: checked("setEject"),
     default_no_cache: checked("setCacheUse") === "without",
     snapshot_refresh: checked("setRefresh"),
+    instance_name: form.querySelector("#set-instance_name").value.trim(),
     ffmpeg_path: form.querySelector("#set-ffmpeg_path").value.trim() || null,
     convert_nice: Number(form.querySelector("#set-convert_nice").value),
     notification_days: Number(form.querySelector("#set-notification_days").value) || null,
@@ -830,6 +894,8 @@ async function save(ctx, form) {
     quiet_hours: form.querySelector("#set-quiet").checked
       ? { start: form.querySelector("#set-quiet_start").value || "23:00", end: form.querySelector("#set-quiet_end").value || "07:30" } : null,
   });
+  const brandSub = document.getElementById("brandSub"); // the instance name under the logo
+  if (brandSub) brandSub.textContent = ctx.state.values.instance_name || (await get("/version").catch(() => null))?.instance?.name || brandSub.textContent;
   toast(t("set.saved"));
   return true;
 }
@@ -902,23 +968,33 @@ export const actions = {
   autoUpdate(el) {
     el.closest("[data-set-row]").querySelector("[data-auto-warn]").hidden = el.value !== "now";
   },
-  async clearCache(el, ctx) {
-    const c = await get("/settings/cache");
-    if (!await confirm({ title: t("set.clear_title"), message: t("set.clear_text", { size: bytes(c.used) }), ok: t("set.clear"), danger: true })) return;
+  async storageClear(el) {
+    const { part, item, label, size, verb } = el.dataset;
+    const message = part === "database" ? t("set.res_confirm_db") : part === "db_backups" ? t("set.res_confirm_backups", { size: bytes(+size) })
+      : part === "device_backups" ? t("set.res_confirm_devbak", { size: bytes(+size) }) : t("set.res_confirm_text", { size: bytes(+size) });
+    if (!await confirm({ title: t("set.res_confirm_title", { action: verb, label }), message, ok: verb, danger: part === "device_backups" })) return;
     el.disabled = true;
-    const r = await post("/settings/cache/clear", {});
-    toast(t("set.cleared", { size: bytes(r.freed) }));
-    const box = el.closest("#content").querySelector("[data-cache]");
-    if (box) box.outerHTML = String(cacheBar(r)); // the rest of the form keeps what is being edited
+    try {
+      const r = await post(`/system/storage/${encodeURIComponent(part)}/clear`, item ? { item } : {});
+      toast(t("set.res_done", { label, size: bytes(r.freed) }));
+      const box = el.closest("#content")?.querySelector("[data-storage]");
+      if (box) box.outerHTML = String(storageBox(r));
+      const bar = document.querySelector("#content [data-cache]");
+      const cache = part === "media_cache" && bar ? await get("/settings/cache").catch(() => null) : null;
+      if (cache) bar.outerHTML = String(cacheBar(cache));
+    } catch (e) { el.disabled = false; toast(e.message, "error"); }
   },
-  async clearSysCache(el) {
-    const c = await get("/settings/cache");
-    if (!await confirm({ title: t("set.sys_clear_title"), message: t("set.sys_clear_text", { size: bytes(c.system) }), ok: t("set.sys_clear") })) return;
+  async copyPath(el) {
+    try { await navigator.clipboard.writeText(el.dataset.path); toast(t("set.res_copied"), "ok"); } catch { toast(el.dataset.path); }
+  },
+  async freeMemory(el) {
     el.disabled = true;
-    const r = await post("/settings/cache/clear", { kind: "system" });
-    toast(t("set.cleared", { size: bytes(r.freed) }));
-    const box = el.closest("[data-sys-cache]");
-    if (box) box.outerHTML = String(sysCache(r));
+    try {
+      const r = await post("/system/resources/free", {});
+      toast(t("set.res_freed", { size: bytes(r.freed) }));
+      const box = el.closest("[data-resources]");
+      if (box) box.outerHTML = String(resourcesBox(r));
+    } catch (e) { el.disabled = false; toast(e.message, "error"); }
   },
   async checkFfmpeg(el) {
     const path = el.closest("form").querySelector("#set-ffmpeg_path").value.trim();

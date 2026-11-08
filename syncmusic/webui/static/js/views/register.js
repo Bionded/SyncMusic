@@ -78,6 +78,15 @@ addStrings({
   "reg.first.keep_text": "Keeps everything on the device and only adds what the templates ask for. Nothing is removed on the first sync.",
   "reg.first.wipe": "Wipe the music folder",
   "reg.first.wipe_text": "Removes all music, playlists and the database on the first sync, then writes the templates.",
+  "reg.cont_help": "SyncMusic synced this player before (home: {home}). Choose how to go on.",
+  "reg.cont_help_mine": "SyncMusic synced this player before. Choose how to go on.",
+  "reg.cont.continue": "Continue",
+  "reg.cont.continue_text": "Keeps what is on it, including other instances' items, and adds your libraries. Auto-sync on connect stays with the home instance.",
+  "reg.cont.fresh": "Start fresh",
+  "reg.cont.fresh_text": "Wipes the music on the first sync. Only the home instance can do this.",
+  "reg.cont.fresh_not_home": "Only the home instance {home} can start it fresh: continue, then make this instance home.",
+  "reg.cont.keep": "Keep files",
+  "reg.cont.keep_text": "Registers it as a new device; the items already on it are treated as files SyncMusic did not put there.",
   "reg.submit": "Register",
   "reg.missing": "Pick a drive or a folder and give the device a name.",
   "reg.choose": "Choose a template…",
@@ -135,9 +144,10 @@ export async function render(ctx) {
         ${appSettings ? html`<p class="hint" data-reg-cache>${t(appSettings.default_no_cache ? "reg.cache_without" : "reg.cache_with")}</p>
           <p class="hint" data-reg-update>${appSettings.default_update_every_min ? t("reg.update_every", { n: appSettings.default_update_every_min }) : t("reg.update_none")}</p>` : ""}</div></div>
       <div class="card"><div class="card-head"><h2>${t("reg.step_first")}</h2></div><div class="card-body">
-        <p class="muted" style="margin-top:0">${t("reg.first_help")}</p>
+        <div id="regContinuity" hidden></div>
+        <div id="regFirst"><p class="muted" style="margin-top:0">${t("reg.first_help")}</p>
         <div class="reg-opts" role="radiogroup" aria-label="${t("reg.step_first")}">${FIRST.map((v) => html`<label class="reg-opt"><input type="radio" name="firstSync" value="${v}" ${v === "keep" ? "checked" : ""}>
-          <span><b>${t(`reg.first.${v}`)}</b><small>${t(`reg.first.${v}_text`)}</small></span></label>`)}</div>
+          <span><b>${t(`reg.first.${v}`)}</b><small>${t(`reg.first.${v}_text`)}</small></span></label>`)}</div></div>
         <div id="regFormatRow" ${formatOffered(ctx) ? "" : "hidden"}>${formatRow(ctx)}</div></div></div>
       <div class="reg-actions"><a class="btn" href="#/devices">${t("common.cancel")}</a><button class="btn primary" type="submit">${t("reg.submit")}</button></div>
     </form>`;
@@ -198,6 +208,7 @@ function diskChoice(u, checked) {
 export function mounted(ctx, root) {
   const form = root.querySelector("form") || root;
   if (form.querySelector?.("#regSuggest")) suggestProcs(form, ctx);
+  if (form.querySelector?.("#regContinuity")) peekChanged(form, ctx);
   loadStorages(form);
   const radio = ctx.query.get("target") === "network" && root.querySelector(`input[name="target"][value="${NETWORK}"]`);
   if (radio && !radio.checked) {
@@ -322,6 +333,33 @@ function processors(ctx) {
     <div style="margin-left:28px">${steps}</div>`;
 }
 
+const CONTINUITY = ["continue", "fresh", "keep"];
+
+/** A drive or folder SyncMusic synced before: Continue (default) / Start fresh (home only) / Keep files instead of
+ * the first-sync choice. */
+async function peekChanged(form, ctx) {
+  const box = form.querySelector("#regContinuity");
+  const params = new URLSearchParams();
+  const path = form.querySelector("#regPath").value.trim();
+  if (ctx.state.selected && ctx.state.selected !== NETWORK) params.set("disk", ctx.state.selected);
+  else if (!ctx.state.selected && path) params.set("mount_path", path);
+  let r = null;
+  const my = (ctx.state.peeking = {});
+  if ([...params].length) { try { r = await get(`/devices/register/peek?${params}`); } catch { r = null; } }
+  if (my !== ctx.state.peeking || !form.isConnected) return;
+  ctx.state.peek = r?.synced_before ? r : null;
+  box.hidden = !ctx.state.peek;
+  form.querySelector("#regFirst").hidden = !!ctx.state.peek;
+  if (!ctx.state.peek) { box.innerHTML = ""; return; }
+  const home = r.home ? (r.home.name || r.home.id) : "";
+  setHtml(box, html`<p class="muted" style="margin-top:0">${home && !r.is_home ? t("reg.cont_help", { home }) : t("reg.cont_help_mine")}</p>
+    <div class="reg-opts" role="radiogroup" aria-label="${t("reg.step_first")}">${CONTINUITY.map((v) => {
+      const blocked = v === "fresh" && !r.is_home;
+      return html`<label class="reg-opt"><input type="radio" name="continuity" value="${v}" ${v === "continue" ? "checked" : ""} ${blocked ? "disabled" : ""}>
+        <span><b>${t(`reg.cont.${v}`)}</b><small>${blocked ? t("reg.cont.fresh_not_home", { home }) : t(`reg.cont.${v}_text`)}</small></span></label>`;
+    })}</div>`);
+}
+
 /** The format row follows the target and type (offered or not, Format or Wipe); a change unticks it. */
 function formatChanged(form, ctx) {
   const row = form.querySelector("#regFormatRow");
@@ -418,8 +456,10 @@ export const actions = {
       loadStorages(form);
       ctx.state.procTouched = false;
       suggestProcs(form, ctx);
+      peekChanged(form, ctx);
     } else if (e.target.id === "regPath") {
       suggestProcs(form, ctx);
+      peekChanged(form, ctx);
     } else if (e.target.id === "regFormat") {
       e.target.closest(".reg-format").classList.toggle("danger", e.target.checked);
     } else if (e.target.name === "tpl") {
@@ -510,7 +550,9 @@ export const actions = {
         rule_set: { template_ids: templateIds },
         ...(procTemplate ? { processor_template_id: procTemplate } : { processors: slots }),
         ...(network ? { settings } : disk ? { disk, ...(settings ? { settings } : {}) } : { mount_path: path }),
-        first_sync_choice: form.querySelector('input[name="firstSync"]:checked')?.value || null,
+        ...(ctx.state.peek
+          ? { continuity: form.querySelector('input[name="continuity"]:checked')?.value || "continue" }
+          : { first_sync_choice: form.querySelector('input[name="firstSync"]:checked')?.value || null }),
       });
     } finally { submit.disabled = false; }
     toast(t("reg.done", { name: cfg.name }));

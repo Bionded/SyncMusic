@@ -35,6 +35,26 @@ def with_tag_step(slots: list[ProcessorSlot]) -> list[ProcessorSlot]:
     return [*slots[:pos], ProcessorSlot(type=TAG_STEP), *slots[pos:]]
 
 
+def normalised_chain(slots: list[ProcessorSlot]) -> list[tuple[str, dict[str, object]]]:
+    """A chain as the sync engine runs it: the enabled slots (plus the implied tag/convert steps), each with its
+    settings validated and the defaults filled in. Two chains that are equal here process every file alike."""
+    out: list[tuple[str, dict[str, object]]] = []
+    for s in with_tag_step(slots):
+        if not s.enabled:
+            continue
+        try:
+            settings = registry.processor_class(s.type).Settings.model_validate(s.settings)
+        except (KeyError, ValueError):  # unknown type / invalid settings: compare as written
+            out.append((s.type, dict(s.settings)))
+            continue
+        out.append((s.type, settings.model_dump(mode="json")))
+    return out
+
+
+def same_chain(a: list[ProcessorSlot], b: list[ProcessorSlot]) -> bool:
+    return normalised_chain(a) == normalised_chain(b)
+
+
 def _stage(type_name: str) -> str | None:
     try:
         return registry.processor_class(type_name).stage

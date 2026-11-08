@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from syncmusic.base.capabilities import DeviceCapabilities
 from syncmusic.base.context import AppContext
+from syncmusic.core import manifest as manifest_io
 from syncmusic.core.models import UNKNOWN_SPACE as _UNKNOWN_SPACE
 from syncmusic.core.models import (
     DeviceConfig,
@@ -156,6 +157,28 @@ class Device(ABC):
     @abstractmethod
     async def read_manifest(self) -> Manifest | None: ...
 
+    async def write_manifest(self, manifest: Manifest) -> None:
+        """Write the manifest alone, nothing else (a header change such as the home instance)."""
+        await asyncio.to_thread(manifest_io.write, self.mount, manifest)
+
+    async def read_state(self, name: str) -> bytes | None:
+        """A small file of the app's state folder on the device (`.syncmusic/<name>`), None when absent."""
+        path = self.mount / manifest_io.STATE_DIR / name
+        try:
+            return await asyncio.to_thread(path.read_bytes)
+        except FileNotFoundError:
+            return None
+
+    async def write_state(self, name: str, data: bytes) -> None:
+        """Replace a file of the app's state folder on the device atomically."""
+        await asyncio.to_thread(
+            manifest_io.atomic_write, self.mount / manifest_io.STATE_DIR / name, data
+        )
+
+    async def delete_state(self, name: str) -> None:
+        """Remove a file of the app's state folder on the device (no error when it is not there)."""
+        await asyncio.to_thread((self.mount / manifest_io.STATE_DIR / name).unlink, True)
+
     @abstractmethod
     async def read_contents(self) -> DeviceContents: ...
 
@@ -273,6 +296,8 @@ class Device(ABC):
         """Estimated database size with `items` tracks and `playlist_entries` entries in its playlists."""
         raise NotImplementedError
 
-    def commit_reserve(self, manifest_items: int) -> int:
-        """Bytes needed on the device to commit (device DB + manifest) for this many items."""
-        return self.effective_capabilities().db_overhead_bytes + 400 * manifest_items + 64 * 1024
+    def commit_reserve(self, manifest_items: int, caps: DeviceCapabilities | None = None) -> int:
+        """Bytes needed on the device to commit (device DB + manifest) for this many items; `caps`: the effective
+        capabilities when the caller already resolved them (per-item callers)."""
+        caps = caps or self.effective_capabilities()
+        return caps.db_overhead_bytes + 400 * manifest_items + 64 * 1024

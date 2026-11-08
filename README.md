@@ -8,9 +8,10 @@ SyncMusic keeps portable music players in sync with your media server. It copies
 from your **libraries** onto your **devices**, converting and tagging each file on the way, and it sends what you
 listened to on the device (play counts, ratings, podcast/audiobook positions) back to the library.
 
-- **Libraries**: [Navidrome](https://www.navidrome.org/) (Subsonic API), a plain **folder** of audio files, and
-  [Audiobookshelf](https://www.audiobookshelf.org/) (audiobooks and podcasts), and
-  [Jellyfin](https://jellyfin.org/) (movies and episodes, one way to the player; beta).
+- **Libraries**: [Navidrome](https://www.navidrome.org/) (Subsonic API), a plain **folder** of audio files,
+  [Audiobookshelf](https://www.audiobookshelf.org/) (audiobooks and podcasts) and
+  [Jellyfin](https://jellyfin.org/) (movies and episodes, one way to the player; beta) - see
+  [Supported libraries](#supported-libraries) and the [library guide](docs/01-overview.md#libraries).
 - **Devices**: iPods with Apple's firmware, Rockbox players, HiBy R1, USB flash drives and memory cards, FTP
   servers and SMB shares, Android players over MTP (beta) - see [Supported devices](#supported-devices).
 - **Rules** decide what goes onto a device. They are compatible with Navidrome smart playlists (`.nsp`), can be

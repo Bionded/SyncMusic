@@ -232,7 +232,7 @@ def link_rules(url: str, device_id: str, rule_set: dict, library_ids=("music",))
     return r.json()
 
 
-# the device Templates tab: templates are added in a picker drawer, removed with ×, and
+# the device Templates tab: templates are added in the inline picker, removed with ×, and
 # stored by the Save bar
 def add_templates(page, *template_ids: str) -> None:
     page.locator('[data-tpls] [data-action="rulesAdd"]').first.click()

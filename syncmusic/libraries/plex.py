@@ -168,6 +168,12 @@ class PlexLibrary(Library, FeedbackSink):
         want = self.s.section.casefold()
         return [d for d in music if want in (str(d.get("key")), str(d.get("title", "")).casefold())]
 
+    async def source_id(self) -> str | None:
+        """`plex:<machineIdentifier>:<section uuid>[,…]`."""
+        machine = await self._machine()
+        uuids = sorted(str(d.get("uuid") or d.get("key")) for d in await self._sections())
+        return f"plex:{machine}:{','.join(uuids)}" if machine and uuids else None
+
     async def _playlists(self) -> list[dict[str, Any]]:
         return list((await self.get("/playlists", playlistType="audio")).get("Metadata") or [])
 

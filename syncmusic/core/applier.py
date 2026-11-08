@@ -25,6 +25,7 @@ A replace removes the old file first, then puts the new one (file devices may re
 from __future__ import annotations
 
 import asyncio
+import copy
 import errno
 import logging
 import math
@@ -73,6 +74,8 @@ from syncmusic.core.prepare import (
 log = logging.getLogger(__name__)
 
 CHECKPOINT_S = 60.0  # seconds of writing between two checkpoint commits
+COPY_YIELD_EVERY = 100  # deep-copied manifest entries between two yields (slow per item)
+YIELD_EVERY = 500  # loop items between two yields to the event loop in long in-memory passes
 # a library that does not answer a download pauses for these delays, one per failed retry, then its remaining
 # items are postponed to the next sync
 RETRY_DELAYS_S = (5.0, 15.0, 60.0, 120.0, 180.0)
@@ -365,7 +368,7 @@ class Applier:
         s.data["device_positions"] = set(self.device_positions or ())
         if manifest is not None:
             s.manifest = manifest
-        manifest = self._start_manifest(s)
+        manifest = await self._start_manifest(s)
         manifest.header.processing_inputs.update(plan.processing_inputs)  # what the hashes mean
         # ratings / positions / playlists: what changed besides files, for the update rows
         counts = dict.fromkeys(
@@ -526,10 +529,22 @@ class Applier:
 
     # --- steps ------------------------------------------------------------------------------------
 
-    def _start_manifest(self, s: DeviceSession) -> Manifest:
+    async def _start_manifest(self, s: DeviceSession) -> Manifest:
         uid = self.device.config.identity.manifest_device_id
         if s.manifest is not None:
-            m = s.manifest.model_copy(deep=True)
+            # the applier changes entries in place: a deep copy. One deepcopy of a big manifest in a thread
+            # starves the event loop through the GIL just the same; copying entry by entry with yields keeps
+            # every slice short
+            src = s.manifest
+            items: dict[str, ManifestEntry] = {}
+            for n, (k, e) in enumerate(src.items.items()):
+                if n % COPY_YIELD_EVERY == COPY_YIELD_EVERY - 1:
+                    await asyncio.sleep(0)
+                items[k] = e.model_copy(deep=True)
+            rest = {
+                f: copy.deepcopy(getattr(src, f)) for f in Manifest.model_fields if f != "items"
+            }
+            m = Manifest.model_construct(_fields_set=src.model_fields_set, items=items, **rest)
             m.header.device_id, m.header.device_uid = self.device.id, uid  # taken over if foreign
             return m
         return Manifest(
@@ -832,7 +847,7 @@ class Applier:
         old = manifest.items.get(key) if a.kind is ActionKind.REPLACE else None
         freed = old.size if old is not None else 0
         free = await self.device.free_space()
-        reserve = self.device.commit_reserve(len(manifest.items) + (0 if old else 1))
+        reserve = self.device.commit_reserve(len(manifest.items) + (0 if old else 1), self.caps())
         if free + freed - size < reserve:
             report.skipped_for_space.append(key)
             self._forget_lost(a, manifest)
@@ -897,7 +912,9 @@ class Applier:
         # the library's favourites of every item synced, for devices with hearts (HiBy)
         starred: dict[str, bool] = s.data.setdefault("library_starred", {})
         tracks: dict[str, Track] = s.data.setdefault("library_tracks", {})
-        for a in plan.actions:
+        for n, a in enumerate(plan.actions):
+            if n % YIELD_EVERY == YIELD_EVERY - 1:  # thousands of keeps: serve the UI in between
+                await asyncio.sleep(0)
             if a.item is not None:
                 tracks[a.ref.key()] = a.item.track
             if a.item is not None and stores_starred(self.libraries.get(a.ref.library_id)):
@@ -930,6 +947,10 @@ class Applier:
                 if a.kind is ActionKind.UPDATE_META or not entry.meta:
                     entry.meta = meta_snapshot(a.item.track)  # what the device holds now
                 entry.meta_hash = a.meta_hash or entry.meta_hash
+                if (
+                    a.restamp
+                ):  # the source was only touched: the file on the device is still current
+                    entry.source_state = a.item.track.source_state
                 if a.rehash:  # only the caps hash scheme changed: the file stays
                     entry.chain_hash, entry.processing = a.chain_hash, a.processing
                 if a.processing and entry.chain_hash == a.chain_hash:

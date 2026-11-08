@@ -39,9 +39,13 @@ DEFAULT_MAX_BYTES = 20 * 1000**3
 TMP_PREFIX = ".tmp-"
 
 
+# built once: per-item hot path
+_KEY_JSON = json.JSONEncoder(sort_keys=True, default=str, ensure_ascii=False)
+
+
 def make_key(*parts: Any) -> str:
     """sha256 over the JSON of `parts` (item ref, source state, chain of (type, settings hash, version))."""
-    data = json.dumps(parts, sort_keys=True, default=str, ensure_ascii=False)
+    data = _KEY_JSON.encode(parts)
     return hashlib.sha256(data.encode()).hexdigest()
 
 
@@ -73,6 +77,7 @@ class ProcessingCache:
         self._pinned: Counter[str] = Counter()
         self._reserved = 0  # bytes of puts between their room check and their index row
         self._lock = asyncio.Lock()  # serialises put/evict bookkeeping
+        self._total: int | None = None  # running SUM(size) of the index, None = read it again
 
     def _dir(self, key: str) -> Path:
         return self.root / key[:2] / key
@@ -88,7 +93,7 @@ class ProcessingCache:
             return None
         d = self.root / row["path"]
         if not d.is_dir():
-            await self.db.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
+            await self._drop_row(key)
             return None
         await self.db.execute(
             "UPDATE cache_entries SET last_access = ? WHERE key = ?", (_now(), key)
@@ -107,8 +112,15 @@ class ProcessingCache:
         return int(row[0]) if row else 0
 
     async def total_size(self) -> int:
-        row = await self.db.fetchone("SELECT COALESCE(SUM(size), 0) FROM cache_entries")
-        return int(row[0]) if row else 0
+        # A SUM over the whole index on every put made a sync quadratic in the number of entries.
+        if self._total is None:
+            row = await self.db.fetchone("SELECT COALESCE(SUM(size), 0) FROM cache_entries")
+            self._total = int(row[0]) if row else 0
+        return self._total
+
+    async def _drop_row(self, key: str) -> None:
+        await self.db.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
+        self._total = None
 
     @asynccontextmanager
     async def pinned(self, *keys: str) -> AsyncIterator[None]:
@@ -170,11 +182,14 @@ class ProcessingCache:
                     return kept
                 await asyncio.to_thread(self._swap_in, tmp, final)
                 now = _now()
+                old = await self.db.fetchone("SELECT size FROM cache_entries WHERE key = ?", (key,))
                 await self.db.execute(
                     "INSERT OR REPLACE INTO cache_entries (key, path, size, created_at, last_access, meta)"
                     " VALUES (?, ?, ?, ?, ?, ?)",
                     (key, final.relative_to(self.root).as_posix(), size, now, now, meta_json),
                 )
+                if self._total is not None:
+                    self._total += size - (int(old["size"]) if old else 0)
         finally:
             async with self._lock:
                 self._reserved -= need
@@ -208,8 +223,10 @@ class ProcessingCache:
             await self._delete_locked(key)
 
     async def _delete_locked(self, key: str) -> None:
-        row = await self.db.fetchone("SELECT path FROM cache_entries WHERE key = ?", (key,))
+        row = await self.db.fetchone("SELECT path, size FROM cache_entries WHERE key = ?", (key,))
         await self.db.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
+        if row is not None and self._total is not None:
+            self._total -= int(row["size"])
         if row is not None:
             await asyncio.to_thread(shutil.rmtree, self.root / row["path"], True)
 
@@ -254,7 +271,7 @@ class ProcessingCache:
             orphan_dirs = await asyncio.to_thread(self._remove_orphans, set(known))
             stale = [k for p, k in known.items() if not (self.root / p).is_dir()]
             for key in stale:
-                await self.db.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
+                await self._drop_row(key)
         return orphan_dirs, len(stale)
 
     def _remove_orphans(self, known: set[str]) -> int:

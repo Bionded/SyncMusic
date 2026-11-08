@@ -25,13 +25,14 @@ import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from syncmusic.base.capabilities import LibraryCapabilities
 from syncmusic.base.device import Device
 from syncmusic.base.feedback import FeedbackRejected, FeedbackSink
 from syncmusic.base.library import Library
+from syncmusic.core.manifest import is_external
 from syncmusic.core.models import (
     DeviceConfig,
     DeviceFeedback,
@@ -213,6 +214,23 @@ async def _covered_positions(sink: FeedbackSink, rows: list[PendingRow]) -> dict
     return covered
 
 
+def _kept_plays(manifest: Manifest | None) -> list[PlayEvent]:
+    """Plays of our items that another installation read from the device (`pending_plays`). Their time is
+    unknown: estimated as that installation's write time, one second apart, the same on every run (an interrupted
+    run finds the same plays again, and delivery skips what already arrived)."""
+    if manifest is None:
+        return []
+    at = manifest.header.updated_at
+    out = []
+    for e in manifest.items.values():
+        if e.pending_plays and not is_external(e.ref.library_id) and not e.orphan:
+            out += [
+                PlayEvent(ref=e.ref, played_at=at - timedelta(seconds=n), played_at_estimated=True)
+                for n in range(e.pending_plays)
+            ]
+    return out
+
+
 def _new_feedback(
     fb: DeviceFeedback,
     plays: list[PlayEvent],
@@ -232,7 +250,8 @@ def _new_feedback(
     }
 
     def wanted(key: str) -> bool:
-        return key not in skip and key.split("/", 1)[0] not in no_sink
+        lid = key.split("/", 1)[0]
+        return key not in skip and lid not in no_sink and not is_external(lid)
 
     return DeviceFeedback(
         plays=[p for p in plays if wanted(p.ref.key())] if settings.plays else [],
@@ -290,6 +309,10 @@ class ReverseSync:
         fb = await device.read_feedback(manifest) if manifest is not None else DeviceFeedback()
         journal = await self.store.feedback_journal(cfg.id)
         plays = _uncaptured_plays(fb, journal) if journal else fb.plays
+        # another installation's items: their plays are kept on the manifest entry for it (see _commit), the
+        # plays it kept for ours are sent now
+        plays = [p for p in plays if not is_external(p.ref.library_id)]
+        plays += _kept_plays(manifest)
         device_wins = cfg.sync.rating_priority == "device"
         # every play the device shows, captured before or not: a run cancelled before the device commit finds the
         # same plays again and must not push the reset bookmark after the finished position
@@ -666,6 +689,19 @@ class ReverseSync:
         for p in fb.plays:
             plays_per_key[p.ref.key()] += 1
         for key, entry in manifest.items.items():
+            if is_external(entry.ref.library_id):
+                # not ours to send: kept for the installation whose library it is. Its rating and bookmark
+                # baselines stay, so that installation still sees the device's change
+                if plays_per_key.get(key):
+                    entry.pending_plays += plays_per_key[key]
+                    changed = True
+                if key in fb.play_counts and fb.play_counts[key] != entry.last_playcount:
+                    entry.last_playcount = fb.play_counts[key]
+                    changed = True
+                continue
+            if entry.pending_plays:
+                entry.pending_plays = 0  # captured by this run (_kept_plays)
+                changed = True
             count = (
                 fb.play_counts[key]
                 if key in fb.play_counts

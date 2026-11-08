@@ -184,3 +184,24 @@ async def test_put_passes_through_when_pinned_entries_fill_the_cache(db, tmp_pat
     assert (
         await c.put("huge", {"f": blob(tmp_path, "h", 300)}) is None
     )  # larger than the whole cache
+
+
+async def test_running_total_matches_the_index(db, tmp_path):
+    c = ProcessingCache(db, tmp_path / "cache")
+
+    async def db_sum() -> int:
+        row = await db.fetchone("SELECT COALESCE(SUM(size), 0) FROM cache_entries")
+        return int(row[0])
+
+    for i in range(5):
+        await c.put(f"k{i}", {"a": blob(tmp_path, f"a{i}", 10 * (i + 1))})
+    assert await c.total_size() == await db_sum() == 150
+    await c.put("k0", {"a": blob(tmp_path, "big", 100)})  # replaced
+    assert await c.total_size() == await db_sum() == 240
+    await c.delete("k1")
+    assert await c.total_size() == await db_sum() == 220
+    shutil.rmtree((await c.get("k2")).dir)  # vanished files drop the row on the next read
+    assert await c.get("k2") is None
+    assert await c.total_size() == await db_sum() == 190
+    await c.evict(max_bytes=150)
+    assert await c.total_size() == await db_sum() <= 150

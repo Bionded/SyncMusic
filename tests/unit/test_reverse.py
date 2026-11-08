@@ -553,3 +553,33 @@ def test_new_feedback_filters_by_sink_settings_and_orphans(tmp_path):
     assert none.is_empty()
     # no manifest: nothing is an orphan
     assert "nd/orphan" in _new_feedback(fb, plays, None, libs, ReverseSyncSettings(), True).stars
+
+
+async def test_plays_of_another_installations_items_are_kept_for_it(env):
+    """Items of a library this installation does not have (`ext:`): their plays are not sent and not lost - the
+    manifest keeps them (`pending_plays`) for the installation whose library it is, which sends them later."""
+    rs, cfg, dev, libs, sink = env
+    theirs = ItemRef(library_id="ext:L9", item_id="x")
+    m = manifest_io.read(dev.mount)
+    m.items[theirs.key()] = ManifestEntry(
+        ref=theirs, device_ref="x", path="x.mp3", size=1, duration_s=200
+    )
+    manifest_io.write(dev.mount, m)
+    dev.feedback = DeviceFeedback(plays=_plays(A, 1) + _plays(theirs, 2))
+    rep = await rs.run(cfg, dev, libs)
+    assert rep.plays_submitted == 1 and not rep.errors
+    assert [p.ref for p in sink.plays] == [A]
+    assert manifest_io.read(dev.mount).items[theirs.key()].pending_plays == 2
+
+    # the other installation's view of the same player: the item is in its library "nd"
+    m = manifest_io.read(dev.mount)
+    ours = ItemRef(library_id="nd", item_id="x")
+    entry = m.items.pop(theirs.key())
+    m.items[ours.key()] = entry.model_copy(update={"ref": ours})
+    manifest_io.write(dev.mount, m)
+    rep = await rs.run(cfg, dev, libs)
+    sent = [p for p in sink.plays if p.ref == ours]
+    assert len(sent) == 2 and all(p.played_at_estimated for p in sent)
+    assert manifest_io.read(dev.mount).items[ours.key()].pending_plays == 0
+    rep = await rs.run(cfg, dev, libs)  # nothing twice
+    assert rep.plays_submitted == 0 and len([p for p in sink.plays if p.ref == ours]) == 2

@@ -175,6 +175,12 @@ class Library(ABC):
     async def get_lyrics(self, item_id: str) -> Lyrics | None:
         return None
 
+    async def source_id(self) -> str | None:
+        """A stable id of the source behind this library, the same whatever URL or mount path reaches it
+        (e.g. `abs:<library uuid>`), so two instances can tell that their libraries are one. None = unknown;
+        then libraries are matched by probing item ids."""
+        return None
+
     async def request_rescan(self) -> bool:
         """Ask the server to rescan its files (its sizes/tags are out of date); True if a scan was started.
         Default: the library cannot."""

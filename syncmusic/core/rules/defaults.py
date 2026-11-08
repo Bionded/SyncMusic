@@ -89,11 +89,11 @@ def _audiobook_server() -> list[tuple[str, str, dict[str, Any]]]:
         ("books-in-progress", "Books in progress", _preset("books-in-progress")),
         (
             "unlistened-episodes",
-            "Unlistened podcast episodes",
+            "Unfinished podcast episodes",  # the id stays: linked devices follow
             {
-                "name": "Podcast episodes not started",
+                "name": "Podcast episodes not finished yet",
                 "kind": [MediaKind.PODCAST],
-                "criteria": {"all": [{"is": {"finished": False}}, {"is": {"position": 0}}]},
+                "criteria": {"is": {"finished": False}},
             },
         ),
         ("latest-episodes", "Latest podcast episodes", _preset("latest-episodes", episodes=3)),

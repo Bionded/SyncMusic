@@ -173,3 +173,24 @@ async def test_a_stored_value_that_is_invalid_now_falls_back_to_its_default(env)
     settings = await app.store.app_settings()
     assert settings.webhook_events == AppSettings().webhook_events
     assert (await c.get("/api/v1/settings")).status_code == 200
+
+
+async def test_instance_id_is_made_once_and_the_name_defaults_to_the_host(env):
+    import socket
+
+    app, c = env
+    v = (await c.get("/api/v1/version")).json()
+    first = v["instance"]["id"]
+    assert len(first) == 32 and v["instance"]["name"] == socket.gethostname()
+    assert await app.store.instance_id() == first  # kept, not made again
+    assert "instance_id" not in (await c.get("/api/v1/settings")).json()  # not an editable setting
+    r = await c.patch("/api/v1/settings", json={"instance_name": "Living room"})
+    assert r.status_code == 200
+    v = (await c.get("/api/v1/version")).json()
+    assert v["instance"] == {"id": first, "name": "Living room"}
+    await c.patch("/api/v1/settings", json={"instance_name": ""})
+    assert (await c.get("/api/v1/version")).json()["instance"]["name"] == socket.gethostname()
+    assert (await c.patch("/api/v1/settings", json={"instance_name": "x" * 65})).status_code in (
+        400,
+        422,
+    )

@@ -10,6 +10,7 @@ import io
 from collections.abc import Callable, Iterator
 from typing import Any
 
+from syncmusic.core.manifest import is_external
 from syncmusic.core.models import ActionKind, LeftOut, MediaKind, PlanAction, SyncPlan, Track
 
 SAMPLE_MAX = 100  # items the plan summary carries
@@ -143,6 +144,13 @@ def sample(plan: SyncPlan, n: int = SAMPLE_MAX) -> dict[str, Any]:
         "bytes": {g: sum(a.size_delta for a in acts) for g, acts in groups.items()}
         | {"left": sum(x.size for _, x in left)},
         "sampled": sum(sizes.values()) > n,
+        # kept items of libraries this installation does not have (another installation synced them)
+        "others": {
+            "count": sum(1 for a in groups["keep"] if is_external(a.ref.library_id)),
+            "bytes": sum(
+                a.entry.size for a in groups["keep"] if is_external(a.ref.library_id) and a.entry
+            ),
+        },
     }
 
 

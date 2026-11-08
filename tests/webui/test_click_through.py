@@ -111,6 +111,31 @@ CONTROLS: dict[str, tuple[str, str]] = {
     "devices:feedbackOpen": ("elsewhere", "test_feedback_ui.py::test_report_line_in_history"),
     "feedback:feedbackOpen": ("elsewhere", "test_feedback_ui.py::test_not_delivered_is_visible"),
     "devices:updateNow": (CLICK, ""),
+    "devices:healthAck": (
+        "elsewhere",
+        "test_integrity_ui.py::test_health_card_lists_acknowledges_and_clears_errors",
+    ),
+    "devices:healthClear": (
+        "elsewhere",
+        "test_integrity_ui.py::test_health_card_lists_acknowledges_and_clears_errors",
+    ),
+    "dashboard:healthAck": ("elsewhere", "test_integrity_ui.py::test_dashboard_needs_you_row"),
+    "devices:makeHome": (
+        "elsewhere",
+        "test_device_home_ui.py::test_register_offers_continuity_and_device_page_rebinds",
+    ),
+    "devices:unmountAll": (
+        "elsewhere",
+        "test_unmount_everywhere_ui.py::test_repair_offers_unmount_everywhere",
+    ),
+    "rules:othersImport": (
+        "elsewhere",
+        "test_device_templates_ui.py::test_other_installations_templates",
+    ),
+    "rules:othersUpdate": (
+        "elsewhere",
+        "test_device_templates_ui.py::test_other_installations_templates",
+    ),
     "devices:integrityRun": ("elsewhere", "test_integrity_ui.py::test_integrity_check_card"),
     "devices:integrityFix": ("elsewhere", "test_integrity_ui.py::test_integrity_check_card"),
     "devices:gentleOn": (
@@ -257,8 +282,9 @@ CONTROLS: dict[str, tuple[str, str]] = {
     "settings:testWebhook": (CLICK, ""),
     "settings:checkFfmpeg": (CLICK, ""),
     "settings:runDiag": (CLICK, ""),
-    "settings:clearCache": ("elsewhere", "test_settings.py::test_cache_and_space"),
-    "settings:clearSysCache": ("elsewhere", "test_settings.py::test_system_cache"),
+    "settings:storageClear": ("elsewhere", "test_settings.py::test_storage_and_resources"),
+    "settings:copyPath": ("elsewhere", "test_settings.py::test_storage_and_resources"),
+    "settings:freeMemory": ("elsewhere", "test_settings.py::test_storage_and_resources"),
     "settings:factoryReset": ("elsewhere", "test_settings.py::test_maintenance"),
     "settings:restoreCancel": ("elsewhere", "test_settings.py::test_backup_and_restore"),
     "settings:restoreDo": ("elsewhere", "test_settings.py::test_backup_and_restore"),

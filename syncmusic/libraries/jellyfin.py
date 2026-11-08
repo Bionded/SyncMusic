@@ -234,6 +234,11 @@ class JellyfinLibrary(Library):
             },
         )
 
+    async def source_id(self) -> str | None:
+        """`jellyfin:<server id>`: /System/Info's `Id` is unique per server."""
+        server = str((await self.get("/System/Info")).get("Id") or "")
+        return f"jellyfin:{server}" if server else None
+
     async def state_token(self) -> str:
         _, uid = await self._login()
         videos = await self.get(

@@ -358,3 +358,24 @@ async def test_reverse_playlist_sync_end_to_end(navidrome, config, tmp_path):
         for p in (pid, made):
             if p:
                 await navidrome.call("deletePlaylist", id=p)
+
+
+async def test_source_id_is_the_same_under_another_host_name(navidrome):
+    """The same server reached as 127.0.0.1 and as localhost is one source."""
+    url = ENV["NAVIDROME_URL"]
+    other = (
+        url.replace("127.0.0.1", "localhost")
+        if "127.0.0.1" in url
+        else url.replace("localhost", "127.0.0.1")
+    )
+    lib = SubsonicLibrary(
+        navidrome.config.model_copy(
+            update={"settings": {**navidrome.config.settings, "url": other}}
+        ),
+        None,
+    )
+    try:
+        a, b = await navidrome.source_id(), await lib.source_id()
+    finally:
+        await lib.close()
+    assert a is not None and a.startswith("subsonic:") and a == b

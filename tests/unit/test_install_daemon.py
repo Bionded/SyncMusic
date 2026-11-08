@@ -102,6 +102,32 @@ def test_install_from_the_binary_copies_and_unpacks_it(tmp_path, monkeypatch):
     assert not (root / "usr/local/bin/syncmusic").exists() and not (root / "opt/syncmusic").exists()
 
 
+def test_reinstall_keeps_only_the_new_and_the_replaced_runtime(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    rt = root / "opt/syncmusic/runtime"
+    for rid in ("0.0.8-web-x-aaa", "0.0.9-web-x-bbb", "0.1.0-web-x-ccc"):
+        (rt / rid).mkdir(parents=True)
+    (rt / ".tmp-unpack").mkdir()
+    old = root / "usr/local/bin/syncmusic"
+    old.parent.mkdir(parents=True)
+    old.write_text("#!/bin/sh\nID=0.1.0-web-x-ccc\n")
+    fake = tmp_path / "syncmusic-web-0.1.1-linux-x"
+    fake.write_text(
+        "#!/bin/sh\nset -eu\nID=0.1.1-web-x-ddd\n"
+        'mkdir -p "$SYNCMUSIC_RUNTIME_DIR/$ID" && touch "$SYNCMUSIC_RUNTIME_DIR/$ID/.complete"\n'
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("SYNCMUSIC_BINARY", str(fake))
+    said: list[str] = []
+    inst.install(_cfg(tmp_path), None, [], ["bob"], said.append, root=root)
+    assert sorted(p.name for p in rt.iterdir()) == [
+        ".tmp-unpack",
+        "0.1.0-web-x-ccc",
+        "0.1.1-web-x-ddd",
+    ]
+    assert any("Removed 2 old runtime(s)" in s for s in said)
+
+
 def test_install_rejects_odd_user_names(tmp_path):
     with pytest.raises(inst.InstallError, match="unusual user name"):
         inst.install(_cfg(tmp_path), None, [], ["root;rm"], lambda _: None, root=tmp_path)

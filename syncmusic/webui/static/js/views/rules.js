@@ -1,19 +1,31 @@
 // Device page tab Templates (route `rules`): a device
 // has templates only (its picks and removals live in its own template "<Device> - own"). The linked templates are
 // grouped by library; their order is the priority when space runs out (rank 1 wins; the rules of a template keep
-// their order), ↑ ↓ move one inside its group, × removes it (Undo). Add template opens a picker drawer. Mirror / Add
+// their order), ↑ ↓ move one inside its group, × removes it (Undo). Add template opens an inline picker under the list. Mirror / Add
 // only, the device limit, and a Save / Discard bar (nothing is stored before Save); the live preview beside it.
 import { html, bytes, setHtml } from "../dom.js";
 import { t, addStrings } from "../i18n.js";
 import { helpTip } from "../help.js";
 import { get, post, patch } from "../api.js";
-import { badge, toast, drawer, unsavedBar, capacityBar } from "../ui.js";
+import { badge, toast, unsavedBar, capacityBar } from "../ui.js";
 import { testResult } from "../rulebuilder.js";
 import { templatesFor } from "./common.js";
 import { icon } from "../icons.js";
 import { sortable, moveKey, grip } from "../reorder.js";
 
 addStrings({
+  "rules.others_title": "From other installations",
+  "rules.others_help": "Templates another SyncMusic installation keeps on this player. Import makes a copy of your own, linked to this device; the original is never changed.",
+  "rules.others_from": "from {name}",
+  "rules.others_import": "Import",
+  "rules.others_import_all": "Import all",
+  "rules.others_imported": "Imported",
+  "rules.others_link": "Link my copy",
+  "rules.others_updated": "Updated on {name}",
+  "rules.others_update": "Update my copy",
+  "rules.others_needs": "Needs {libraries}, which this installation does not have",
+  "rules.others_done": "{n} template(s) imported and linked",
+  "rules.others_update_done": "{name} updated from {from}",
   "rules.templates": "Templates on this device",
   "rules.templates_help": "Each template pulls from its library. Higher in the list wins when space runs out.",
   "rules.add": "Add template",
@@ -93,9 +105,13 @@ const GB = 1e9;
 const KIND_ICON = { music: "music", podcast: "podcast", audiobook: "book", video: "video" };
 
 export async function rulesTab(ctx) {
-  const [all, libraries, types, libTypes] = await Promise.all([
+  const id = encodeURIComponent(ctx.state.cfg.id);
+  const [all, libraries, types, libTypes, others] = await Promise.all([
     get("/templates"), get("/libraries"), get("/device-types"), get("/library-types"),
+    // the device's file is read only while it is reachable; offline or unreadable: no card
+    get(`/devices/${id}/device-templates`).then((r) => r.templates, () => []),
   ]);
+  ctx.state.others = others;
   // a Rockbox player is offered no podcast/audiobook-only template
   const allowed = new Set(templatesFor(ctx.state.cfg.type, all, types, libraries, libTypes).map((x) => x.id));
   const rs = ctx.state.cfg.rule_set;
@@ -105,18 +121,45 @@ export async function rulesTab(ctx) {
   // wide screens: the preview is a column beside the cards; narrower it is the last card - it never covers one (369.1)
   return html`<div class="rules-layout" data-rules><div class="rules-main"><div class="grid" data-rules-form>
     <section data-tpls><div class="dt-head"><div><h2>${t("rules.templates")}</h2><div class="sub">${t("rules.templates_help")}</div></div>
-      <button class="btn primary" data-action="rulesAdd">${icon("plus", { size: 16 })}${t("rules.add")}</button></div>
-      <div data-tpl-list>${tplList(ctx)}</div></section>
+      <button class="btn primary" data-action="rulesAdd" aria-expanded="false" aria-controls="tplPick">${icon("plus", { size: 16 })}${t("rules.add")}</button></div>
+      <div data-tpl-list>${tplList(ctx)}</div>
+      <div class="dt-inpick" id="tplPick" data-pick-panel role="region" aria-label="${t("rules.pick_title", { name: ctx.state.cfg.name })}" hidden>
+        <div class="dt-pickhead"><b>${t("rules.pick_title", { name: ctx.state.cfg.name })}</b></div>
+        <div class="dt-psearch"><label class="sr" for="tplPickQ">${t("rules.pick_search")}</label>
+          <input id="tplPickQ" type="search" placeholder="${t("rules.pick_search")}" autocomplete="off" data-nosave></div>
+        <div class="dt-plist" data-pick-list></div>
+        <div class="dt-pfoot"><a class="btn" href="#/templates/new" data-pick-new>${icon("plus", { size: 15 })}${t("rules.pick_new")}</a>
+          <span style="flex:1"></span><button type="button" class="btn" data-pick-done data-nosave>${t("rules.pick_done")}</button></div></div></section>
     <div class="card" data-mode><div class="card-head"><h2>${t("rules.mode")} ${helpTip("rules")}</h2></div><div class="card-body">
       <div class="optcards" role="radiogroup" aria-label="${t("rules.mode")}">${["mirror", "additive"].map((m) => html`<label class="optcard">
         <input type="radio" name="rulesMode" value="${m}" ${rs.mode === m ? "checked" : ""}>
         <span><b>${t(`rules.mode.${m}`)}</b><small>${t(`rules.mode.${m}_d`)}</small></span></label>`)}</div></div></div>
     ${limitCard(rs)}
-  </div></div>
+  </div>${othersCard(others)}</div>
     <div class="card rules-preview" data-preview><div class="card-head"><div><h2>${t("rules.preview_title")}</h2><div class="sub">${t("rules.preview_help")}</div></div>
       <span data-preview-badge></span></div>
       <div class="card-body" data-preview-body aria-live="polite"><span class="muted">${t("rules.preview_loading")}</span></div></div>
   </div>`;
+}
+
+// templates other installations stored on the player: import as linked copies, update a copy
+function othersCard(others) {
+  if (!others.length) return "";
+  const importable = others.filter((o) => o.state === "importable");
+  const action = (o) => {
+    if (o.state === "importable") return html`<button type="button" class="btn small" data-action="othersImport" data-uid="${o.uid}">${t("rules.others_import")}</button>`;
+    if (o.state === "unavailable") return "";
+    if (o.updated) return html`<button type="button" class="btn small" data-action="othersUpdate" data-id="${o.copy_id}">${t("rules.others_update")}</button>`;
+    if (!o.linked) return html`<button type="button" class="btn small" data-action="othersImport" data-uid="${o.uid}">${t("rules.others_link")}</button>`;
+    return html`<span class="muted">${t("rules.others_imported")}</span>`;
+  };
+  const note = (o) => (o.state === "unavailable" ? t("rules.others_needs", { libraries: o.missing_libraries.join(", ") })
+    : o.updated ? t("rules.others_updated", { name: o.instance_name }) : "");
+  return html`<section class="card" data-others><div class="card-head"><div><h2>${t("rules.others_title")}</h2><div class="sub">${t("rules.others_help")}</div></div>
+    ${importable.length > 1 ? html`<button type="button" class="btn" data-action="othersImport" data-uid="${importable.map((o) => o.uid).join("\n")}">${t("rules.others_import_all")}</button>` : ""}</div>
+    <div class="card-body"><ul class="others-list">${others.map((o) => html`<li data-other="${o.uid}" data-state="${o.state}">
+      <span class="others-name"><span><b>${o.name}</b> <span class="muted">· ${t("rules.others_from", { name: o.instance_name })}</span></span>
+        ${note(o) ? html`<small class="${o.updated ? "others-updated" : ""}">${note(o)}</small>` : ""}</span>${action(o)}</li>`)}</ul></div></section>`;
 }
 
 // the saved templates in priority order: by the first place of one of their rules in `priority`, else as linked
@@ -288,6 +331,7 @@ export function rulesMounted(ctx, root) {
   };
   for (const type of ["input", "change", "click"]) box.addEventListener(type, later);
   dragToReorder(ctx, box.querySelector("[data-tpl-list]"));
+  wirePicker(ctx, box.querySelector("[data-pick-panel]"));
   updatePreview(ctx, box);
 }
 
@@ -371,7 +415,35 @@ async function save(ctx) {
   ctx.redrawHead?.();
 }
 
-// the picker drawer: every template by library; added ones and those the player cannot take are greyed
+// the inline picker: every template by library; added ones and those the player cannot take are greyed
+function showPicker(ctx, panel, open) {
+  panel.hidden = !open;
+  document.querySelectorAll('[data-rules] [data-action="rulesAdd"][aria-controls]').forEach((b) => b.setAttribute("aria-expanded", String(open)));
+  if (!open) return;
+  const q = panel.querySelector("#tplPickQ");
+  setHtml(panel.querySelector("[data-pick-list]"), pickerBody(ctx, q.value));
+  panel.scrollIntoView({ block: "nearest" });
+  q.focus();
+}
+
+function wirePicker(ctx, panel) {
+  const q = panel.querySelector("#tplPickQ"), list = panel.querySelector("[data-pick-list]");
+  q.addEventListener("input", () => setHtml(list, pickerBody(ctx, q.value)));
+  panel.querySelector("[data-pick-done]").addEventListener("click", () => {
+    showPicker(ctx, panel, false);
+    document.querySelector('[data-rules] [data-action="rulesAdd"][aria-controls]')?.focus();
+  });
+  list.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-pick]");
+    if (!b || b.disabled) return;
+    ctx.state.list = grouped(ctx, [...ctx.state.list, b.dataset.pick]);
+    redrawList(ctx);
+    setHtml(list, pickerBody(ctx, q.value));
+    toast(t("rules.added", { name: ctx.state.templates.find((x) => x.id === b.dataset.pick)?.name }), "ok");
+    list.querySelector("[data-pick]:not(:disabled)")?.focus();
+  });
+}
+
 function pickerBody(ctx, q = "") {
   const query = q.trim().toLowerCase();
   const added = new Set(ctx.state.list);
@@ -397,6 +469,22 @@ function pickerBody(ctx, q = "") {
 }
 
 export const rulesActions = {
+  async othersImport(el, ctx) {
+    el.disabled = true;
+    const id = encodeURIComponent(ctx.state.cfg.id);
+    const { linked } = await post(`/devices/${id}/device-templates/import`, { uids: el.dataset.uid.split("\n") });
+    ctx.state.cfg = (await get(`/devices/${id}`)).config;
+    // keep unsaved edits of the list: the new ones are added at the end
+    ctx.state.list = [...(ctx.state.list || []), ...linked.filter((x) => !(ctx.state.list || []).includes(x))];
+    toast(t("rules.others_done", { n: linked.length }));
+    ctx.rerender();
+  },
+  async othersUpdate(el, ctx) {
+    el.disabled = true;
+    const tpl = await post(`/devices/${encodeURIComponent(ctx.state.cfg.id)}/device-templates/update/${encodeURIComponent(el.dataset.id)}`);
+    toast(t("rules.others_update_done", { name: tpl.name, from: tpl.origin_name }));
+    ctx.rerender();
+  },
   rulesMove(el, ctx) {
     const list = ctx.state.list, id = el.dataset.id, i = list.indexOf(id), j = i + Number(el.dataset.d);
     if (i < 0 || j < 0 || j >= list.length) return;
@@ -415,28 +503,10 @@ export const rulesActions = {
     });
   },
   rulesAdd(el, ctx) {
-    const d = drawer({
-      title: t("rules.pick_title", { name: ctx.state.cfg.name }), label: "tplpick",
-      body: html`<div class="dt-psearch"><label class="sr" for="tplPickQ">${t("rules.pick_search")}</label>
-        <input id="tplPickQ" type="search" placeholder="${t("rules.pick_search")}" autocomplete="off"></div>
-        <div class="dt-plist" data-pick-list>${pickerBody(ctx)}</div>
-        <div class="dt-pfoot"><a class="btn" href="#/templates/new" data-pick-new>${icon("plus", { size: 15 })}${t("rules.pick_new")}</a>
-          <span style="flex:1"></span><button type="button" class="btn primary" data-pick-done>${t("rules.pick_done")}</button></div>`,
-    });
-    const q = d.root.querySelector("#tplPickQ"), list = d.root.querySelector("[data-pick-list]");
-    q.addEventListener("input", () => setHtml(list, pickerBody(ctx, q.value)));
-    d.root.querySelector("[data-pick-done]").addEventListener("click", d.close);
-    d.root.querySelector("[data-pick-new]").addEventListener("click", () => d.close());
-    list.addEventListener("click", (e) => {
-      const b = e.target.closest("[data-pick]");
-      if (!b || b.disabled || !document.querySelector("[data-rules]")) return;
-      ctx.state.list = grouped(ctx, [...ctx.state.list, b.dataset.pick]);
-      redrawList(ctx);
-      setHtml(list, pickerBody(ctx, q.value));
-      toast(t("rules.added", { name: ctx.state.templates.find((x) => x.id === b.dataset.pick)?.name }), "ok");
-      list.querySelector("[data-pick]:not(:disabled)")?.focus();
-    });
-    q.focus();
+    // an inline panel under the list, not a dialog: the list, the preview and the Save bar stay usable while picking
+    const panel = document.querySelector("[data-rules] [data-pick-panel]");
+    if (!panel) return;
+    showPicker(ctx, panel, panel.hidden);
   },
 };
 export { testResult };

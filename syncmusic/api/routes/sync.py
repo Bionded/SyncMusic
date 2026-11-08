@@ -38,6 +38,10 @@ STATUS = {
     "cancelled": 409,
     "unreachable": 502,
     "fs_damaged": 409,
+    "not_home": 409,
+    "blocked_by_lease": 409,
+    "mounted_elsewhere": 409,
+    "mount_busy": 409,
 }
 
 
@@ -379,6 +383,11 @@ def router(facade: AppFacade) -> APIRouter:
         """Remove these items from the device (a sync job); they do not come back with the next sync."""
         return await facade.remove_from_device(device_id, req.keys, req.exclude)
 
+    @r.get("/devices/{device_id}/orphans")
+    async def orphans(device_id: str) -> list[dict[str, Any]]:
+        """Items on the device gone from their library (or whose library is detached), from the manifest alone."""
+        return await facade.device_orphans(device_id)
+
     @r.post("/devices/{device_id}/orphans/remove", status_code=202)
     async def remove_orphans(device_id: str) -> dict[str, Any]:
         """Remove every orphan (gone from its library) from the device (a sync job)."""
@@ -412,6 +421,23 @@ def router(facade: AppFacade) -> APIRouter:
     async def check_device(device_id: str, req: CheckDeviceRequest) -> dict[str, Any]:
         """A server device (FTP) logs in with these settings, not saved (Device settings' Test and save); the server's reason comes back as the error."""
         return await facade.check_device(device_id, req.settings)
+
+    @r.get("/devices/register/peek")
+    async def register_peek(
+        disk: str | None = None, mount_path: str | None = None
+    ) -> dict[str, Any]:
+        """Before Register: whether the disk or folder holds a SyncMusic manifest and which instance is its home."""
+        return await facade.peek_manifest(disk, mount_path)
+
+    @r.get("/devices/{device_id}/home")
+    async def device_home(device_id: str) -> dict[str, Any]:
+        """The device's home instance (from its manifest), the last writer and whether this instance is home."""
+        return await facade.device_home(device_id)
+
+    @r.post("/devices/{device_id}/make-home")
+    async def make_home(device_id: str) -> dict[str, Any]:
+        """Re-bind: this instance becomes the device's home (home-only actions: wipe, format, unknown files)."""
+        return await facade.make_home(device_id)
 
     @r.post("/devices/{device_id}/wipe", status_code=202)
     async def wipe_device(device_id: str, req: FormatRequest) -> dict[str, Any]:
@@ -451,6 +477,16 @@ def router(facade: AppFacade) -> APIRouter:
         """Storage health: I/O errors in 30 days, write speeds of the last syncs, the warning."""
         return await facade.device_health(device_id)
 
+    @r.post("/devices/{device_id}/health/ack")
+    async def device_health_ack(device_id: str, undo: bool = False) -> dict[str, Any]:
+        """Acknowledge the storage warning: hidden until a newer I/O error or slow sync (`undo`: take it back)."""
+        return await facade.acknowledge_health(device_id, undo)
+
+    @r.delete("/devices/{device_id}/health/errors")
+    async def device_health_clear(device_id: str) -> dict[str, Any]:
+        """Clear the recorded I/O errors (write speeds stay)."""
+        return await facade.clear_health_errors(device_id)
+
     @r.post("/devices/{device_id}/integrity", status_code=202)
     async def integrity_check(device_id: str, deep: bool = False) -> dict[str, Any]:
         """Check the device against its manifest, every file read back (`deep`: decoded too), as a job."""
@@ -460,6 +496,35 @@ def router(facade: AppFacade) -> APIRouter:
     async def integrity_last(device_id: str) -> dict[str, Any] | None:
         """The newest integrity check: {job_id, finished_at, status, error, report} or null."""
         return await facade.last_integrity(device_id)
+
+    @r.get("/devices/{device_id}/device-templates")
+    async def device_templates(device_id: str) -> dict[str, Any]:
+        """Templates other installations stored on the device, with what this installation can do with each."""
+        return {"templates": await facade.device_templates(device_id)}
+
+    @r.post("/devices/{device_id}/device-templates/import")
+    async def import_device_templates(device_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Copy the device's templates `uids` into this installation and link them to the device."""
+        uids = body.get("uids")
+        if not isinstance(uids, list) or not all(isinstance(u, str) for u in uids):
+            raise SyncError("uids: a list of template uids", "invalid")
+        return await facade.import_device_templates(device_id, uids)
+
+    @r.post("/devices/{device_id}/device-templates/update/{template_id}")
+    async def update_template_copy(device_id: str, template_id: str) -> dict[str, Any]:
+        """Replace a local copy with the device's newer version of its original."""
+        return await facade.update_template_copy(device_id, template_id)
+
+    @r.get("/devices/{device_id}/mounts")
+    async def device_mounts(device_id: str) -> dict[str, Any]:
+        """Every mountpoint of the device's partitions, the app's own (`ours`) and other programs'."""
+        return {"mounts": await facade.device_mounts(device_id)}
+
+    @r.post("/devices/{device_id}/unmount-all")
+    async def unmount_everywhere(device_id: str, lazy: bool = False) -> dict[str, Any]:
+        """Flush and unmount the device everywhere (also host automounts); busy → 409 `mount_busy`,
+        `?lazy=true` detaches busy mounts."""
+        return {"unmounted": await facade.unmount_everywhere(device_id, lazy)}
 
     @r.post("/devices/{device_id}/repair", status_code=202)
     async def repair_device(device_id: str) -> dict[str, Any]:

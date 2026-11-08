@@ -125,6 +125,40 @@ def test_dashboard_needs_you_row(device, chrome):  # noqa: F811
     row.wait_for()
     assert "Stick: storage may be failing" in row.inner_text()
     assert "1 I/O error in the last 30 days" in row.inner_text()
+    row.get_by_role("button", name="Acknowledge").click()
+    toast = page.locator(".toast", has_text="acknowledged")
+    toast.wait_for()
+    assert page.locator('[data-need="health"]').count() == 0
+    toast.locator("[data-toast-undo]").click()  # Undo brings it back
+    page.locator('[data-need="health"]').wait_for()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_health_card_lists_acknowledges_and_clears_errors(device, chrome, width):  # noqa: F811
+    url, app, _stick = device
+    cfg = run_on(app, app.sync.config("stick"), 10)
+    for n in range(3):
+        run_on(
+            app,
+            app.sync._record_health(cfg, error=f"integrity check: /x/{n}.mp3: Input/output error"),
+            10,
+        )
+    page = open_page(chrome, url + "/#/devices/stick", width)
+    page.wait_for_selector("[data-health-warning]")
+    lst = page.locator("[data-io-list]")
+    lst.locator("summary").click()
+    assert lst.locator("li").count() == 3 and "/x/2.mp3" in lst.locator("li").first.inner_text()
+    shot(page, f"health-errors-{width}")
+    page.locator("[data-health-warning]").get_by_role("button", name="Acknowledge").click()
+    page.wait_for_selector("[data-health-acked]")
+    assert page.locator("[data-health-warning]").count() == 0
+    page.locator("[data-io-list] summary").click()
+    page.locator("[data-io-list]").get_by_role("button", name="Clear error history").click()
+    page.locator(".modal, dialog").get_by_role("button", name="Clear error history").click()
+    page.wait_for_selector('[data-io-errors="0"]')
+    assert page.locator("[data-io-list]").count() == 0
+    assert no_horizontal_scroll(page)
+    assert [e for e in page.errors if "Failed to load resource" not in e] == []
 
 
 def test_plan_warns_about_failing_storage(device, chrome):  # noqa: F811

@@ -48,7 +48,16 @@ async def test_diagnostics(env, tmp_path):
     checks = (await c.get("/api/v1/diagnostics")).json()
     ids = [x["id"] for x in checks]
     # the doctor's install checks first, then the app's
-    assert ids[:7] == ["versions", "ffmpeg", "space", "dirs", "privileges", "udev", "clock"]
+    assert ids[:8] == [
+        "versions",
+        "ffmpeg",
+        "space",
+        "usage",
+        "dirs",
+        "privileges",
+        "udev",
+        "clock",
+    ]
     assert ids[-4:] == ["libraries", "usb", "temperature", "throttling"]
     by = {x["id"]: x for x in checks}
     assert by["ffmpeg"]["state"] in ("ok", "warning") and by["libraries"]["detail"] == "Music OK"

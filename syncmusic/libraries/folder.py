@@ -118,6 +118,51 @@ class FolderSettings(BaseModel):
         return self
 
 
+MOUNTINFO = Path("/proc/self/mountinfo")
+BY_UUID = Path("/dev/disk/by-uuid")
+
+
+def _unescape_mount(field: str) -> str:
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
+def _fs_uuid(dev: int) -> str | None:
+    """The UUID of the filesystem on device number `dev` (udev's /dev/disk/by-uuid links)."""
+    try:
+        for link in BY_UUID.iterdir():
+            if os.stat(link).st_rdev == dev:
+                return link.name
+    except OSError:
+        pass
+    return None
+
+
+def fs_location(path: Path) -> tuple[str, str] | None:
+    """(filesystem UUID, the path inside that filesystem) of a local folder: the same for every mount
+    point or bind mount of one filesystem. None when the filesystem has no UUID (tmpfs, overlay, ...)."""
+    try:
+        path = path.resolve()
+        dev = os.stat(path).st_dev
+        lines = MOUNTINFO.read_text().splitlines()
+    except OSError:
+        return None
+    best: tuple[str, str] | None = None  # (mount point, root of the mount inside the fs)
+    for line in lines:
+        f = line.split()
+        if len(f) < 5 or f[2] != f"{os.major(dev)}:{os.minor(dev)}":
+            continue
+        point, root = _unescape_mount(f[4]), _unescape_mount(f[3])
+        if path.is_relative_to(point) and (best is None or len(point) > len(best[0])):
+            best = (point, root)
+    if best is None:
+        return None
+    uuid = _fs_uuid(dev)
+    if uuid is None:
+        return None
+    inside = posixpath.normpath(posixpath.join(best[1], str(path.relative_to(best[0]))))
+    return uuid, inside
+
+
 def _sha1(text: str) -> str:
     return hashlib.sha1(text.encode()).hexdigest()
 
@@ -250,6 +295,18 @@ class FolderLibrary(Library):
                 path=s.remote_path,
                 mirror=mirror,
             )
+
+    async def source_id(self) -> str | None:
+        """`folder:<fs uuid>:<path inside the fs>` for a local folder, `folder:<smb|ftp>://host[:port]/path`
+        (no credentials) for a server folder."""
+        s: FolderSettings = self.settings  # type: ignore[assignment]
+        if s.source != "local":
+            port = f":{s.port}" if s.port else ""
+            path = "/" + "/".join(p for p in s.remote_path.split("/") if p)
+            return f"folder:{s.source}://{s.host.lower()}{port}{path}"
+        assert s.root is not None
+        where = await asyncio.to_thread(fs_location, s.root)
+        return f"folder:{where[0]}:{where[1]}" if where else None
 
     @property
     def root(self) -> Path:

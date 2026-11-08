@@ -58,7 +58,7 @@ def _compress(src: Path, dst: Path) -> None:
 TIMEOUT_S = 600.0
 
 
-def _backup(source: str, folder: Path, dst: Path) -> None:
+def copy(source: str, folder: Path, dst: Path) -> None:
     """Copy `source` with its own connection (WAL: consistent while the app writes) and compress it - all in this
     thread, so neither a cancel nor a timeout closes a connection under sqlite3_backup_step."""
     with tempfile.TemporaryDirectory(dir=folder) as tmp:
@@ -91,7 +91,7 @@ async def make(
                 target.close()
             await asyncio.to_thread(_compress, raw, dst)
         return dst
-    work = asyncio.ensure_future(asyncio.to_thread(_backup, db.path, folder, dst))
+    work = asyncio.ensure_future(asyncio.to_thread(copy, db.path, folder, dst))
     try:
         await asyncio.wait_for(asyncio.shield(work), timeout)
     except TimeoutError:

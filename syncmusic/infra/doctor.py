@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from syncmusic import __version__
-from syncmusic.infra import diagnostics, ffmpeg
+from syncmusic.infra import diagnostics, ffmpeg, storage
 from syncmusic.infra.blockdev import mount
 from syncmusic.infra.config import BootstrapConfig
 
@@ -86,6 +86,14 @@ def check_space(
         else ""
     )
     return item("space", "Free disk space", " · ".join(parts), state, fix)
+
+
+def check_usage(cfg: BootstrapConfig) -> dict[str, Any]:
+    """How much SyncMusic itself takes on disk: its data (database, backups, logs) and its cache."""
+    data, _ = storage.tree_size([cfg.data_dir])
+    cache, _ = storage.tree_size([cfg.cache_dir])
+    detail = f"data {data / GIB:.2f} GB · cache {cache / GIB:.2f} GB (details: Settings → Storage & resources)"
+    return item("usage", "Space used by SyncMusic", detail, "ok")
 
 
 def check_dirs(cfg: BootstrapConfig) -> dict[str, Any]:
@@ -211,6 +219,7 @@ def local_checks(cfg: BootstrapConfig, warn_gb: float | None = 5.0) -> list[dict
         versions(),
         check_ffmpeg(),
         check_space(cfg.data_dir, cfg.cache_dir, warn_gb),
+        check_usage(cfg),
         check_dirs(cfg),
         check_privileges(),
         check_udev(cfg),

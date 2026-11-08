@@ -97,6 +97,31 @@ skipped and named; a device whose plan needs a review waits for you on its own p
 
 ![Device settings of an iPod](img/device-settings.png)
 
+## A player used by more than one SyncMusic
+A player remembers which SyncMusic installation set it up: its **home**. When you register a player that another
+installation (or an earlier registration) synced, the *First sync* step asks how to go on:
+
+- **Continue** (the default) keeps everything on the player, including the other installation's items, and adds
+  your libraries. Automatic sync on connect stays off here: it belongs to the home.
+- **Start fresh** wipes the music on the first sync. Only the home can do this.
+- **Keep files** registers the player as a new device; what is on it counts as files SyncMusic did not put there.
+
+On a player whose home is another installation, **Wipe**, **Format**, removing files SyncMusic did not put there and
+writing player settings are left to the home: the *Danger zone* says which installation that is.
+**Make this instance home…** moves the home here (the other installation keeps syncing its own libraries).
+
+Every full sync also stores the templates the device uses on the player (`.syncmusic/templates.json`; rules only,
+no processors or device settings). On another installation the device's **Templates** tab then lists them under
+**From other installations**: **Import** makes a copy of your own, linked to this device, with its libraries matched
+to yours (the same server, or a library you paired). A template that draws only from libraries you do not have is
+listed but cannot be imported. Your copy is never changed behind your back: when the original changes, the row says
+*Updated on <installation>* and **Update my copy** takes the new version.
+
+Only one installation writes to a player at a time: a sync, update or wipe marks the player as busy
+(`.syncmusic/lease.json`, refreshed every minute). Another installation that wants to sync it meanwhile stops with
+"being synced by <installation> since <time>"; a mark that has not been refreshed for ten minutes (that installation
+stopped, or the player was unplugged mid-sync) is taken over.
+
 ## Gentle write mode
 Some players (old iPods with tired disks, cheap cards) fail under long writes. *Settings tab → Gentle write mode*
 writes in small batches with pauses and a rate limit. The plan suggests it when a device had write errors.

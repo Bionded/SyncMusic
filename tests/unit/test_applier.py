@@ -151,6 +151,25 @@ async def test_replace_and_rule_change(tmp_path, library, preparer):
     assert not (dev.mount / "Playlists" / "Все.m3u8").exists()
 
 
+async def test_touched_source_is_not_copied_again(tmp_path, library, preparer):
+    """A folder file whose mtime moved (same size, same tags) is kept: nothing is written, the manifest takes the
+    new source_state, so the next plan is all keep without the restamp."""
+    import os
+
+    dev = _flash(tmp_path)
+    await _sync(dev, library, preparer)
+    src = library.root / "Два.mp3"
+    st = src.stat()
+    os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    plan, rep = await _sync(dev, library, preparer)
+    assert {a.kind for a in plan.actions} == {ActionKind.KEEP}
+    assert sum(a.restamp for a in plan.actions) == 1
+    assert rep.bytes_written == 0 and rep.status == "succeeded"
+    two = next(e for e in (await dev.read_manifest()).items.values() if "Два" in e.path)
+    assert two.source_state.endswith(str(st.st_mtime_ns + 5_000_000_000))
+    assert not any(a.restamp for a in (await _plan(dev, library)).actions)
+
+
 async def test_chain_runs_for_puts(tmp_path, library, preparer):
     dev = _flash(tmp_path)
     _, rep = await _sync(dev, library, preparer, chain=Chain([FakeTrailer({}, None)]))
@@ -364,7 +383,8 @@ async def test_progress_reports_phases_and_counters(tmp_path, library, preparer)
 
 async def test_commit_reserve_removes_last_synced_tracks(tmp_path, library, preparer):
     class GrowingDB(FakeDevice):
-        def commit_reserve(self, n):  # small while putting, the DB "grows" at commit time (52 KB)
+        # small while putting, the DB "grows" at commit time (52 KB)
+        def commit_reserve(self, n, caps=None):
             return 1000 if getattr(self, "putting", True) else 1000 + 50 * KB
 
         async def set_playlists(self, s, playlists):

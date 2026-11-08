@@ -111,6 +111,7 @@ addStrings({
   "plan.v.unplayed": "unplayed",
   "plan.cs.update_meta": "no file copy",
   "plan.cs.keep": "unchanged",
+  "plan.cs.keep_others": "incl. {n} of other installations ({size})",
   "plan.cs.left": "by limits & space",
   "plan.note.add": "New matches for the templates, in template priority order.",
   "plan.note.replace": "The library has a changed or better copy than the device, or the file moves to a new path layout.",
@@ -696,6 +697,7 @@ function countCards(ctx) {
   };
   const ico = { add: ["plus", "ok"], replace: ["sync", "in"], update_meta: ["tag", "in"], remove: ["minus", "er"], keep: ["check", "mu"], left: ["filter", "wn"] };
   for (const g of ["add", "replace", "remove"]) if (!total(plan, g)) sub[g] = "-";
+  if (plan.others?.count) sub.keep = t("plan.cs.keep_others", { n: plan.others.count.toLocaleString(), size: bytes(plan.others.bytes) });
   return html`<div class="plan-counts">${GROUPS.map((g) =>
     html`<button type="button" class="pcount" data-count="${g}" data-action="planGroup" data-group="${g}" aria-pressed="${g === group}">
       <span class="pc-label"><span class="pc-ico ${ico[g][1]}">${icon(ico[g][0], { size: 14, width: 2.2 })}</span>${t(`plan.c.${g}`)}</span>
@@ -845,7 +847,7 @@ function warnings(ctx, removes, removeOk, reasons) {
 function planSuggestion(ctx) {
   const sg = ctx.state.planSuggest;
   const cfg = ctx.state.cfg;
-  if (!sg?.reason.files || (!sg.draft && (!sg.template_id || sg.template_id === cfg.processor_template_id))) return "";
+  if (!sg?.reason.files || sg.same_as_current || (!sg.draft && (!sg.template_id || sg.template_id === cfg.processor_template_id))) return "";
   const name = sg.template_id ? sg.candidates.find((x) => x.id === sg.template_id)?.name || sg.template_id : "";
   return html`<div class="callout" data-plan-suggest="${sg.template_id || "draft"}"><b>${t("plan.sg_title")}:</b> ${suggestText(sg.reason)}
     <button type="button" class="btn small" style="margin-left:8px" data-action="planUseSuggested">${sg.template_id ? t("plan.sg_use", { name }) : t("plan.sg_use_draft")}</button></div>`;

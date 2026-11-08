@@ -129,3 +129,14 @@ def test_cli_doctor_exit_code_and_json(tmp_path, monkeypatch):
     out = CliRunner().invoke(cli, [*args, "--json"])
     assert out.exit_code == 0
     assert [c["id"] for c in json.loads(out.output)] == ["x", "port"]
+
+
+def test_usage_check_reports_data_and_cache(tmp_path):
+    from syncmusic.infra import doctor
+    from syncmusic.infra.config import BootstrapConfig
+
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "x").write_bytes(b"x" * 1000)
+    cfg = BootstrapConfig(data_dir=tmp_path / "d", cache_dir=tmp_path / "c")
+    c = doctor.check_usage(cfg)
+    assert c["state"] == "ok" and c["detail"].startswith("data 0.00 GB · cache 0.00 GB")
