@@ -3,7 +3,7 @@
 All notable changes to SyncMusic are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.3] - 2026-11-10
 
 ### Added
 - HiBy R1: a *Split genres* device setting (use the player's setting, off, or on with the chosen separators and a live example); the sync report warns when it differs from the player's own setting.
