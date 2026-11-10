@@ -245,3 +245,23 @@ def test_rebuild_takes_known_tags_and_reads_the_card_once(tmp_path, monkeypatch)
     reads.clear()
     st = write_library_index(card, tmp_path / "bak", known=known)
     assert (st.tracks, st.read, reads) == (3, 0, [])
+
+
+def test_rebuild_keeps_a_folder_time_while_its_entries_are_the_same(tmp_path):
+    card = _card(tmp_path)
+    write_library_index(card, tmp_path / "bak")
+    first = dict(_q(card, "SELECT path, mtime FROM FOLDER_TABLE"))
+    loose = card / "Music/Loose"
+    os.utime(
+        card, (2_000_000_000, 2_000_000_000)
+    )  # e.g. our own hidden files written into the root
+    make_track(loose / "new.flac")  # a new entry: that folder takes its current time
+    os.utime(loose, (2_000_000_000, 2_000_000_000))
+    write_library_index(card, tmp_path / "bak")
+    second = dict(_q(card, "SELECT path, mtime FROM FOLDER_TABLE"))
+    assert second["/mnt/sd_0"] == first["/mnt/sd_0"]
+    assert (
+        second["/mnt/sd_0/Music/Loose"]
+        == int(loose.stat().st_mtime)
+        != first["/mnt/sd_0/Music/Loose"]
+    )

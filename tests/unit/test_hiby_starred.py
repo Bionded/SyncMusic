@@ -126,3 +126,80 @@ async def test_player_heart_kept_and_pushed_not_removed(env, server):
     name = manifest_io.read(mount).items["nd/s1"].path.rsplit("/", 1)[-1]
     # kept; a full sync writes the row anew (the databases are rewritten completely)
     assert set(_hearts(mount)) == {name}
+
+
+async def test_reset_favourites_table_unstars_nothing_and_hearts_come_back(
+    env, server, monkeypatch
+):
+    """The player's database lost every heart (a reset): the library keeps its stars and the same sync writes
+    the hearts back onto the player."""
+    from syncmusic.core import reverse
+
+    monkeypatch.setattr(reverse, "MASS_UNSTAR_MIN", 2)
+    app, c, mount, dev_id = env
+    for sid in ("s1", "s2"):
+        server.songs[sid]["starred"] = "2026-10-28T10:00:00Z"
+    await _refresh(app, c)
+    await _sync(app, c, dev_id)
+    assert len(_hearts(mount)) == 2
+    await _sync(app, c, dev_id)  # settled: the seen set holds both
+
+    hiby_sql(mount, "library.db", "DELETE FROM FAVOURITES")
+    report = await _sync(app, c, dev_id)
+    assert report["reverse"]["stars_pushed"] == 0
+    assert any("favourites were reset" in w for w in report["reverse"]["warnings"])
+    assert all(server.songs[sid].get("starred") for sid in ("s1", "s2"))
+    assert len(_hearts(mount)) == 2
+    report = await _sync(app, c, dev_id)
+    assert report["reverse"]["stars_pushed"] == 0 and len(_hearts(mount)) == 2
+
+
+async def test_held_favourite_removals_can_be_sent_on_purpose(env, server, monkeypatch):
+    """The user confirms that the vanished hearts were removed on purpose: the next sync unstars them."""
+    from syncmusic.core import reverse
+
+    monkeypatch.setattr(reverse, "MASS_UNSTAR_MIN", 2)
+    app, c, mount, dev_id = env
+    for sid in ("s1", "s2"):
+        server.songs[sid]["starred"] = "2026-10-28T10:00:00Z"
+    await _refresh(app, c)
+    await _sync(app, c, dev_id)
+    await _sync(app, c, dev_id)
+    hiby_sql(mount, "library.db", "DELETE FROM FAVOURITES")
+    report = await _sync(app, c, dev_id)
+    assert sorted(report["reverse"]["held_unstars"]) == ["nd/s1", "nd/s2"]
+    url = f"/api/v1/devices/{dev_id}/sync-reports/{report['id']}/send-held-unstars"
+    r = await c.post(url)
+    assert r.status_code == 200 and r.json() == {"queued": 2}
+    assert (await c.post(url)).json() == {"queued": 0}  # the report forgot them
+    assert (
+        await c.post(f"/api/v1/devices/{dev_id}/sync-reports/nope/send-held-unstars")
+    ).status_code == 404
+    await _sync(app, c, dev_id)
+    assert not any(server.songs[sid].get("starred") for sid in ("s1", "s2"))
+
+
+async def test_listening_changes_of_a_sync_can_be_undone(env, server):
+    """A sync that unstarred favourites in the library: undoing its changes stars them again."""
+    app, c, mount, dev_id = env
+    server.songs["s1"]["starred"] = "2026-10-28T10:00:00Z"
+    await _refresh(app, c)
+    await _sync(app, c, dev_id)
+    await _sync(app, c, dev_id)
+    hiby_sql(mount, "library.db", "DELETE FROM FAVOURITES")
+    report = await _sync(app, c, dev_id)
+    assert not server.songs["s1"].get("starred")
+    assert report["reverse"]["changes"] == [
+        {"kind": "star", "ref": "nd/s1", "value": False, "previous": True}
+    ]
+    url = f"/api/v1/devices/{dev_id}/sync-reports/{report['id']}/undo-listening"
+    assert (await c.post(url)).json() == {"queued": 1}
+    assert (await c.post(url)).json() == {"queued": 0}  # the report forgot them
+    assert (
+        await c.post(f"/api/v1/devices/{dev_id}/sync-reports/nope/undo-listening")
+    ).status_code == 404
+    await _sync(app, c, dev_id)
+    assert server.songs["s1"].get("starred")
+    await _refresh(app, c)
+    await _sync(app, c, dev_id)  # the player follows the library again
+    assert len(_hearts(mount)) == 1

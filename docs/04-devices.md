@@ -48,6 +48,29 @@ skipped and named; a device whose plan needs a review waits for you on its own p
   resume positions; its settings stay. **Format** creates a new exFAT (or FAT32 / NTFS) file system on the whole
   player. The firmware is never touched.
 - Before each change to the player's databases SyncMusic keeps a copy under `<cache>/device-backups/`.
+- The player's databases are built on the computer and copied onto the player only when their content changed, by
+  writing a new file and renaming it over the old one, so an unplug never leaves a half-written database behind. An
+  update with nothing new writes nothing to the player.
+- **Eject before unplugging**, and after unplugging let the R1 finish updating its library before you connect it
+  again or switch it off. If the player's file system is reported as damaged, use **Repair** on the device page (or
+  check the card on a computer: `fsck.exfat` / `fsck.vfat`). SyncMusic checks this as soon as the player is
+  connected (the card mounted read-only, or its databases unreadable) and starts no automatic sync until it is repaired.
+
+### Tips for the HiBy R1
+The device page shows these as *Tips for this player* (Overview tab; close the card to keep it collapsed).
+- **Eject** in SyncMusic before unplugging. After unplugging, let the R1 finish updating its library before you
+  connect it again or switch it off - this protects its library database.
+- If new music does not show after a sync, **reboot the player** (the *Last full sync* card shows this hint after
+  every sync, so the tips card does not repeat it).
+- **Detect changes** (on the R1: *Settings → Library*) can be off when only SyncMusic fills the player: it starts
+  faster and does not rewrite its database. Keep it on if you also copy files by hand. SyncMusic cannot change it.
+- **Split genres**, **Split artists** and **Join albums** are settings of the player (*Settings → Library*).
+  *Device settings → Player library → Split genres* follows the player by default and can be set to **Off** or **On** (with the
+  separators: `;` `/` `&` `,` `+` and a live example), but the R1 files its genres again its own way after
+  unplugging: choose the same on the player (*Settings → Library*). The sync report warns while the two differ.
+- **exFAT** is the recommended file system for big cards. If the player or the computer reports file system errors,
+  run **Repair** on the device page.
+- Do not let the computer's own automounter (or a file manager window) open the player while SyncMusic uses it.
 
 ## USB flash drive or memory card
 - For car stereos, simple players and anything that reads a folder of files. **One way only**: nothing is read back.

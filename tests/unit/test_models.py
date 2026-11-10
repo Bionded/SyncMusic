@@ -123,6 +123,7 @@ SAMPLES: list[BaseModel] = [
     _sync_plan(),
     m.ItemFailure(ref=REF.key(), error="boom"),
     m.ReverseReport(plays_found=2),
+    m.ListeningChange(kind="rating", ref=REF.key(), value=4, previous=2),
     m.SyncReport(id="s1", device_id="dev", reverse=m.ReverseReport(), counts={"add": 1}),
     DeviceCapabilities(formats={"mp3"}, path_rules=PathRules.for_filesystem("vfat")),
 ]

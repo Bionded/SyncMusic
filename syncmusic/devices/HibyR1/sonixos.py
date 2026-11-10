@@ -27,6 +27,7 @@ import dataclasses
 import datetime as dt
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -112,8 +113,8 @@ def _query(db: Path, sql: str) -> list[tuple[Any, ...]]:
             return []
 
 
-def read_databases(mount: Path) -> HibyData:
-    d = mount / DB_DIR
+def read_databases(mount: Path, db_dir: Path | None = None) -> HibyData:
+    d = db_dir or mount / DB_DIR
     out = HibyData()
     for path, plays, last in _query(
         d / "library.db", "SELECT path, plays, last_played FROM PLAY_COUNTS"
@@ -247,9 +248,9 @@ def _quoted(table_name: str) -> str:
     return '"' + (PLAYLIST_PREFIX + table_name).replace('"', '""') + '"'
 
 
-def read_playlist_tables(mount: Path) -> dict[str, list[str]]:
+def read_playlist_tables(mount: Path, db_dir: Path | None = None) -> dict[str, list[str]]:
     """Every `M3U_<name>` table of library.db as name -> entries in order (paths relative to the volume)."""
-    db = mount / DB_DIR / "library.db"
+    db = (db_dir or mount / DB_DIR) / "library.db"
     if not db.is_file():
         return {}
     with tempfile.TemporaryDirectory(prefix="syncmusic-hiby-") as tmp:
@@ -290,11 +291,12 @@ def write_playlist_tables(
     playlists: dict[str, list[tuple[str, str, str, int]]],
     drop: set[str],
     backup_dir: Path,
+    db_dir: Path | None = None,
 ) -> Path:
     """Replace the `M3U_<name>` tables of `playlists` (table name -> rows (path relative to the volume, title,
     artist, seconds)) and drop the tables in `drop`, in one transaction, after a copy of library.db went to
     `backup_dir`. Returns the backup's path. Raises HotDatabase when the journal holds an unfinished transaction."""
-    db = mount / DB_DIR / "library.db"
+    db = (db_dir or mount / DB_DIR) / "library.db"
     journal = db.with_name(db.name + "-journal")
     if journal.is_file() and journal.stat().st_size > 0:
         raise HotDatabase(
@@ -334,11 +336,12 @@ def write_library_index(
     backup_dir: Path,
     old_db: Path | None = None,
     known: hiby_index.KnownTags | None = None,
+    db_dir: Path | None = None,
 ) -> hiby_index.IndexStats:
     """Rebuild the music index of library.db from the files on the card (see hiby_index), in one
     transaction after a copy went to `backup_dir`; `old_db`: the deleted database whose tag values unchanged
     files reuse (full sync). Raises HotDatabase when the journal holds an unfinished transaction."""
-    db = mount / DB_DIR / "library.db"
+    db = (db_dir or mount / DB_DIR) / "library.db"
     journal = db.with_name(db.name + "-journal")
     if journal.is_file() and journal.stat().st_size > 0:
         raise HotDatabase(f"{db} has an unfinished transaction ({journal.name}); index not rebuilt")
@@ -364,12 +367,15 @@ def write_favourites(
     add: dict[str, tuple[str, str]],
     remove: set[str],
     backup_dir: Path,
+    db_dir: Path | None = None,
+    added_at: dict[str, int] | None = None,
 ) -> tuple[int, int]:
     """Hearts for the library's favourites: `add` = path relative to the volume -> (name, artist)
     gets a FAVOURITES row unless it has one (the player's own added_at stays), `remove` paths lose theirs. One
     transaction after a backup; SonixOS reads FAVOURITES on every list, so the hearts show at its next start.
+    `added_at`: path -> the time a heart keeps (a full sync writes the player's hearts back as they were).
     Returns (added, removed); (0, 0) without a database or table. Raises HotDatabase like the playlists."""
-    db = mount / DB_DIR / "library.db"
+    db = (db_dir or mount / DB_DIR) / "library.db"
     if not db.is_file() or not (add or remove):
         return 0, 0
     journal = db.with_name(db.name + "-journal")
@@ -391,7 +397,7 @@ def write_favourites(
         for rel, (name, artist) in sorted(add.items()):
             added += con.execute(
                 "INSERT OR IGNORE INTO FAVOURITES(path, name, artist, added_at) VALUES (?, ?, ?, ?)",
-                (VOLUME_PREFIX + rel, name, artist, now),
+                (VOLUME_PREFIX + rel, name, artist, (added_at or {}).get(rel, now)),
             ).rowcount
         for rel in sorted(remove):
             removed += con.execute(
@@ -418,10 +424,10 @@ class ListeningState:
     episodes: dict[str, tuple[str, str, float, float, bool]] = field(default_factory=dict)
 
 
-def write_listening_state(mount: Path, state: ListeningState) -> None:
+def write_listening_state(mount: Path, state: ListeningState, db_dir: Path | None = None) -> None:
     """PLAY_COUNTS, audiobook resume points / finished flags and PODCAST_EPISODES rows (key `f:` + path, like the
     player's), each database in one transaction."""
-    d = mount / DB_DIR
+    d = db_dir or mount / DB_DIR
 
     def run(db: str, work: Any) -> None:
         con = sqlite3.connect(d / db, isolation_level=None)
@@ -532,11 +538,12 @@ def write_audiobook_index(
     table: list[tuple[Any, ...]],
     parts: list[tuple[str, str, int, str]],
     backup_dir: Path,
+    db_dir: Path | None = None,
 ) -> int:
     """Add or refresh our books in audiobooks.db (SonixOS never updates it by itself), keeping the
     player's own data (last_played, resume_*, finished, bookmarks); rows of books no longer on the card go. Returns
     the number of books written; 0 without a database (the player makes one at its first scan)."""
-    db = mount / DB_DIR / "audiobooks.db"
+    db = (db_dir or mount / DB_DIR) / "audiobooks.db"
     if not db.is_file():
         return 0
     journal = db.with_name(db.name + "-journal")
@@ -702,12 +709,12 @@ def _rescue(db: Path, backup_dir: Path) -> None:
         con.close()
 
 
-def ensure_databases(mount: Path, backup_dir: Path) -> list[str]:
+def ensure_databases(mount: Path, backup_dir: Path, db_dir: Path | None = None) -> list[str]:
     """Create `.local/` and every SonixOS database that is missing (empty, with the SonixOS schema); a malformed
     one is backed up and recreated with its user rows. A database with a hot journal is left to the player.
     Returns what was done, one line each (for the log)."""
     done: list[str] = []
-    d = mount / DB_DIR
+    d = db_dir or mount / DB_DIR
     d.mkdir(exist_ok=True)
     for name in SCHEMAS:
         db = d / name
@@ -724,9 +731,105 @@ def ensure_databases(mount: Path, backup_dir: Path) -> list[str]:
     return done
 
 
-def organize_rules(mount: Path) -> str | None:
+def stage_databases(mount: Path, stage: Path) -> Path:
+    """Copy the card's databases (with their journals) into `stage`, a fresh directory on the host's disk: every
+    write of a commit goes there, never into an open SQLite file on the card (a half-written database on the card
+    is what an unplug or a crash leaves behind). Returns `stage`."""
+    shutil.rmtree(stage, ignore_errors=True)
+    stage.mkdir(parents=True)
+    d = mount / DB_DIR
+    for name in SCHEMAS:
+        for f in (name, f"{name}-journal"):
+            if (d / f).is_file():
+                shutil.copyfile(d / f, stage / f)
+    return stage
+
+
+def _dump(db: Path) -> list[str]:
+    """The database's content as SQL (from a read-only copy: page layout and free pages do not count)."""
+    with tempfile.TemporaryDirectory(prefix="syncmusic-hiby-") as tmp:
+        copy = Path(tmp) / db.name
+        shutil.copyfile(db, copy)
+        con = sqlite3.connect(copy)
+        try:
+            return list(con.iterdump())
+        finally:
+            con.close()
+
+
+def _same_content(a: Path, b: Path) -> bool:
+    if a.stat().st_size == b.stat().st_size and a.read_bytes() == b.read_bytes():
+        return True
+    try:
+        return _dump(a) == _dump(b)
+    except sqlite3.Error:
+        return False
+
+
+def _fsync_dir(d: Path) -> None:
+    try:
+        fd = os.open(d, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass  # not every file system syncs a directory handle; syncfs before eject covers it
+    finally:
+        os.close(fd)
+
+
+def _integrity_ok(db: Path) -> bool:
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            return bool(con.execute("PRAGMA integrity_check").fetchone() == ("ok",))
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return False
+
+
+def publish_databases(mount: Path, stage: Path) -> list[str]:
+    """Put the staged databases onto the card: one whose content equals the card's (and has no journal there) is
+    not written at all; a changed one is checked (integrity_check), copied next to the old one as `<name>.new`,
+    fsynced and renamed over it, then its journal goes. A crash at any point leaves either the old or the new
+    database complete. Returns the names written; raises sqlite3.DatabaseError when a staged database is corrupt
+    (the card keeps the old ones)."""
+    d = mount / DB_DIR
+    d.mkdir(exist_ok=True)
+    todo: list[str] = []
+    for name in SCHEMAS:
+        staged, card = stage / name, d / name
+        if not staged.is_file():
+            continue
+        journals = [d / f"{name}-{x}" for x in ("journal", "wal", "shm")]
+        if card.is_file() and not any(j.exists() for j in journals) and _same_content(staged, card):
+            continue
+        if not _integrity_ok(staged):
+            raise sqlite3.DatabaseError(
+                f"the new {name} failed its integrity check; the card keeps the old one"
+            )
+        todo.append(name)
+    for name in todo:
+        new = d / f"{name}.new"
+        with open(stage / name, "rb") as src, open(new, "wb") as dst:
+            shutil.copyfileobj(src, dst, 1 << 20)
+            dst.flush()
+            os.fsync(dst.fileno())
+        _fsync_dir(d)
+        os.replace(new, d / name)
+        for x in ("journal", "wal", "shm"):
+            (d / f"{name}-{x}").unlink(missing_ok=True)
+        _fsync_dir(d)
+    if "library.db" in todo:
+        (d / "thumbnails").unlink(missing_ok=True)  # the player's thumbnails of the old index
+    return todo
+
+
+def organize_rules(mount: Path, db_dir: Path | None = None) -> str | None:
     """library.db's ORGANIZE_STATE rules (the player's split/join settings, which are not on the card otherwise)."""
-    db = mount / DB_DIR / "library.db"
+    db = (db_dir or mount / DB_DIR) / "library.db"
     if not db.is_file():
         return None
     try:
@@ -740,12 +843,12 @@ def organize_rules(mount: Path) -> str | None:
     return str(row[0]) if row and row[0] else None
 
 
-def clear_index(mount: Path, rules: str | None = None) -> None:
+def clear_index(mount: Path, rules: str | None = None, db_dir: Path | None = None) -> None:
     """Delete the player's index of the card (INDEX_FILES with their journals) and recreate empty databases; the
     player's ORGANIZE_STATE rules (`rules`, else the old database's) are carried over so our rebuilt index is filed
     the player's way."""
-    d = mount / DB_DIR
-    rules = rules or organize_rules(mount)
+    d = db_dir or mount / DB_DIR
+    rules = rules or organize_rules(mount, db_dir)
     for name in INDEX_FILES:
         for f in (name, f"{name}-journal", f"{name}-wal", f"{name}-shm"):
             (d / f).unlink(missing_ok=True)
@@ -782,6 +885,14 @@ class HibySettings(BaseModel):
     ascii_only: bool = False
     lyrics: Literal["none", "embedded", "lrc_sidecar"] = "lrc_sidecar"
     playlists: bool = True
+    # the player's Split genres: "player" files genres the way the card's library.db says (the player's own
+    # setting); "off"/"on" write that choice, which only lasts if the player is set the same way
+    split_genres: Literal["player", "off", "on"] = "player"
+    genre_separators: list[Literal["semicolon", "slash", "ampersand", "comma", "plus"]] = [
+        "semicolon",
+        "slash",
+        "comma",
+    ]
     # unused (playlists are tables in library.db); kept so stored device configs still load
     playlist_dir: str = "Playlists"
 
@@ -800,6 +911,8 @@ class Hiby(FileDeviceMixin, Device):
     Settings: ClassVar[type[BaseModel]] = HibySettings
     # exFAT (the player's own), FAT32, NTFS - one whole-disk volume, no partition table
     format_filesystems = ("exfat", "vfat", "ntfs")
+    # a half-written database here makes the kernel remount the card read-only on its first read
+    probe_files = tuple(f"{DB_DIR}/{name}" for name in SCHEMAS)
     capabilities: ClassVar[DeviceCapabilities] = DeviceCapabilities(
         formats=set(FORMATS),
         supports_podcasts=True,
@@ -818,6 +931,8 @@ class Hiby(FileDeviceMixin, Device):
             None  # from the last read_feedback, saved by reset_feedback
         )
         self._known: hiby_index.KnownTags | None = None  # loaded from TAG_CACHE on first use
+        # where a commit writes the databases (a copy on the host, see stage_databases); None = on the card
+        self._db_dir: Path | None = None
 
     @property
     def s(self) -> HibySettings:
@@ -977,17 +1092,80 @@ class Hiby(FileDeviceMixin, Device):
             # written anew once, by the final commit after the last file; these only save the manifest
             await super().commit(s, manifest)
             return
-        # every sync and update: whatever is in /.local - a journal, a malformed or missing
-        # database - is backed up, deleted and written anew; only a failing write is reported
+        # every sync and update: the databases are built anew on the host (a journal, a malformed or
+        # missing database is backed up and dropped), and only those whose content changed go onto the card
+        try:
+            self._db_dir = await asyncio.to_thread(
+                stage_databases, self.mount, self._backup_dir().parent / "stage"
+            )
+        except OSError as e:
+            self._warn(s, f"the player's databases could not be read from /{DB_DIR}: {e}")
+            await super().commit(s, manifest)
+            return
+        try:
+            await self._commit_databases(s, manifest)
+            written = await asyncio.to_thread(publish_databases, self.mount, self._db_dir)
+            if written:
+                log.info("%s: %s written to the card", self.id, ", ".join(written))
+            else:
+                log.info("%s: the player's databases are unchanged, nothing written", self.id)
+        except (OSError, sqlite3.Error) as e:
+            self._warn(
+                s, f"the player's databases were not written (the card keeps the old ones): {e}"
+            )
+        finally:
+            self._db_dir = None
+        await super().commit(s, manifest)
+
+    def genre_bits(self) -> int | None:
+        """The genre separators the device setting asks for, None = follow the player's (the card's) rules."""
+        if self.s.split_genres == "player":
+            return None
+        if self.s.split_genres == "off":
+            return 0
+        bits = 0
+        for name in self.s.genre_separators:
+            bits |= hiby_index.GENRE_SEPARATORS[name]
+        return bits
+
+    def _apply_genre_setting(self, s: DeviceSession) -> None:
+        """Put the Split genres device setting into the staged library.db's ORGANIZE_STATE (before the index is
+        rebuilt from it); warn when the player's last rules differ, as the player re-files to its own setting."""
+        bits = self.genre_bits()
+        if bits is None or self._db_dir is None or not (self._db_dir / "library.db").is_file():
+            return
+        current = organize_rules(self.mount, self._db_dir)
+        player = hiby_index.Rules.parse(current).genre
+        if player != bits:
+            self._warn(
+                s,
+                "Split genres differs from the player's own setting (Settings → Library on the player): "
+                "the player files its genres again its own way after unplugging; set it the same on both",
+            )
+        con = sqlite3.connect(self._db_dir / "library.db", isolation_level=None)
+        try:
+            con.execute(
+                "INSERT OR REPLACE INTO ORGANIZE_STATE(id, rules) VALUES (0, ?)",
+                (hiby_index.with_genre_separators(current, bits),),
+            )
+        finally:
+            con.close()
+
+    async def _commit_databases(self, s: DeviceSession, manifest: Manifest) -> None:
+        """Every database write of a commit, into the staged copies (`self._db_dir`)."""
         fresh = await self._delete_databases(s, manifest)
         if fresh is None:
             try:
                 for line in await asyncio.to_thread(
-                    ensure_databases, self.mount, self._backup_dir()
+                    ensure_databases, self.mount, self._backup_dir(), self._db_dir
                 ):
                     log.info("%s: %s", self.id, line)
             except (OSError, sqlite3.Error) as e:
                 self._warn(s, f"the player's databases in /{DB_DIR} could not be created: {e}")
+        try:
+            await asyncio.to_thread(self._apply_genre_setting, s)
+        except (OSError, sqlite3.Error) as e:
+            self._warn(s, f"the Split genres setting was not applied: {e}")
         tracks = await self._rebuild_index(s, fresh.old_db if fresh else None)
         if tracks is not None:
             s.data.setdefault("commit_counts", {})["device_tracks"] = tracks
@@ -1024,7 +1202,7 @@ class Hiby(FileDeviceMixin, Device):
                 ]
             try:
                 backup = await asyncio.to_thread(
-                    write_playlist_tables, self.mount, rows, drop, self._backup_dir()
+                    write_playlist_tables, self.mount, rows, drop, self._backup_dir(), self._db_dir
                 )
                 log.info(
                     "%s: %d playlists written to library.db (backup %s)", self.id, len(rows), backup
@@ -1043,7 +1221,7 @@ class Hiby(FileDeviceMixin, Device):
         try:
             table, parts = await asyncio.to_thread(audiobook_rows, self.mount, books)
             n = await asyncio.to_thread(
-                write_audiobook_index, self.mount, table, parts, self._backup_dir()
+                write_audiobook_index, self.mount, table, parts, self._backup_dir(), self._db_dir
             )
             if n:
                 log.info("%s: %d audiobooks indexed in audiobooks.db", self.id, n)
@@ -1051,7 +1229,6 @@ class Hiby(FileDeviceMixin, Device):
             self._warn(s, f"audiobooks not indexed on the player: {e}")
         if fresh is not None:
             await self._write_fresh_state(s, fresh, manifest)
-        await super().commit(s, manifest)
 
     def _player_playlists(
         self, fresh: _Fresh, old: dict[str, str], ours: set[str], manifest: Manifest
@@ -1086,7 +1263,7 @@ class Hiby(FileDeviceMixin, Device):
         plays, hearts, positions and playlists are in the libraries (when it failed, `_write_fresh_state` keeps the
         player's). None (in-place update) only when the delete itself fails."""
         backup = self._backup_dir() / f"full-{dt.datetime.now(dt.UTC):%Y%m%dT%H%M%S%fZ}"
-        d = self.mount / DB_DIR
+        d = self._db_dir or self.mount / DB_DIR
 
         def drop_journals() -> None:
             backup.mkdir(parents=True, exist_ok=True)
@@ -1101,12 +1278,12 @@ class Hiby(FileDeviceMixin, Device):
                         f.unlink()
 
         def work() -> _Fresh:
-            data = read_databases(self.mount)
-            tables = read_playlist_tables(self.mount)
+            data = read_databases(self.mount, self._db_dir)
+            tables = read_playlist_tables(self.mount, self._db_dir)
             for name in SCHEMAS:
                 if (d / name).is_file():
                     shutil.copy2(d / name, backup / name)
-            clear_index(self.mount)
+            clear_index(self.mount, db_dir=self._db_dir)
             old_db = backup / "library.db"
             return _Fresh(data=data, old_db=old_db if old_db.is_file() else None, playlists=tables)
 
@@ -1120,18 +1297,25 @@ class Hiby(FileDeviceMixin, Device):
         except (OSError, sqlite3.Error) as e:
             self._warn(s, f"the player's databases were not rewritten (updated in place): {e}")
             return None
-        log.info("%s: the player's databases deleted, writing them anew", self.id)
+        log.info(
+            "%s: full sync: the player's databases are built anew (written to the card only if they changed)",
+            self.id,
+        )
         return fresh
 
     async def _write_fresh_hearts(
         self, s: DeviceSession, fresh: _Fresh, manifest: Manifest
     ) -> None:
-        """Hearts on every file of ours that had one after the library's changes were mirrored (`_write_hearts`)."""
+        """Hearts on every file of ours that had one after the library's changes were mirrored (`_write_hearts`),
+        and on every file the library has starred: a reset or emptied player database never leaves the new one
+        without the library's favourites."""
         rules = self._rules()
         by_path = {path_key(e.path, rules): e for e in manifest.items.values() if not e.orphan}
+        keys = {path_key(p, rules) for p in fresh.data.favourites}
+        keys |= {k for k, e in by_path.items() if e.last_starred}
         add: dict[str, tuple[str, str]] = {}
-        for p in fresh.data.favourites:
-            e = by_path.get(path_key(p, rules))
+        for k in sorted(keys):
+            e = by_path.get(k)
             if e is not None and (self.mount / e.path).is_file():
                 add[e.path] = (
                     e.meta.get("title") or PurePosixPath(e.path).stem,
@@ -1139,7 +1323,16 @@ class Hiby(FileDeviceMixin, Device):
                 )
 
         def work() -> None:
-            write_favourites(self.mount, add, set(), self._backup_dir())
+            added_at = {
+                device_rel(p): int(t)
+                for p, t in (
+                    _query(fresh.old_db, "SELECT path, added_at FROM FAVOURITES")
+                    if fresh.old_db
+                    else []
+                )
+                if p and t
+            }
+            write_favourites(self.mount, add, set(), self._backup_dir(), self._db_dir, added_at)
             self._save_seen(set(add))
 
         try:
@@ -1207,7 +1400,7 @@ class Hiby(FileDeviceMixin, Device):
         for folder, (file, pos, finished) in resume.items():
             state.books[file if book_files[folder] == 1 else folder] = (file, pos, finished, None)
         try:
-            await asyncio.to_thread(write_listening_state, self.mount, state)
+            await asyncio.to_thread(write_listening_state, self.mount, state, self._db_dir)
         except (OSError, sqlite3.Error) as e:
             self._warn(s, f"play counts and positions not written to the player: {e}")
 
@@ -1218,7 +1411,7 @@ class Hiby(FileDeviceMixin, Device):
         known = await asyncio.to_thread(self._known_tags)
         try:
             st = await asyncio.to_thread(
-                write_library_index, self.mount, self._backup_dir(), old_db, known
+                write_library_index, self.mount, self._backup_dir(), old_db, known, self._db_dir
             )
             log.info(
                 "%s: library.db index rebuilt: %d tracks in %d folders (%d files read)",
@@ -1249,7 +1442,9 @@ class Hiby(FileDeviceMixin, Device):
         rules = self._rules()
 
         def work() -> str | None:
-            have = {path_key(p, rules): p for p in read_databases(self.mount).favourites}
+            have = {
+                path_key(p, rules): p for p in read_databases(self.mount, self._db_dir).favourites
+            }
             seen = self._seen_favourites()
             # no seen set yet: the first reverse sync has not pushed the player's hearts, so none may go
             seen_keys = {path_key(p, rules) for p in seen or ()}
@@ -1271,7 +1466,9 @@ class Hiby(FileDeviceMixin, Device):
                 elif not star and pk in have and pk in seen_keys:
                     remove.add(have[pk])
             try:
-                n_add, n_rm = write_favourites(self.mount, add, remove, self._backup_dir())
+                n_add, n_rm = write_favourites(
+                    self.mount, add, remove, self._backup_dir(), self._db_dir
+                )
             except (HotDatabase, OSError, sqlite3.Error) as e:
                 return f"favourites not written to the player: {e}"
             if not (n_add or n_rm):

@@ -132,6 +132,14 @@ The sync runs in the background: you can close the page, the sidebar shows the p
 does a **reverse sync** (play counts, ratings, favourites and positions go back to the libraries). When it ends, the
 device can be **ejected** (*Eject*: unmounted and powered off - unplug it when it says so).
 
+When ten or more and over half of a player's favourites (or ratings) vanish at once, SyncMusic takes it for a reset
+player database: it keeps them in the library, warns in the sync report and puts them back on the player. If you
+removed the favourites on purpose, *Remove them from the library* in that report entry (*History*) sends the
+removals with the next sync.
+
+A sync that changed favourites or ratings in a library can be taken back: *Undo these changes* in its *History*
+entry sends the previous values to the library with the next sync, and the player follows.
+
 While a device stays connected, SyncMusic runs **updates** by itself: on plug-in, when a library changes (at most
 every 15 minutes by default) and on a schedule (*Settings → Sync*); *Update now* runs one at once.
 

@@ -37,6 +37,7 @@ from syncmusic.core.models import (
     DeviceConfig,
     DeviceFeedback,
     ItemRef,
+    ListeningChange,
     Manifest,
     MediaKind,
     PlayEvent,
@@ -105,10 +106,16 @@ def _ref_of(kind: str, data: dict[str, Any]) -> ItemRef:
 
 
 def _rows_from_feedback(
-    fb: DeviceFeedback, last_positions: Mapping[str, float | None]
+    fb: DeviceFeedback,
+    last_positions: Mapping[str, float | None],
+    last_ratings: Mapping[str, int | None] | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
     out = [("play", p.model_dump(mode="json")) for p in fb.plays]
-    out += [("rating", {"ref": k, "rating": v}) for k, v in fb.ratings.items()]
+    # the library's rating at the last sync goes along: an undo of this run sends it back
+    out += [
+        ("rating", {"ref": k, "rating": v, "previous": (last_ratings or {}).get(k)})
+        for k, v in fb.ratings.items()
+    ]
     out += [("star", {"ref": k, "starred": v}) for k, v in fb.stars.items()]
     # oldest first: the newest position of a book is the one a sink keeps (ABS has one progress per book)
     positions = sorted(
@@ -274,6 +281,45 @@ def _new_feedback(
     )
 
 
+# removed favourites/ratings at once from which a reset of the player's database is suspected
+MASS_UNSTAR_MIN = 10
+
+
+def _mass_removal(removed: list[str], had: set[str]) -> bool:
+    return len(removed) >= MASS_UNSTAR_MIN and len(removed) * 2 > len(had | set(removed))
+
+
+def _mass_unstar(new: DeviceFeedback, manifest: Manifest | None) -> list[str]:
+    """Favourite removals that look like a reset player database, not the user: at least MASS_UNSTAR_MIN and
+    more than half of the hearts the device had (those mirrored onto it, plus the removed ones). These are
+    dropped from `new` and returned; the user's removals of a few hearts still go."""
+    removed = [k for k, v in new.stars.items() if not v]
+    if manifest is None or not _mass_removal(
+        removed, {k for k, e in manifest.items.items() if e.last_starred}
+    ):
+        return []
+    for k in removed:
+        del new.stars[k]
+    return [k for k in removed if k in manifest.items]
+
+
+def _mass_unrate(fb: DeviceFeedback, new: DeviceFeedback, manifest: Manifest | None) -> int:
+    """Ratings cleared at once the same way (a reset iTunesDB or tagcache): dropped from the device's feedback
+    and from what is sent, so the library keeps them; the manifest forgets the last rating so the forward sync
+    writes the library's ratings back to the device."""
+    removed = [k for k, v in fb.ratings.items() if v is None]
+    if manifest is None or not _mass_removal(
+        removed, {k for k, e in manifest.items.items() if e.last_rating}
+    ):
+        return 0
+    for k in removed:
+        fb.ratings.pop(k, None)
+        new.ratings.pop(k, None)
+        if k in manifest.items:
+            manifest.items[k].last_rating = None
+    return len(removed)
+
+
 class ReverseSync:
     def __init__(self, store: Store) -> None:
         self.store = store
@@ -320,6 +366,20 @@ class ReverseSync:
         if finished:
             log.info("%s: %d podcasts/audiobooks played to the end", cfg.id, len(finished))
         new = _new_feedback(fb, plays, manifest, libraries, settings, device_wins)
+        reset_hearts = _mass_unstar(new, manifest)
+        reset_ratings = _mass_unrate(fb, new, manifest)
+        if reset_ratings:
+            log.warning(
+                "%s: %d ratings cleared at once - treated as a reset player database, none sent",
+                cfg.id,
+                reset_ratings,
+            )
+        if reset_hearts:
+            log.warning(
+                "%s: %d favourites removed at once - treated as a reset player database, none sent",
+                cfg.id,
+                len(reset_hearts),
+            )
         skipped = len(plays) - len(new.plays) if settings.plays else 0
         if skipped:
             log.info(
@@ -335,14 +395,32 @@ class ReverseSync:
             log.info("%s: %d plays were already captured", cfg.id, len(fb.plays) - len(plays))
         if settings.plays or settings.ratings:
             out.report.warnings = await device.feedback_warnings()
+        if reset_hearts:
+            out.report.held_unstars = list(reset_hearts)
+            out.report.warnings.append(
+                f"The player's favourites were reset ({len(reset_hearts)} removed at once): SyncMusic did "
+                "not remove them from the library and writes them back to the player"
+            )
+        if reset_ratings:
+            out.report.warnings.append(
+                f"The player's ratings were reset ({reset_ratings} cleared at once): SyncMusic did not "
+                "clear them in the library"
+            )
         if fb.unmapped:
             log.info("%s: %d feedback entries not in the manifest (ignored)", cfg.id, fb.unmapped)
 
         last_positions = (
             {k: e.last_position_s for k, e in manifest.items.items()} if manifest else {}
         )
+        last_ratings = {k: e.last_rating for k, e in manifest.items.items()} if manifest else {}
         await self._capture(
-            cfg.id, new, libraries, fb.play_counts if manifest else {}, last_positions, out
+            cfg.id,
+            new,
+            libraries,
+            fb.play_counts if manifest else {},
+            last_positions,
+            out,
+            last_ratings,
         )
         playlists_changed = False
         if manifest is not None and settings.playlists:
@@ -363,8 +441,13 @@ class ReverseSync:
             # the manifest keeps the device's own bookmark of a finished item, not its end
             kept = {k: p for k, p in fb.positions.items() if k not in finished}
             kept |= {k: PositionInfo(position_s=v) for k, v in finished.items() if v is not None}
+            for key in reset_hearts:  # the forward sync writes the library's hearts back
+                manifest.items[key].last_starred = None
             await self._commit(
-                device, manifest, fb.model_copy(update={"positions": kept}), playlists_changed
+                device,
+                manifest,
+                fb.model_copy(update={"positions": kept}),
+                playlists_changed or bool(reset_hearts) or bool(reset_ratings),
             )
             if journal is not None or fb.play_counts:
                 await self.store.clear_feedback_journal(cfg.id)
@@ -440,13 +523,14 @@ class ReverseSync:
         play_counts: dict[str, int],
         last_positions: Mapping[str, float | None],
         out: _Outcome,
+        last_ratings: Mapping[str, int | None] | None = None,
     ) -> None:
         """New data → pending rows + the journal of the device's play counts, in one transaction. A pending
         rating/position superseded by a newer device value is dropped, so is data of a library no longer attached
         to the device."""
         rows: list[tuple[str, dict[str, Any]]] = []
         detached: dict[str, int] = defaultdict(int)
-        for kind, data in _rows_from_feedback(new, last_positions):
+        for kind, data in _rows_from_feedback(new, last_positions, last_ratings):
             lib_id = _ref_of(kind, data).library_id
             if lib_id in libraries:
                 rows.append((kind, data))
@@ -556,6 +640,11 @@ class ReverseSync:
                 await sink.set_rating(ref, rating)
                 await self.store.delivered(r.id)
                 out.report.ratings_pushed += 1
+                out.report.changes.append(
+                    ListeningChange(
+                        kind="rating", ref=ref.key(), value=rating, previous=r.data.get("previous")
+                    )
+                )
                 await self._took(r.kind, ref, r.data, out)
             else:
                 await self.store.add_local_feedback(
@@ -563,8 +652,12 @@ class ReverseSync:
                 )
         elif r.kind == "star":
             if sink is not None and caps.supports_starred:
-                await sink.set_starred(ref, bool(r.data["starred"]))
+                starred = bool(r.data["starred"])
+                await sink.set_starred(ref, starred)
                 out.report.stars_pushed += 1
+                out.report.changes.append(
+                    ListeningChange(kind="star", ref=ref.key(), value=starred, previous=not starred)
+                )
                 await self._took(r.kind, ref, r.data, out)
             await self.store.delivered(r.id)
         elif r.kind == "position":

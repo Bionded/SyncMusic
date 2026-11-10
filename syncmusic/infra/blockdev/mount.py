@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,10 +58,13 @@ def syncfs(path: Path | str) -> None:
 
 async def _flush(path: Path | str) -> None:
     """Best-effort syncfs before umount/eject (umount flushes anyway; a vanished mountpoint is no error)."""
+    t0 = time.monotonic()
     try:
         await asyncio.to_thread(syncfs, path)
     except OSError as e:
         log.warning("could not flush %s: %s", path, e)
+        return
+    log.info("flushed %s in %.1f s", path, time.monotonic() - t0)
 
 
 class BlockdevError(RuntimeError):

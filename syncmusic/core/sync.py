@@ -31,7 +31,7 @@ import os
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -321,6 +321,24 @@ def fs_damage(e: BaseException) -> OSError | None:
         seen.add(id(cur))
         cur = cur.__cause__ or cur.__context__
     return None
+
+
+CONNECT_CHECK_TIMEOUT_S = 120.0
+
+
+def probe_fs(mount: Path, files: Iterable[str]) -> None:
+    """OSError (EROFS) when `mount` is mounted read-only, or the read error of one of `files` (missing ones are
+    skipped)."""
+    if os.statvfs(mount).f_flag & os.ST_RDONLY:
+        raise OSError(errno.EROFS, os.strerror(errno.EROFS), str(mount))
+    for rel in files:
+        try:
+            f = (mount / rel).open("rb")
+        except FileNotFoundError:
+            continue
+        with f:
+            while f.read(1 << 20):
+                pass
 
 
 def suggests_gentle(cfg: DeviceConfig, e: BaseException) -> bool:
@@ -3573,6 +3591,62 @@ class SyncService:
         records = await self.store.health(device_id, now - storage_health.WINDOW)
         return storage_health.summary(records, now)
 
+    async def send_held_unstars(self, device_id: str, report_id: str) -> int:
+        """The user confirms that the favourites a reverse sync held back as a suspected database reset were
+        removed on purpose: they are queued as removals for their libraries (sent with the next reverse sync)
+        and the report forgets them. Returns how many were queued."""
+        await self.config(device_id)
+        report = await self.store.report(report_id)
+        if report is None or report.device_id != device_id:
+            raise SyncError(f"unknown sync report {report_id!r}", "not_found")
+        held = report.reverse.held_unstars if report.reverse else []
+        if not held:
+            return 0
+        await self.store.capture_feedback(
+            device_id, [("star", {"ref": k, "starred": False}) for k in held], [], None
+        )
+        assert report.reverse is not None
+        report.reverse.held_unstars = []
+        report.reverse.warnings.append(
+            f"{len(held)} favourite removals confirmed: they are sent to the library with the next sync"
+        )
+        await self.store.put_report(
+            report, (await self.store.report_jobs([report.id])).get(report.id)
+        )
+        log.info("%s: %d held favourite removals confirmed by the user", device_id, len(held))
+        return len(held)
+
+    async def undo_listening_changes(self, device_id: str, report_id: str) -> int:
+        """Undo the favourites and ratings a sync set in the libraries: their previous values are queued for the
+        libraries (sent with the next reverse sync) and the report forgets the changes. Returns how many."""
+        await self.config(device_id)
+        report = await self.store.report(report_id)
+        if report is None or report.device_id != device_id:
+            raise SyncError(f"unknown sync report {report_id!r}", "not_found")
+        changes = report.reverse.changes if report.reverse else []
+        if not changes:
+            return 0
+        rows: list[tuple[str, dict[str, Any]]] = [
+            ("star", {"ref": c.ref, "starred": bool(c.previous)})
+            if c.kind == "star"
+            else ("rating", {"ref": c.ref, "rating": c.previous, "previous": c.value})
+            for c in changes
+        ]
+        await self.store.capture_feedback(device_id, rows, [], None)
+        assert report.reverse is not None
+        report.reverse.changes = []
+        report.reverse.warnings.append(
+            f"{len(rows)} favourite and rating changes undone: the previous values are sent to the library "
+            "with the next sync"
+        )
+        await self.store.put_report(
+            report, (await self.store.report_jobs([report.id])).get(report.id)
+        )
+        log.info(
+            "%s: %d listening-data changes of report %s undone", device_id, len(rows), report_id
+        )
+        return len(rows)
+
     async def acknowledge_health(self, device_id: str, undo: bool = False) -> dict[str, Any]:
         """Hide the storage warning until a newer I/O error or slow sync (`undo`: drop the latest acknowledgement)."""
         if undo:
@@ -3622,6 +3696,7 @@ class SyncService:
                     )
                     task.add_done_callback(functools.partial(self._clock_done, cfg.id))
                     self._clock_tasks[cfg.id] = task
+        await self._check_fs(cfg, cd)
         if startup:
             log.info("%s: connected at start-up, no on-connect sync", cfg.id)
             return
@@ -3654,6 +3729,31 @@ class SyncService:
             self._window_pending[cfg.id] = "on connect"
             return
         await self.auto_sync(cfg, "on connect")
+
+    async def _check_fs(self, cfg: DeviceConfig, cd: ConnectedDisk) -> None:
+        """A disk device that just connected is mounted and checked at once: mounted read-only (the kernel does
+        that after errors) or a read error in its `probe_files` marks the file system damaged, so the device
+        page and dashboard offer Repair now and no automatic sync starts on it."""
+        cls = registry.device_class(cfg.type)
+        if cls.network or cfg.mount_path or cd.data_partition is None or cfg.id in self._damaged:
+            return
+        try:
+            device = await asyncio.wait_for(self.open_device(cfg.id), CONNECT_CHECK_TIMEOUT_S)
+        except (SyncError, TimeoutError) as e:
+            log.info("%s: no file system check on connect: %s", cfg.id, e)
+            return
+        except OSError as e:
+            self.mark_damaged(cfg.id, e)
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(probe_fs, device.mount, cls.probe_files),
+                CONNECT_CHECK_TIMEOUT_S,
+            )
+        except TimeoutError:
+            log.warning("%s: the file system check on connect timed out", cfg.id)
+        except OSError as e:
+            self.mark_damaged(cfg.id, e)
 
     async def _yield_update(self, device_id: str) -> None:
         """An update sync running on the device is cancelled and awaited, so the user's action goes ahead. Repeated

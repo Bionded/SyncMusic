@@ -318,3 +318,20 @@ async def test_reverse_sync_commit_leaves_the_databases_alone(tmp_path):
     await _commit(dev, m, reverse_ok=False)
     assert len(list(backups.glob("full-*"))) == before + 1
     assert _q(dev, "library.db", "SELECT plays FROM PLAY_COUNTS") == [(5,)]
+
+
+async def test_full_sync_of_an_emptied_favourites_table_writes_the_librarys_hearts(tmp_path):
+    """The player's database lost its hearts (reset or repaired): the rewrite takes the library's favourites, not
+    the empty table, and the seen set follows, so the next reverse sync sends nothing."""
+    dev = _dev(tmp_path)
+    m, tracks = await _music(dev, tmp_path, ["Зірка", "Зозуля"])
+    a, b = (next(e for e in m.items.values() if e.meta["title"] == t) for t in ("Зірка", "Зозуля"))
+    await _commit(dev, m, starred={a.ref.key(): True, b.ref.key(): False})
+    hiby_sql(dev.mount, "library.db", "DELETE FROM FAVOURITES")
+    s = await _commit(dev, m, starred={a.ref.key(): True, b.ref.key(): False})
+    assert {p for (p,) in _q(dev, "library.db", "SELECT path FROM FAVOURITES")} == {
+        f"/mnt/sd_0/{a.path}"
+    }
+    assert s.data["commit_counts"]["device_hearts"] == 1
+    fb = await dev.read_feedback(m)
+    assert not fb.stars

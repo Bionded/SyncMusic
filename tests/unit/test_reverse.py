@@ -222,6 +222,7 @@ async def test_newer_rating_supersedes_pending(env, store):
     dev.feedback = DeviceFeedback(ratings={A.key(): 5})
     rep = await rs.run(cfg, dev, libs)
     assert rep.ratings_pushed == 1 and sink.ratings == {"a": 5}
+    assert [(c.kind, c.ref, c.value) for c in rep.changes] == [("rating", A.key(), 5)]
     assert await store.pending_feedback("dev") == []
 
 
@@ -583,3 +584,68 @@ async def test_plays_of_another_installations_items_are_kept_for_it(env):
     assert manifest_io.read(dev.mount).items[ours.key()].pending_plays == 0
     rep = await rs.run(cfg, dev, libs)  # nothing twice
     assert rep.plays_submitted == 0 and len([p for p in sink.plays if p.ref == ours]) == 2
+
+
+def _starred_manifest(n: int) -> Manifest:
+    manifest = Manifest(header=ManifestHeader(device_id="dev"))
+    for i in range(n):
+        ref = ItemRef.parse(f"nd/t{i}")
+        manifest.items[ref.key()] = ManifestEntry(
+            ref=ref, device_ref=ref.item_id, path=f"t{i}.mp3", size=1, last_starred=True
+        )
+    return manifest
+
+
+def test_mass_unstar_of_a_reset_player_database_is_not_sent():
+    """All hearts gone at once (the player's database was reset): no unstar goes, the entries are returned so the
+    forward sync writes the hearts back; a few removals are the user's and still go."""
+    from syncmusic.core.reverse import _mass_unstar
+
+    manifest = _starred_manifest(69)
+    new = DeviceFeedback(stars=dict.fromkeys(manifest.items, False) | {"nd/new": True})
+    reset = _mass_unstar(new, manifest)
+    assert len(reset) == 69
+    assert new.stars == {"nd/new": True}
+
+    few = DeviceFeedback(stars=dict.fromkeys(list(manifest.items)[:3], False))
+    assert _mass_unstar(few, manifest) == []
+    assert len(few.stars) == 3
+    # below the minimum: a small library's user may remove all of them
+    small = _starred_manifest(4)
+    all4 = DeviceFeedback(stars=dict.fromkeys(small.items, False))
+    assert _mass_unstar(all4, small) == [] and len(all4.stars) == 4
+
+
+def test_mass_rating_clear_of_a_reset_player_database_is_not_sent():
+    from syncmusic.core.reverse import _mass_unrate
+
+    manifest = _starred_manifest(20)
+    for e in manifest.items.values():
+        e.last_rating = 4
+    keys = list(manifest.items)
+    fb = DeviceFeedback(ratings=dict.fromkeys(keys, None) | {"nd/x": 5})
+    new = DeviceFeedback(ratings=dict(fb.ratings))
+    assert _mass_unrate(fb, new, manifest) == 20
+    assert fb.ratings == new.ratings == {"nd/x": 5}
+    few = DeviceFeedback(ratings=dict.fromkeys(keys[:2], None))
+    assert _mass_unrate(few, DeviceFeedback(), manifest) == 0 and len(few.ratings) == 2
+
+
+def test_mass_rating_clear_writes_the_library_ratings_back_on_the_next_sync():
+    """Like favourites: after a reset player database the forward sync puts the library's ratings back on the
+    device, otherwise every later reverse sync sees the same mass clear again."""
+    from syncmusic.base.capabilities import DeviceCapabilities
+    from syncmusic.core.planner import meta_changes
+    from syncmusic.core.reverse import _mass_unrate
+    from tests.factories import track as make_track
+
+    manifest = _starred_manifest(20)
+    for e in manifest.items.values():
+        e.last_rating = 4
+    keys = list(manifest.items)
+    fb = DeviceFeedback(ratings=dict.fromkeys(keys, None))
+    assert _mass_unrate(fb, DeviceFeedback(ratings=dict(fb.ratings)), manifest) == 20
+    caps = DeviceCapabilities(formats={"mp3"}, supports_ratings_write=True)
+    entry = manifest.items[keys[0]]
+    track = make_track("t", rating=4)
+    assert any(c.field == "rating" for c in meta_changes(entry, track, caps, tags=False))

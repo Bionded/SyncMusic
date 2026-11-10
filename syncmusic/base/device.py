@@ -79,6 +79,9 @@ class Device(ABC):
     format_filesystems: ClassVar[tuple[str, ...]] = ("vfat",)
     # music only: podcasts and audiobooks never, whatever `capability_overrides` say (Rockbox)
     music_only: ClassVar[bool] = False
+    # files (relative to the mount) read in full when the device connects: a read error there means the file
+    # system is damaged, so it is flagged before a job writes to it (a player's own databases)
+    probe_files: ClassVar[tuple[str, ...]] = ()
 
     @classmethod
     def unavailable_reason(cls) -> str | None:

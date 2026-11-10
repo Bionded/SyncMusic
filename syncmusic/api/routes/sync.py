@@ -477,6 +477,16 @@ def router(facade: AppFacade) -> APIRouter:
         """Storage health: I/O errors in 30 days, write speeds of the last syncs, the warning."""
         return await facade.device_health(device_id)
 
+    @r.post("/devices/{device_id}/sync-reports/{report_id}/send-held-unstars")
+    async def send_held_unstars(device_id: str, report_id: str) -> dict[str, int]:
+        """Send the favourite removals a reverse sync held back as a suspected player database reset."""
+        return await facade.send_held_unstars(device_id, report_id)
+
+    @r.post("/devices/{device_id}/sync-reports/{report_id}/undo-listening")
+    async def undo_listening_changes(device_id: str, report_id: str) -> dict[str, int]:
+        """Send back the previous favourites and ratings of the ones this sync set in the libraries."""
+        return await facade.undo_listening_changes(device_id, report_id)
+
     @r.post("/devices/{device_id}/health/ack")
     async def device_health_ack(device_id: str, undo: bool = False) -> dict[str, Any]:
         """Acknowledge the storage warning: hidden until a newer I/O error or slow sync (`undo`: take it back)."""

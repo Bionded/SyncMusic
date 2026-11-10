@@ -3,13 +3,13 @@
 // in a danger zone and need a typed name / a confirmation; nothing is shown as done before the service says so.
 import { html, bytes, when, setHtml } from "../dom.js";
 import { t, addStrings } from "../i18n.js";
-import { helpTip } from "../help.js";
+import { helpTip, DOCS_BASE } from "../help.js";
 import { get, post, patch, del } from "../api.js";
 import { badge, pageHead, toast, confirm, typedConfirm, errorBox, errorMessage, problemBox, suggestionBox, emptyState, updateLine, indetBar, capacityBar, unsavedBar } from "../ui.js";
 import { schemaForm, FormError } from "../forms.js";
 import { go, goFrom } from "../router.js";
 import { refreshSidebar } from "../sidebar.js";
-import { deviceIcon, deviceState, dbSizeLine, dbSizeBar, etaText, isCheck, thumb, duration, hibyReboot, ejectedText, betaBadge, openJob } from "./common.js";
+import { deviceIcon, deviceState, dbSizeLine, dbSizeBar, etaText, isCheck, thumb, duration, hibyReboot, ejectedText, betaBadge, openJob, deviceTips, hasTips } from "./common.js";
 import { icon, typeIcon, typeLabel } from "../icons.js";
 import { rulesTab, rulesActions, rulesMounted } from "./rules.js";
 import { processorsTab, processorActions, refreshLint } from "./processors.js";
@@ -268,6 +268,22 @@ addStrings({
   "dev.made_home": "This SyncMusic is now the home of {name}.",
   "dev.not_home_only": "Only the home instance {home} can do this: make this instance home first.",
   "dev.fb_show": "Show what is not delivered",
+  "dev.held_text": "{n} favourites vanished from the player at once, so SyncMusic kept them in the library. If you removed them on purpose, remove them from the library too.",
+  "dev.held_text_one": "{n} favourite vanished from the player together with others, so SyncMusic kept it in the library. If you removed it on purpose, remove it from the library too.",
+  "dev.held_title_one": "Remove {n} favourite from the library?",
+  "dev.held_done_one": "{n} favourite removal is sent with the next sync.",
+  "dev.held_send": "Remove them from the library",
+  "dev.held_title": "Remove {n} favourites from the library?",
+  "dev.held_confirm": "They are sent as removed favourites with the next sync of {name}. Their hearts are then also removed from the player.",
+  "dev.held_done": "{n} favourite removals are sent with the next sync.",
+  "dev.undo_text": "This sync changed {n} favourites and ratings in the library.",
+  "dev.undo_text_one": "This sync changed {n} favourite or rating in the library.",
+  "dev.undo_send": "Undo these changes",
+  "dev.undo_title": "Undo {n} favourite and rating changes?",
+  "dev.undo_title_one": "Undo {n} favourite or rating change?",
+  "dev.undo_confirm": "The library gets its previous favourites and ratings back with the next sync of {name}, and the player follows it.",
+  "dev.undo_done": "{n} previous values are sent with the next sync.",
+  "dev.undo_done_one": "{n} previous value is sent with the next sync.",
   "dev.dz_wipe": "Wipe the player",
   "dev.dz_format": "Format the drive",
   "dev.dz_bind": "Use its disk",
@@ -288,6 +304,7 @@ addStrings({
   "dev.set_type.ipod": "iPod",
   "dev.set_type.rockbox": "Rockbox",
   "dev.set_type.ftp": "FTP connection",
+  "dev.set_type.hiby": "Player library",
   "dev.set_test": "Test and save",
   "dev.set_testing": "Connecting…",
   "dev.set_gentle": "Gentle write mode",
@@ -658,7 +675,8 @@ async function renderOverview(ctx) {
       ${storage(space, spaceError, idle, connected, sync)}</section>
     <div class="dev-cards">${ctx.state.erased ? erasedCard(ctx.state.erased, ctx.state.cfg.type) : lastSyncCard(ctx, lastReport)}
       ${ctx.state.integrity === undefined ? "" : healthCard(ctx, idle)}
-      ${books.length ? booksCard(cfg.id, books) : ""}</div>`;
+      ${books.length ? booksCard(cfg.id, books) : ""}
+      ${deviceTips(cfg.type, DOCS_BASE)}</div>`;
 }
 
 // Audiobooks in progress: the device's position as of the last sync against the library's now
@@ -852,6 +870,7 @@ function reverseSupport(type, libraries, libTypes, attachedIds) {
 const TYPE_CARD = {
   ipod: ["time_sync", "timezone"],
   rockbox: ["playlist_dir", "play_min_fraction", "play_min_seconds", "keep_rotated"],
+  hiby: ["split_genres", "genre_separators"],
   ftp: ["host", "port", "username", "password", "base_path", "passive", "tls", "timeout_s", "quota_gb"],
 };
 // a type's own i18n name for a shared field name
@@ -916,7 +935,8 @@ async function renderDeviceSettings(ctx) {
       <p class="muted" data-ds-none hidden>${t("dev.set_search_none")}</p></div>
     <div class="dev-settings ds-links">
       <a class="card ds-card ds-link" href="#/devices/${id}/rules"><b>${t("dev.set_what")}</b><small>${t("dev.set_what_sub")}</small></a>
-      <a class="card ds-card ds-link" href="#/devices/${id}/processors"><b>${t("dev.set_how")}</b><small>${t("dev.set_how_sub")}</small></a></div>
+      <a class="card ds-card ds-link" href="#/devices/${id}/processors"><b>${t("dev.set_how")}</b><small>${t("dev.set_how_sub")}</small></a>
+      ${hasTips(cfg.type) ? html`<a class="card ds-card ds-link" href="#/devices/${id}/overview" data-tips-link><b>${t("tips.link")}</b><small>${t("tips.link_sub")}</small></a>` : ""}</div>
     <div data-devset>
     <h2 class="ds-part" id="dsPartSync">${t("dev.set_part_sync")}</h2>
     ${sync}
@@ -1194,6 +1214,14 @@ function historyRow(ctx, r, open, show = "all") {
         <b>${t("hist.back")}</b>${r.reverse.failed ? html`<p class="muted">${t("hist.r.failed")}</p>` : ""}
         <ul>${reverseParts(r.reverse).map((p) => html`<li data-back="${p.k}">${p.text}</li>`)}
           ${[...(r.reverse.errors || []), ...(r.reverse.warnings || [])].map((e) => html`<li class="muted">${e}</li>`)}</ul></div>` : ""}
+      ${(r.reverse?.held_unstars || []).length ? suggestionBox({
+        iconName: "star", message: t("dev.held_text", { n: r.reverse.held_unstars.length }), attrs: html`data-held-unstars`,
+        action: html`<button class="btn small" data-action="heldUnstars" data-id="${r.id}" data-n="${r.reverse.held_unstars.length}">${t("dev.held_send")}</button>`,
+      }) : ""}
+      ${(r.reverse?.changes || []).length ? suggestionBox({
+        iconName: "undo", message: t("dev.undo_text", { n: r.reverse.changes.length }), attrs: html`data-undo-listening`,
+        action: html`<button class="btn small" data-action="undoListening" data-id="${r.id}" data-n="${r.reverse.changes.length}">${t("dev.undo_send")}</button>`,
+      }) : ""}
       ${feedbackLine(r.reverse, ctx.state.libNames) ? html`<div class="callout" data-feedback-line>${feedbackLine(r.reverse, ctx.state.libNames)}
         <button type="button" class="linkbtn" data-action="feedbackOpen">${t("dev.fb_show")}</button></div>` : ""}
       ${r.suggest_gentle && r.status === "failed" && !cfg.sync?.gentle_write ? suggestionBox({
@@ -1332,6 +1360,22 @@ function readForm(form, root) {
 export const actions = {
   ...pickerActions, // the flash drive's base folder
   gentleOn: (el, ctx) => progressActions.gentleOn(el, ctx),
+  async heldUnstars(el, ctx) { // favourites a suspected database reset held back: removed on purpose after all
+    const { cfg } = ctx.state, n = Number(el.dataset.n);
+    if (!(await confirm({ title: t("dev.held_title", { n }), message: t("dev.held_confirm", { name: cfg.name }), ok: t("dev.held_send"), danger: true }))) return;
+    el.disabled = true;
+    const res = await post(`/devices/${encodeURIComponent(cfg.id)}/sync-reports/${encodeURIComponent(el.dataset.id)}/send-held-unstars`);
+    toast(t("dev.held_done", { n: res.queued }), "ok");
+    ctx.rerender();
+  },
+  async undoListening(el, ctx) { // send back the library's favourites and ratings from before this sync
+    const { cfg } = ctx.state, n = Number(el.dataset.n);
+    if (!(await confirm({ title: t("dev.undo_title", { n }), message: t("dev.undo_confirm", { name: cfg.name }), ok: t("dev.undo_send"), danger: true }))) return;
+    el.disabled = true;
+    const res = await post(`/devices/${encodeURIComponent(cfg.id)}/sync-reports/${encodeURIComponent(el.dataset.id)}/undo-listening`);
+    toast(t("dev.undo_done", { n: res.queued }), "ok");
+    ctx.rerender();
+  },
   feedbackOpen(el, ctx) { // what did not reach its library
     openFeedback(ctx.state.cfg, () => ctx.rerender());
   },

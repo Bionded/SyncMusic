@@ -271,6 +271,14 @@ def folder_signature(entries: list[tuple[str, bool]]) -> tuple[int, int]:
 # --- splitting names (ORGANIZE_STATE rules) --------------------------------------------------------------------
 
 SEMICOLON, SLASH, AMPERSAND, COMMA, FEAT, VS, X, PLUS, WITH, AND = (1 << i for i in range(10))
+# the separators a genre may be split at (the player's Split genres choices); words are for artists only
+GENRE_SEPARATORS = {
+    "semicolon": SEMICOLON,
+    "slash": SLASH,
+    "ampersand": AMPERSAND,
+    "comma": COMMA,
+    "plus": PLUS,
+}
 _SYMBOLS = (
     (SEMICOLON, b";"),
     (SEMICOLON, "；".encode()),
@@ -399,6 +407,19 @@ class Rules:
             if part[:1] in ("a", "g", "j", "b") and part[1:].isdigit():
                 vals[part[0]] = int(part[1:])
         return cls(vals.get("a", 0), vals.get("g", 0), vals.get("b", 0), bool(vals.get("j", 0)))
+
+
+def with_genre_separators(rules: str | None, bits: int) -> str:
+    """`rules` (ORGANIZE_STATE) with the genre separators set to `bits`; the artist, album-artist, join and
+    exception parts stay exactly as the player wrote them."""
+    parts = (rules or DEFAULT_RULES).split("/")
+    for i, part in enumerate(parts):
+        if part[:1] == "g" and part[1:].isdigit():
+            parts[i] = f"g{bits}"
+            break
+    else:
+        parts.insert(1 if parts and parts[0][:1] == "a" else 0, f"g{bits}")
+    return "/".join(parts)
 
 
 # --- reading a file ------------------------------------------------------------------------------------------
@@ -751,12 +772,17 @@ def rebuild(
         (con.execute("SELECT rules FROM ORGANIZE_STATE WHERE id = 0").fetchone() or (None,))[0]
     )
     old: dict[str, tuple[Any, ...]] = {}
+    old_folders: dict[str, tuple[int, int, int]] = {}
     src = con
     if old_db is not None:
         src = sqlite3.connect(f"file:{old_db}?mode=ro", uri=True)
     try:
         for row in src.execute(f"SELECT {MEDIA_COLUMNS} FROM MEDIA_TABLE"):
             old[row[1]] = row
+        for path, mtime, files, names in src.execute(
+            "SELECT path, mtime, files, names FROM FOLDER_TABLE"
+        ):
+            old_folders[path] = (mtime, files, names)
     except sqlite3.Error:
         if src is con:
             raise
@@ -821,9 +847,16 @@ def rebuild(
             )
         if not folder.has_cue:
             files, names = folder_signature(folder.entries)
+            fpath = f"{VOLUME}/{folder.rel}" if folder.rel else VOLUME
+            mtime = folder.mtime
+            prev_folder = old_folders.get(fpath)
+            if prev_folder is not None and prev_folder[1:] == (files, names):
+                # same entries: keep the stored time, so writing our own files (manifest, databases) into a
+                # folder does not change the database and force a rewrite on the card
+                mtime = prev_folder[0]
             con.execute(
                 "INSERT OR REPLACE INTO FOLDER_TABLE(path, mtime, files, names) VALUES (?, ?, ?, ?)",
-                (f"{VOLUME}/{folder.rel}" if folder.rel else VOLUME, folder.mtime, files, names),
+                (fpath, mtime, files, names),
             )
     if rules.join:
         _join_albums(con)

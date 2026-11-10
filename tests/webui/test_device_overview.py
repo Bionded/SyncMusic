@@ -269,6 +269,90 @@ def test_hiby_overview_says_reboot_after_unplugging(web_server, chrome, tmp_path
 
 
 @pytest.mark.parametrize("width", [1280, 390])
+def test_hiby_tips_card_collapses_and_remembers(web_server, chrome, tmp_path, width):
+    """a HiBy's Overview has the Tips card (open first, stays collapsed once closed), the Settings tab links to it;
+    a flash drive has neither."""
+    url, app = web_server
+    dev = _synced_stick(url, app, tmp_path)
+    page = open_page(chrome, url, width)
+    page.goto(f"{url}/#/devices/{dev}")
+    page.locator('[data-last-sync="succeeded"]').wait_for()
+    assert page.locator("[data-device-tips]").count() == 0
+
+    def handle(route):
+        r = route.fetch()
+        data = r.json()
+        if "config" in data:
+            data["config"]["type"] = "hiby"
+        route.fulfill(response=r, body=json.dumps(data), content_type="application/json")
+
+    page.route(re.compile(r"/api/v1/devices/[^/?]+$"), handle)
+    page.reload()
+    card = page.locator('[data-device-tips="hiby"]')
+    card.wait_for()
+    assert card.get_attribute("open") is not None
+    assert card.locator("[data-tip]").count() == 5
+    assert "Detect changes" in card.inner_text()
+    # the reboot hint lives in the Last full sync card only
+    assert "Reboot" not in card.inner_text()
+    assert "sync report warns" in card.inner_text()
+    assert "04-devices.md#tips-for-the-hiby-r1" in card.locator("a").get_attribute("href")
+    assert no_horizontal_scroll(page)
+    shot(page, f"device-overview-hiby-tips-{width}")
+    card.locator("summary").click()
+    page.wait_for_function(
+        "JSON.parse(localStorage.getItem('deviceTipsClosed') || '[]').includes('hiby')"
+    )
+    page.reload()
+    page.locator('[data-device-tips="hiby"]').wait_for()
+    assert page.locator('[data-device-tips="hiby"]').get_attribute("open") is None
+    page.goto(f"{url}/#/devices/{dev}/settings")
+    page.locator("[data-tips-link]").click()
+    page.locator('[data-device-tips="hiby"]').wait_for()
+    assert [e for e in page.errors if "Failed to load resource" not in e] == []
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_hiby_split_genres_setting_with_live_example(web_server, chrome, tmp_path, width):
+    """a HiBy's Settings tab has the Player library card: Split genres follows the player by default, the
+    separators show only for On, with a live example that follows the checkboxes."""
+    url, app = web_server
+    dev = _synced_stick(url, app, tmp_path)
+    page = open_page(chrome, url, width)
+
+    def handle(route):
+        r = route.fetch()
+        data = r.json()
+        if "config" in data:
+            data["config"]["type"] = "hiby"
+            data["config"]["settings"] = {}
+        route.fulfill(response=r, body=json.dumps(data), content_type="application/json")
+
+    page.route(re.compile(r"/api/v1/devices/[^/?]+$"), handle)
+    page.goto(f"{url}/#/devices/{dev}/settings")
+    card = page.locator('[data-type-card="hiby"]')
+    card.wait_for()
+    mode = card.locator("[data-field=split_genres] select")
+    assert mode.input_value() == "player"
+    seps = card.locator("[data-field=genre_separators]")
+    assert seps.is_hidden()
+    mode.select_option("on")
+    seps.wait_for()
+    example = seps.locator("[data-split-example]")
+    assert "Rock · Pop · Indie & Folk · Jazz" in example.inner_text()
+    seps.get_by_label("& ampersand").check()
+    assert "Rock · Pop · Indie · Folk · Jazz" in example.inner_text()
+    seps.get_by_label("; semicolon").uncheck()
+    assert "Rock; Pop · Indie · Folk · Jazz" in example.inner_text()
+    assert no_horizontal_scroll(page)
+    card.scroll_into_view_if_needed()
+    shot(page, f"device-settings-hiby-split-{width}")
+    mode.select_option("off")
+    assert seps.is_hidden()
+    assert [e for e in page.errors if "Failed to load resource" not in e] == []
+
+
+@pytest.mark.parametrize("width", [1280, 390])
 def test_space_map_and_left_off(web_server, chrome, tmp_path, width):
     """the space map by library and rule, the rest of the used space explained, and what the last
     plan left off with its advice (routed: the fixture's stick has room for everything)."""

@@ -97,6 +97,14 @@ CONTROLS: dict[str, tuple[str, str]] = {
         "test_devices.py::test_register_a_detected_disk_from_the_list",
     ),
     "devices:repairFs": ("elsewhere", "test_fs_damaged_ui.py::test_damaged_file_system_banner"),
+    "devices:heldUnstars": (
+        "elsewhere",
+        "test_device_history.py::test_history_held_favourites_and_undo_buttons",
+    ),
+    "devices:undoListening": (
+        "elsewhere",
+        "test_device_history.py::test_history_held_favourites_and_undo_buttons",
+    ),
     "devices:eject": (
         "elsewhere",
         "test_plan_flow.py (eject after a sync); disabled for folder devices",

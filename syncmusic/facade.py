@@ -2858,6 +2858,12 @@ class AppFacade:
         await self.app.sync.config(device_id)
         return await self.app.sync.health(device_id)
 
+    async def send_held_unstars(self, device_id: str, report_id: str) -> dict[str, int]:
+        return {"queued": await self.app.sync.send_held_unstars(device_id, report_id)}
+
+    async def undo_listening_changes(self, device_id: str, report_id: str) -> dict[str, int]:
+        return {"queued": await self.app.sync.undo_listening_changes(device_id, report_id)}
+
     async def acknowledge_health(self, device_id: str, undo: bool = False) -> dict[str, Any]:
         await self.app.sync.config(device_id)
         return await self.app.sync.acknowledge_health(device_id, undo)

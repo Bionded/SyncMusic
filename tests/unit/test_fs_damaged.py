@@ -101,3 +101,55 @@ async def test_a_failed_device_job_marks_the_device(env, tmp_path):
     info = app.jobs.submit("sync", "sync Flash", job, device_id="flash")
     assert (await app.jobs.wait(info.id)).status == "failed"
     assert (await _device(c))["fs_damaged"]
+
+
+def test_probe_fs_finds_a_read_only_mount_and_a_read_error(tmp_path, monkeypatch):
+    import os
+
+    from syncmusic.core.sync import probe_fs
+
+    (tmp_path / ".local").mkdir()
+    (tmp_path / ".local" / "library.db").write_bytes(b"x" * 10)
+    probe_fs(tmp_path, [".local/library.db", ".local/missing.db"])  # clean: no error
+
+    real = os.statvfs
+
+    class _Ro:
+        f_flag = os.ST_RDONLY
+
+    monkeypatch.setattr(os, "statvfs", lambda p: _Ro())
+    try:
+        probe_fs(tmp_path, [])
+        raise AssertionError("read-only mount not found")
+    except OSError as e:
+        assert e.errno == errno.EROFS
+    monkeypatch.setattr(os, "statvfs", real)
+
+
+async def test_a_damaged_file_system_is_flagged_on_connect(env, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from syncmusic.core.detection import ConnectedDisk
+    from syncmusic.infra.blockdev.identify import BlockDeviceInfo
+
+    app, c = env
+    await _register(c, tmp_path / "flash", name="Flash")
+    cfg = (await app.sync.config("flash")).model_copy(update={"mount_path": None})
+
+    async def opened(device_id):
+        return SimpleNamespace(mount=tmp_path / "flash")
+
+    monkeypatch.setattr(app.sync, "open_device", opened)
+
+    def eio(self, *a, **kw):
+        raise _eio()
+
+    disk = BlockDeviceInfo(name="sdz", path="/dev/sdz")
+    cd = ConnectedDisk(disk=disk, device_id="flash", data_partition="/dev/sdz1")
+    await app.sync._check_fs(cfg, cd)  # clean card: nothing flagged
+    assert not (await _device(c))["fs_damaged"]
+
+    monkeypatch.setattr("syncmusic.core.sync.probe_fs", lambda mount, files: eio(None))
+    await app.sync._check_fs(cfg, cd)
+    assert (await _device(c))["fs_damaged"] == "Input/output error"
+    assert await app.sync.periodic_updates(now=10**9) == []

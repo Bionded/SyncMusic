@@ -1166,6 +1166,15 @@ class ItemFailure(BaseModel):
     path: str = ""
 
 
+class ListeningChange(BaseModel):
+    """A favourite or rating a reverse sync set in a library, with the value it replaced (for an undo)."""
+
+    kind: Literal["star", "rating"]
+    ref: str
+    value: bool | Rating | None = None
+    previous: bool | Rating | None = None
+
+
 class ReverseReport(BaseModel):
     plays_found: int = 0
     plays_submitted: int = 0
@@ -1199,6 +1208,12 @@ class ReverseReport(BaseModel):
     playlists_created: list[str] = []  # device-made playlists saved to a library
     # playlists not pushed because the policy is "ask": the plan / report lists them
     playlist_conflicts: list[str] = []
+    # favourites removed on the device all at once and not sent (a suspected reset player database): the user
+    # can still send them as removals from the report (`SyncService.send_held_unstars`)
+    held_unstars: list[str] = []
+    # favourites and ratings this run set in the libraries, with their previous values
+    # (`SyncService.undo_listening_changes` sends the previous ones back); emptied once undone
+    changes: list[ListeningChange] = []
 
 
 class SyncReport(BaseModel):

@@ -155,3 +155,54 @@ def test_history_shows_what_went_back(web_server, chrome, tmp_path, width):
         acts
     )
     assert [e for e in page.errors if "Failed to load resource" not in e] == []
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_history_held_favourites_and_undo_buttons(web_server, chrome, tmp_path, width):
+    """a row whose reverse sync held back favourite removals offers to send them on purpose, and a row that
+    changed favourites/ratings offers to undo them; each asks first and posts to its own route."""
+    url, app = web_server
+    dev = _synced_stick(url, app, tmp_path)
+    posted = []
+
+    def reports(route):
+        r = route.fetch()
+        data = r.json()
+        first = data[0]
+        rev = {
+            **(first.get("reverse") or {}),
+            "held_unstars": ["a", "b", "c"],
+            "changes": [{"kind": "star", "ref": "a", "value": True, "previous": False}],
+        }
+        route.fulfill(response=r, json=[{**first, "id": "rid1", "reverse": rev}, *data[1:]])
+
+    def action(route):
+        posted.append(route.request.url.rsplit("/", 1)[-1])
+        route.fulfill(json={"queued": 3 if posted[-1] == "send-held-unstars" else 1})
+
+    page = open_page(chrome, url, width)
+    page.route(re.compile(r"/api/v1/sync-reports"), reports)
+    page.route(re.compile(r"/sync-reports/rid1/(send-held-unstars|undo-listening)$"), action)
+    page.goto(f"{url}/#/devices/{dev}/history")
+    row = page.locator("[data-history] .hist-row").first
+    row.wait_for()
+    held = row.locator("[data-held-unstars]")
+    undo = row.locator("[data-undo-listening]")
+    assert "3 favourites vanished" in held.inner_text()
+    assert "changed 1 favourite or rating" in undo.inner_text()
+    assert no_horizontal_scroll(page)
+    shot(page, f"device-history-held-undo-{width}")
+    held.get_by_role("button", name="Remove them from the library").click()
+    dialog = page.get_by_role("dialog")
+    assert "Remove 3 favourites from the library?" in dialog.inner_text()
+    shot(page, f"device-history-held-confirm-{width}")
+    dialog.get_by_role("button", name="Remove them from the library").click()
+    page.wait_for_function("document.body.innerText.includes('3 favourite removals are sent')")
+    undo = page.locator("[data-history] .hist-row").first.locator("[data-undo-listening]")
+    undo.get_by_role("button", name="Undo these changes").click()
+    dialog = page.get_by_role("dialog")
+    assert "Undo 1 favourite or rating change?" in dialog.inner_text()
+    dialog.get_by_role("button", name="Undo these changes").click()
+    page.wait_for_function("document.body.innerText.includes('1 previous value is sent')")
+    assert posted == ["send-held-unstars", "undo-listening"]
+    assert [e for e in page.errors if "Failed to load resource" not in e] == []

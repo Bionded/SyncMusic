@@ -5,6 +5,16 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- HiBy R1: a *Split genres* device setting (use the player's setting, off, or on with the chosen separators and a live example); the sync report warns when it differs from the player's own setting.
+- *Undo these changes* in a sync's History entry sends the library's previous favourites and ratings back when a sync changed them by mistake.
+- HiBy R1: a "Tips for this player" card on the device page with the recommended habits and player settings (eject, Detect changes, split settings, file system).
+
+### Fixed
+- A player whose database lost its favourites (reset, repaired or rewritten) no longer removes them from the library: when ten or more and over half of the hearts vanish at once, SyncMusic sends no unfavourite, warns on the sync report and writes the hearts back to the player. The same goes for ratings cleared at once on an iPod or Rockbox player whose database was reset: the library keeps them and the next sync puts them back on the player. If the favourites were removed on purpose, *Remove them from the library* in the report's History entry sends the removals.
+- HiBy R1: the player's file system could be damaged on the next connect after a sync. Its library databases are now built on the computer and replaced on the player in one safe step, and only when something in them changed; updates with nothing new no longer write to the player.
+- A player whose file system is damaged (mounted read-only by the system, or the player's databases unreadable) is flagged with "file system damaged" and the Repair action as soon as it is connected, not only after a sync failed, and no automatic sync starts on it.
+
 ## [0.2.2] - 2026-11-08
 
 ### Added
@@ -37,6 +47,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 - The state file SyncMusic keeps on a player now names its libraries by a stable id and records which installation owns the player and which wrote it last, so another SyncMusic installation can recognise the same library and leaves items of libraries it does not have alone. Players synced by an older version are upgraded at their next sync.
 
 ### Fixed
+- A player whose database lost its favourites (reset, repaired or rewritten) no longer removes them from the library: when ten or more and over half of the hearts vanish at once, SyncMusic sends no unfavourite, warns on the sync report and writes the hearts back to the player. The same goes for ratings cleared at once on an iPod or Rockbox player whose database was reset: the library keeps them and the next sync puts them back on the player.
 - Opening a notification from the bell drawer no longer bounces back to the previous screen when the page is slow.
 - Device settings: the orphans card now updates by itself when the device becomes free again after a sync, instead of staying on the old state until a reload.
 - Leaving the plan screen while a plan is still being computed no longer sometimes jumps back to the finished plan.

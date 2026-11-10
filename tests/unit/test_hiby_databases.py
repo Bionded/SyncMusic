@@ -149,7 +149,7 @@ async def test_unwritable_db_is_a_report_warning(tmp_path):
         await dev.commit(s, Manifest(header=ManifestHeader(device_id="h1"), playlists=["Mix"]))
     finally:
         local.chmod(0o755)
-    assert any("not rewritten" in w for w in s.data["commit_warnings"])
+    assert any("not written" in w for w in s.data["commit_warnings"])
 
 
 def test_write_favourites_counts_rows_and_refuses_a_hot_db(tmp_path):

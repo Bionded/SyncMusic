@@ -461,6 +461,10 @@ class Store:
             )
         return [SyncReport.model_validate_json(r["data"]) for r in rows]
 
+    async def report(self, report_id: str) -> SyncReport | None:
+        row = await self.db.fetchone("SELECT data FROM sync_reports WHERE id = ?", (report_id,))
+        return SyncReport.model_validate_json(row["data"]) if row else None
+
     async def last_report(self, device_id: str, kind: str) -> SyncReport | None:
         """The device's newest report of a kind ("full" / "update")."""
         row = await self.db.fetchone(

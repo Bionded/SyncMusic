@@ -13,7 +13,27 @@ addStrings({
   "form.show": "Show",
   "form.hide": "Hide",
   "form.tls_http": "Only used for HTTPS URLs.",
+  "field.genre_separators.example": "e.g. {from} → {to}",
 });
+
+// Split genres: the live example of the chosen separators (each with its full-width form, as the player has)
+const SEPARATORS = { semicolon: ";\uff1b", slash: "/\uff0f", ampersand: "&\uff06", comma: ",\uff0c\u3001", plus: "+\uff0b" };
+const SPLIT_SAMPLE = "Rock; Pop/Indie & Folk, Jazz";
+function splitExample(names) {
+  const chars = names.map((n) => SEPARATORS[n] || "").join("");
+  const parts = chars ? SPLIT_SAMPLE.split(new RegExp(`[${chars.replace(/[\]\\^-]/g, "\\$&")}]`)) : [SPLIT_SAMPLE];
+  const out = [];
+  for (const p of parts.map((x) => x.trim()).filter(Boolean)) if (!out.some((o) => o.toLowerCase() === p.toLowerCase())) out.push(p);
+  return t("field.genre_separators.example", { from: SPLIT_SAMPLE, to: out.length > 1 ? out.join(" · ") : SPLIT_SAMPLE });
+}
+function syncSplit(form) {
+  const mode = form.querySelector("[data-field=split_genres] select");
+  const box = form.querySelector("[data-field=genre_separators]");
+  if (!mode || !box) return;
+  box.hidden = mode.value !== "on";
+  const names = [...box.querySelectorAll("input:checked")].map((x) => x.value);
+  box.querySelector("[data-split-example]").textContent = splitExample(names);
+}
 
 const MB = 1024 * 1024;
 let formSeq = 0;
@@ -56,6 +76,7 @@ function resolve(schema, raw) {
 function kindOf(name, prop) {
   if (prop.enum) return "enum";
   if (prop.type === "string" && prop.writeOnly) return "secret";
+  if (prop.type === "array" && prop.items?.enum) return "choices";
   if (prop.type === "array") return prop.items?.type === "string" ? "list" : "object";
   if (prop.type === "integer" && name.endsWith("_bytes")) return "megabytes";
   if (prop.type === "object" && prop.properties && Object.values(prop.properties).every((p) => p.type === "string")) return "texts";
@@ -76,6 +97,8 @@ export function schemaForm(schema, values = {}, { only = null, prefix = "", skip
     const value = name in values ? values[name] : raw.default ?? prop.default;
     fields.push({ name, key: keys[name] || name, prop, nullable, kind, value, el: `${id}-${prefix}${name}`, url: values.url ?? "" });
   }
+  const split = fields.find((f) => f.name === "split_genres");
+  for (const f of fields) if (f.name === "genre_separators") f.hidden = split ? split.value !== "on" : false;
   const tpl = html`<div class="form-grid" data-form="${id}">${fields.map((f) => control(f, required.has(f.name)))}</div>`;
   return { html: tpl, read: (root) => read(root, fields, required) };
 }
@@ -94,8 +117,15 @@ function control(f, req) {
   if (f.kind === "boolean") {
     return html`<div class="field full"><label class="checkrow" for="${f.el}"><input type="checkbox" id="${f.el}" ${f.value ? "checked" : ""} ${described}> ${lab}</label>${hintTpl}</div>`;
   }
+  if (f.kind === "choices") { // a set of fixed values: one checkbox each
+    const on = new Set(f.value || []);
+    const split = f.name === "genre_separators";
+    return html`<fieldset class="field full choices" data-field="${f.name}" id="${f.el}" ${described} ${split && f.hidden ? "hidden" : ""}><legend>${lab}</legend>
+      <div class="choices-row">${f.prop.items.enum.map((o) => html`<label class="checkrow"><input type="checkbox" value="${o}" ${on.has(o) ? "checked" : ""}> ${option(f.name, o)}</label>`)}</div>
+      ${split ? html`<small class="muted" data-split-example>${splitExample([...on])}</small>` : ""}${hintTpl}</fieldset>`;
+  }
   if (f.kind === "enum") {
-    return html`<div class="field"><label for="${f.el}">${lab}</label><select id="${f.el}" ${described}>
+    return html`<div class="field" data-field="${f.name}"><label for="${f.el}">${lab}</label><select id="${f.el}" ${described}>
       ${f.nullable || f.value === null || f.value === undefined ? html`<option value="" ${f.value == null ? "selected" : ""}>-</option>` : ""}
       ${f.prop.enum.map((o) => html`<option value="${o}" ${String(o) === String(f.value) ? "selected" : ""}>${option(f.name, o)}</option>`)}
     </select>${hintTpl}</div>`;
@@ -186,6 +216,7 @@ export function initServerUrls(root) {
   });
   root.addEventListener("input", (e) => {
     if (e.target.matches?.("[data-server-url]")) syncTls(e.target);
+    if (e.target.closest?.("[data-field=split_genres], [data-field=genre_separators]")) syncSplit(e.target.closest("[data-form]"));
     if (e.target.matches?.("[data-path-tpl]")) {
       const k = e.target.dataset.pathTpl;
       const out = e.target.closest("label")?.querySelector(`[data-path-example="${k}"]`);
@@ -224,6 +255,7 @@ function read(root, fields, required) {
     if (!el) continue;
     el.removeAttribute("aria-invalid");
     if (f.kind === "boolean") { out[f.name] = el.checked; continue; }
+    if (f.kind === "choices") { out[f.name] = [...el.querySelectorAll("input:checked")].map((x) => x.value); continue; }
     if (f.kind === "enum") {
       if (el.value !== "") {
         const o = f.prop.enum.find((x) => String(x) === el.value);

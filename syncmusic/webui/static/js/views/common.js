@@ -10,6 +10,15 @@ addStrings({
   "beta.android": "Android players over MTP are in beta: unlock the player and allow file transfer, and report problems.",
   "beta.jellyfin": "Jellyfin libraries are in beta: movies and episodes go to the player, nothing is sent back.",
   "hiby.reboot": "Reboot the player after unplugging to see the changes (SonixOS keeps an old view of the card until a reboot).",
+  "tips.head": "Tips for this player",
+  "tips.more": "Read more",
+  "tips.link": "Tips for this player",
+  "tips.link_sub": "Recommended habits and player settings, on the Overview tab",
+  "tips.hiby.eject": "Eject in SyncMusic before unplugging. After unplugging, let the R1 finish updating its library before you connect it again or switch it off - this protects its library database.",
+  "tips.hiby.detect": "Detect changes (on the R1: Settings → Library) can be off when only SyncMusic fills the player: it starts faster and does not rewrite its database. Keep it on if you also copy files by hand. SyncMusic cannot change this setting.",
+  "tips.hiby.split": "Split genres, Split artists and Join albums are settings of the player (Settings → Library). Device settings → Player library → Split genres follows the player by default; if you set it to Off or On, choose the same on the R1 - the sync report warns while the two differ.",
+  "tips.hiby.fs": "exFAT is the recommended file system for big cards. If the player or the computer reports file system errors, run Repair on this page.",
+  "tips.hiby.automount": "Do not let the computer's own automounter open the player while SyncMusic uses it (a file manager window counts too).",
   "var.copy": "Files as they are",
   "var.lossless": "Lossless as {to}",
   "var.fit": "{q} for lossless, only when it doesn't fit",
@@ -184,6 +193,39 @@ export function suggestText(r) {
 
 // HiBy: SonixOS keeps its databases open over USB and shows a stale card until it is rebooted
 export const hibyReboot = (type) => (type === "hiby" ? html`<div class="callout" data-hiby-reboot>${t("hiby.reboot")}</div>` : "");
+
+// Tips per device type: short advice shown on the device page; DEVICE_TIPS lists each type's i18n keys
+// (`tips.<type>.<key>`) and the docs section they come from. Add a type here to give it a card.
+const DEVICE_TIPS = {
+  hiby: { keys: ["eject", "detect", "split", "fs", "automount"], docs: "04-devices.md#tips-for-the-hiby-r1" },
+};
+const TIPS_CLOSED = "deviceTipsClosed";
+export const hasTips = (type) => type in DEVICE_TIPS;
+export const tipsDocs = (type) => DEVICE_TIPS[type]?.docs || "";
+
+/** The collapsible "Tips for this player" card of a device type (empty for a type without tips); it stays
+ * collapsed once the user closes it (per type, in this browser). */
+export function deviceTips(type, docsBase) {
+  const tips = DEVICE_TIPS[type];
+  if (!tips) return "";
+  let closed = [];
+  try { closed = JSON.parse(localStorage.getItem(TIPS_CLOSED) || "[]"); } catch { /* a broken value: open */ }
+  return html`<details class="card dev-card dev-tips" id="deviceTips" data-device-tips="${type}" ${closed.includes(type) ? "" : "open"}>
+    <summary><h2>${t("tips.head")}</h2></summary>
+    <ul>${tips.keys.map((k) => html`<li data-tip="${k}">${t(`tips.${type}.${k}`)}</li>`)}</ul>
+    <a href="${docsBase}${tips.docs}" target="_blank" rel="noopener">${t("tips.more")}</a></details>`;
+}
+
+document.addEventListener("toggle", (e) => {
+  const el = e.target;
+  if (!(el instanceof HTMLElement) || !el.dataset?.deviceTips) return;
+  let closed = [];
+  try { closed = JSON.parse(localStorage.getItem(TIPS_CLOSED) || "[]"); } catch { /* start over */ }
+  const type = el.dataset.deviceTips;
+  closed = closed.filter((x) => x !== type);
+  if (!el.open) closed.push(type);
+  localStorage.setItem(TIPS_CLOSED, JSON.stringify(closed));
+}, true);
 
 // the "can be unplugged" toast; a HiBy's adds the reboot hint once per browser session
 // device and library types still in beta (HiBy SonixOS left beta): a badge next to the type
