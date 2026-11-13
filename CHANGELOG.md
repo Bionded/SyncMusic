@@ -3,7 +3,7 @@
 All notable changes to SyncMusic are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.4] - 2026-11-13
 
 ### Added
 - Android (MTP): playlist files a player app edits or adds in the *Playlists* folder go back to your library with the next sync.
