@@ -3,6 +3,8 @@
 All notable changes to SyncMusic are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
 ## [0.2.4] - 2026-11-13
 
 ### Added
