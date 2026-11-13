@@ -3,7 +3,7 @@
 All notable changes to SyncMusic are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.5] - 2026-11-13
 
 ### Changed
 - The SonixOS device type is now called *HiBy R1 - SonixOS*, like *HiBy R1 - Compás*.
