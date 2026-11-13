@@ -22,6 +22,7 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 | Larger files go to a temporary file (without cache) | Files larger than this are written to a temporary file instead of memory, e.g. long audiobooks. |
 | Write speed limit | Every device's full sync; keeps this computer responsive during big syncs. Empty: no limit. |
 | Devices syncing at once | Other device syncs wait until one finishes. Empty: no limit. |
+| compas-sdtool | Builds the player's library during the sync, so the music, hearts and play counts are there right after unplugging. Empty: next to SyncMusic, then in the data folder's tools/. |
 
 ### Libraries & conversion
 
@@ -63,6 +64,10 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 | New password | At least 8 characters. Setting it turns the login on and signs out every other browser. Lost it? On the host run syncmusic set-password. |
 | Sign out everywhere | Ends the session of every browser, this one too. API tokens keep working. |
 | API tokens | For scripts and the command line (environment variable SYNCMUSIC_TOKEN): sent as Authorization: Bearer <token>. |
+| Allow Wi-Fi clients | Phones and other apps that speak the SyncMusic client protocol can pair with this server and sync over the network. Off: every client request is refused (paired clients keep their pairing). |
+| Announce on the network | Clients find this server by themselves (mDNS). Off: enter the address in the client by hand. |
+| Pairing code valid for | How long a new pairing code can be used. |
+| Clients check in every | How often a paired client asks whether there is something new to sync. |
 | Log level | Applied at once. Debug writes a lot; use it while looking for a problem. |
 | System check | Checks ffmpeg, disk space, permissions and connected devices. Runs when this page opens. |
 | Diagnostics bundle | A zip for a bug report: versions, settings, libraries, devices, recent sync reports and logs. Passwords and tokens are masked; no media files or databases. |

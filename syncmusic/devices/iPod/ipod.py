@@ -464,6 +464,37 @@ class IPod(Device):
     def _rel_path(self, track: Any) -> str:
         return "/".join(p for p in track.ipod_path.split(":") if p)
 
+    def _otg_names(self, db: Any) -> dict[str, list[str]]:
+        """The iPod's pending On-The-Go playlists as name -> device-relative paths. Named after the time of
+        the newest OTG file, so a name stays the same until the files are consumed."""
+        lists = db.pending_otg_playlists()
+        if not lists:
+            return {}
+        itunes = self.mount / "iPod_Control" / "iTunes"
+        mtimes = [f.stat().st_mtime for f in itunes.glob("OTGPlaylistInfo*") if f.is_file()]
+        when = dt.datetime.fromtimestamp(max(mtimes, default=0), dt.UTC)
+        base = f"On-The-Go {when:%Y-%m-%d %H:%M}"
+        return {
+            base if i == 0 else f"{base} ({i + 1})": [self._rel_path(t) for t in tracks]
+            for i, tracks in enumerate(lists)
+        }
+
+    async def read_playlists(self, manifest: Manifest) -> dict[str, list[str]] | None:
+        """On-The-Go playlists made on the iPod go back to the library (the iPod cannot edit other playlists)."""
+
+        def work() -> dict[str, list[str]]:
+            return self._otg_names(self._open_db()) if self._has_db() else {}
+
+        return await asyncio.to_thread(work)
+
+    async def remove_playlists(self, s: DeviceSession, names: list[str]) -> None:
+        """On-The-Go playlists saved to a library are cleared at the next database write; those not saved yet
+        are imported as iPod playlists by it (pygpod's default), so none is ever lost."""
+        db = s.data["db"]
+        otg = set(self._otg_names(db))
+        if otg and otg <= set(names):
+            db.clear_otg_playlists()
+
     async def read_contents(self) -> DeviceContents:
         """Everything in the iTunesDB, also what other tools put there; names and tags come from the database
         - the files under iPod_Control/Music/Fxx have meaningless names."""
@@ -809,7 +840,9 @@ class IPod(Device):
             if attr in tags and getattr(t, attr) != tags[attr]:
                 setattr(t, attr, tags[attr])
 
-    async def set_position(self, s: DeviceSession, ref: DeviceTrackRef, position_s: float) -> bool:
+    async def set_position(
+        self, s: DeviceSession, ref: DeviceTrackRef, position_s: float, finished: bool = False
+    ) -> bool:
         t = s.data["by_dbid"].get(ref.device_ref)
         if t is None:
             raise KeyError(f"{self.id}: track {ref.device_ref} is not in the iPod database")

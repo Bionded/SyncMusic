@@ -84,6 +84,7 @@ SPEED_OF_KIND = {
     "emulated_rockbox": "ipod_hdd",
     "emulated_rockbox_eros": "sd_player",
     "emulated_hiby": "sd_player",
+    "emulated_compas": "sd_player",
 }
 IO_SLICES = (Path("/sys/fs/cgroup/system.slice"), Path("/sys/fs/cgroup/user.slice"))
 

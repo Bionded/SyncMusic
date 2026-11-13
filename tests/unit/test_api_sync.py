@@ -477,7 +477,7 @@ async def test_device_ids_from_any_script_and_known_types_listed(env, tmp_path):
     assert r.status_code == 400
     assert (
         r.json()["message"]
-        == "unknown device type 'flash' (known: android, flashdrive, ftp, hiby, ipod, rockbox, smb)"
+        == "unknown device type 'flash' (known: android, client, flashdrive, ftp, hiby, hiby_compas, ipod, rockbox, smb)"
     )
     r = await c.patch("/api/v1/devices/флешка-тест", json={"processors": [{"type": "convert"}]})
     assert r.status_code == 400
@@ -521,6 +521,8 @@ async def test_register_refuses_unknown_fields(env, tmp_path):
         r = await c.post("/api/v1/devices/register", json=body)
         assert r.status_code == 400, r.text
         assert r.json()["error"] == "invalid" and next(iter(extra)) in r.json()["message"]
+    r = await c.post("/api/v1/devices/register", json={"name": "Phone", "type": "client"})
+    assert r.status_code == 400 and "pairing" in r.json()["message"], r.text
     # library_ids link each library's "All …" default; own rules are refused
     body = {
         "name": "Ok",
@@ -663,3 +665,92 @@ async def test_big_json_responses_are_gzipped(env):
     assert "content-encoding" not in small.headers  # below the minimum size
     plain = await c.get("/api/v1/device-types", headers={"Accept-Encoding": "identity"})
     assert "content-encoding" not in plain.headers
+
+
+async def test_register_a_backup_disk(env, tmp_path):
+    """A disk registered as a backup: no format limit, no processing, additive, verified, into a base folder."""
+    app, c = env
+    for name, settings, mode in (
+        ("Backup", {"purpose": "backup"}, "additive"),
+        ("Mirror backup", {"purpose": "backup", "base_folder": "Archive"}, "mirror"),
+    ):
+        (tmp_path / name).mkdir()
+        body = {
+            "name": name,
+            "mount_path": str(tmp_path / name),
+            "type": "flashdrive",
+            "settings": settings,
+        }
+        if mode == "mirror":
+            body["rule_set"] = {"mode": "mirror"}
+        r = await c.post("/api/v1/devices/register", json=body)
+        assert r.status_code == 201, r.text
+        cfg = await app.sync.config(r.json()["id"])
+        assert cfg.rule_set.mode == mode and cfg.sync.verify == "all"
+        assert cfg.settings["base_folder"] == settings.get("base_folder", "SyncMusic")
+        assert not any(p.enabled and p.type != "transcode" for p in cfg.processors)
+        device = await app.sync.open_device(cfg.id)
+        assert device.effective_capabilities().formats == set()
+        assert device.settings.layout.music == "{library_path}"
+    (tmp_path / "Stick").mkdir()
+    r = await c.post(
+        "/api/v1/devices/register",
+        json={"name": "Stick", "mount_path": str(tmp_path / "Stick"), "type": "flashdrive"},
+    )
+    assert r.status_code == 201, r.text
+    stick = await app.sync.config(r.json()["id"])
+    assert stick.rule_set.mode == "mirror" and "base_folder" not in stick.settings
+    assert "layout" not in stick.settings
+
+
+async def test_browse_folders_for_the_base_folder_picker(env, tmp_path):
+    app, c = env
+    root = tmp_path / "disk"
+    for d in ("Music/Rock", "Archive", ".syncmusic", "Ёлки"):
+        (root / d).mkdir(parents=True)
+    (root / "file.mp3").write_bytes(b"x")
+    r = await c.get("/api/v1/devices/register/folders", params={"mount_path": str(root)})
+    body = r.json()
+    assert r.status_code == 200 and body["folders"] == ["Archive", "Music", "Ёлки"]
+    assert (
+        body["path"] == "" and body["free_bytes"] > 0 and body["total_bytes"] >= body["free_bytes"]
+    )
+    r = await c.get(
+        "/api/v1/devices/register/folders", params={"mount_path": str(root), "path": "Music/"}
+    )
+    assert r.json()["folders"] == ["Rock"] and r.json()["path"] == "Music"
+    r = await c.get(
+        "/api/v1/devices/register/folders", params={"mount_path": str(root), "path": "New"}
+    )
+    assert r.json()["exists"] is False and r.json()["folders"] == []
+    r = await c.get(
+        "/api/v1/devices/register/folders", params={"mount_path": str(root), "path": "../.."}
+    )
+    assert r.status_code == 400
+    assert (await c.get("/api/v1/devices/register/folders")).status_code == 400
+    reg = await c.post(
+        "/api/v1/devices/register",
+        json={"name": "Disk", "mount_path": str(root), "type": "flashdrive"},
+    )
+    r = await c.get(f"/api/v1/devices/{reg.json()['id']}/folders", params={"path": "Music"})
+    assert r.status_code == 200 and r.json()["folders"] == ["Rock"]
+
+
+async def test_browse_a_connected_disk_from_its_root(env, tmp_path):
+    """The picker's `disk` source lists a connected, not registered disk with paths from its root."""
+    app, c = env
+    root = tmp_path / "mnt"
+    (root / "Music" / "Rock").mkdir(parents=True)
+    (root / ".syncmusic").mkdir()
+    disk = BlockDeviceInfo(name="sdy", path="/dev/sdy")
+    app.sync.detector.connected["sdy"] = ConnectedDisk(disk=disk, mountpoint=root)
+    r = await c.post("/api/v1/browse", json={"source": "disk", "disk": "/dev/sdy", "path": "/"})
+    assert r.status_code == 200 and r.json()["path"] == "/" and r.json()["folders"] == ["Music"]
+    r = await c.post(
+        "/api/v1/browse", json={"source": "disk", "disk": "/dev/sdy", "path": "/Music"}
+    )
+    assert r.json()["folders"] == ["Rock"] and r.json()["parent"] == "/"
+    r = await c.post("/api/v1/browse", json={"source": "disk", "disk": "/dev/sdy", "path": "/x"})
+    assert r.status_code == 404
+    r = await c.post("/api/v1/browse", json={"source": "disk", "disk": "/dev/sdx", "path": "/"})
+    assert r.status_code == 404

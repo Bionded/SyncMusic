@@ -267,6 +267,9 @@ class Transcode(Processor):
     # --- plan ------------------------------------------------------------------------------------
 
     def plan(self, item: PlanItem, caps: DeviceCapabilities) -> PlanItem:
+        caps = caps.for_kind(
+            item.track.kind
+        )  # e.g. a player app that plays fewer formats for audiobooks
         if item.track.kind is MediaKind.VIDEO:
             return item  # the `video` processor's: an audio conversion would drop the picture
         f = item.file

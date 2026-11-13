@@ -11,7 +11,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.exceptions import HTTPException
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -20,9 +20,11 @@ from syncmusic import __version__
 from syncmusic.api import auth as auth_routes
 from syncmusic.api.events import event_stream
 from syncmusic.api.guard import RequestGuard
+from syncmusic.api.routes import clients as client_routes
 from syncmusic.api.routes import manage as manage_routes
 from syncmusic.api.routes import sync as sync_routes
 from syncmusic.facade import AppFacade
+from syncmusic.infra.clients import ClientError
 
 
 def create_api(
@@ -79,8 +81,15 @@ def create_api(
     v1.include_router(auth_routes.router(lambda: facade.app.auth, local_ok))
     v1.include_router(sync_routes.router(facade))
     v1.include_router(manage_routes.router(facade))
+    v1.include_router(client_routes.admin_router(facade))
     sync_routes.install_error_handlers(api)
     api.include_router(v1)
+    api.include_router(client_routes.client_router(facade))
+
+    @api.exception_handler(ClientError)
+    async def _client_error(_: Request, e: ClientError) -> JSONResponse:
+        return client_routes.client_error(e)
+
     if ui is not None:
         api.add_middleware(_UiDispatch, ui=ui)
     # JSON (Player contents: megabytes on big devices), JS and CSS shrink 5-10x; event streams, audio and images

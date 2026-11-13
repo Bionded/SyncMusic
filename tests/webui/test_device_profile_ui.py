@@ -66,3 +66,61 @@ def test_profile_card_override_and_reset(device, chrome):
     page.wait_for_selector(f'{tracks}[data-source="default"]')
     cfg = httpx.get(f"{url}/api/v1/devices/mini", timeout=30).json()["config"]
     assert cfg["capability_overrides"] == {}
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_compas_profile_shows_firmware_and_plugins(web_server, chrome, tmp_path, width):
+    from tests.contracts.harness import compas_tree
+
+    url, _ = web_server
+    r = httpx.post(
+        f"{url}/api/v1/devices/register",
+        json={
+            "name": "R1 Compás",
+            "type": "hiby_compas",
+            "mount_path": str(compas_tree(tmp_path / "c", plugins=("Podcasts",))),
+        },
+        timeout=60,
+    )
+    assert r.status_code == 201, r.text
+    dev = r.json()["id"]
+    page = open_page(chrome, f"{url}/#/devices/{dev}/settings", width)
+    page.wait_for_selector("[data-player-firmware]")
+    assert page.inner_text("[data-player-firmware]") == "Firmware: Compás v9.9.9"
+    assert page.inner_text("[data-player-plugins]") == "Player plugins: Podcasts"
+    # no Audiobooks plugin: audiobooks are off, detected from the card
+    row = '.pf-row[data-field="supports_audiobooks"]'
+    assert page.get_attribute(row, "data-source") == "detected"
+    assert no_horizontal_scroll(page)
+    assert not page.errors
+    shot(page, f"device-profile-compas-{width}")
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_compas_page_offers_compas_sdtool(web_server, chrome, tmp_path, width, monkeypatch):
+    from tests.contracts.harness import compas_tree
+
+    monkeypatch.delenv("SYNCMUSIC_BINARY", raising=False)
+    url, _ = web_server
+    r = httpx.post(
+        f"{url}/api/v1/devices/register",
+        json={
+            "name": "R1 Card",
+            "type": "hiby_compas",
+            "mount_path": str(compas_tree(tmp_path / "c")),
+        },
+        timeout=60,
+    )
+    assert r.status_code == 201, r.text
+    page = open_page(chrome, f"{url}/#/devices/{r.json()['id']}", width)
+    note = page.locator("[data-sdtool-offer]")
+    note.wait_for()
+    assert "compas-sdtool" in note.inner_text()
+    note.get_by_role("button", name="Download").click()
+    dialog = page.locator(".modal")
+    dialog.wait_for()
+    assert "GPL-3.0" in dialog.inner_text() and "Compás Tools" in dialog.inner_text()
+    dialog.get_by_role("button", name="Cancel").click()
+    assert no_horizontal_scroll(page)
+    assert not page.errors
+    shot(page, f"device-compas-sdtool-offer-{width}")

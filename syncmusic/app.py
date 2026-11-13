@@ -18,16 +18,20 @@ import httpx
 from syncmusic import __version__
 from syncmusic.base.context import AppContext
 from syncmusic.core import manifest
+from syncmusic.core.client_sessions import ClientSessions
 from syncmusic.core.models import AppSettings, LibraryConfig, ManifestLibrary
 from syncmusic.core.prepare import Preparer
 from syncmusic.core.snapshots import SnapshotCache
 from syncmusic.core.sync import SCHEDULE_TICK_S, SyncService
+from syncmusic.devices.HibyR1 import compas_sdtool
 from syncmusic.infra import dbbackup, ffmpeg, self_update, storage
+from syncmusic.infra.announce import Announcer, txt_record
 from syncmusic.infra.auth import Auth
 from syncmusic.infra.blockdev.guard import Guard
 from syncmusic.infra.blockdev.identify import BlockDeviceInfo
 from syncmusic.infra.blockdev.watcher import BlockWatcher
 from syncmusic.infra.cache import ProcessingCache
+from syncmusic.infra.clients import Clients
 from syncmusic.infra.config import BootstrapConfig
 from syncmusic.infra.db import Database
 from syncmusic.infra.events import EventBus
@@ -61,6 +65,9 @@ class Application:
         self.cpu = storage.CpuMeter()  # Storage & resources: CPU % since the last reading
         self.instance_name = socket.gethostname()
         self.auth = Auth(self.db)  # optional login
+        self.clients = Clients(self.db)  # Wi-Fi clients: pairing codes and tokens
+        self.announcer = Announcer(config.port)
+        self.client_settings = AppSettings()  # the Clients part is read by the client API
         self.jobs.on_finished = self._job_finished
         self.jobs.on_update = self.store.put_job
         self.cache = ProcessingCache(self.db, config.cache_dir)
@@ -71,6 +78,9 @@ class Application:
             SnapshotCache(self.db),
         )
         self.jobs.on_failed = self.sync.job_failed  # a damaged device file system
+        self.client_sessions = ClientSessions(
+            self.sync, self.clients
+        )  # Wi-Fi clients' sync sessions
         host = socket.gethostname() if config.host in ("0.0.0.0", "::", "") else config.host
         self.notifications = Notifications(
             self.bus, self._device_name, f"http://{host}:{config.port}", inbox=self.store
@@ -119,6 +129,7 @@ class Application:
             await self.store.put_job(info)  # cut off by a crash: stored as failed
         self.instance_id = await self.store.instance_id()
         self.apply_settings(await self.store.app_settings(), starting=True)
+        await self.announce()
         self.store.on_libraries_changed = self.update_manifest_context
         await self.update_manifest_context()
         await self.notifications.start()
@@ -135,6 +146,15 @@ class Application:
         self.started = True
         log.info("SyncMusic %s started (mode=%s)", __version__, self.config.mode)
         self.bus.publish("app.started", version=__version__)
+
+    async def announce(self) -> None:
+        """The mDNS announcement for Wi-Fi clients after a settings change or a pairing code opened/closed."""
+        s = self.client_settings
+        on = s.clients_allowed and s.clients_mdns
+        txt = txt_record(
+            self.instance_id, self.instance_name, on and await self.clients.pairing_open()
+        )
+        await self.announcer.update(on, txt)
 
     async def _schedule_loop(self) -> None:
         """The daily device syncs: checked every SCHEDULE_TICK_S."""
@@ -367,6 +387,7 @@ class Application:
 
     def apply_settings(self, settings: AppSettings, starting: bool = False) -> None:
         """Runtime settings. The number of processing threads changes only at start (no job runs)."""
+        self.client_settings = settings
         self.cache.max_bytes = int(
             settings.cache_max_gb * 1000**3
         )  # decimal GB like every size in the UI
@@ -393,6 +414,7 @@ class Application:
             settings.log_level or self._log_level
         )  # None: as the configuration file set it
         ffmpeg.configure(settings.ffmpeg_path, settings.convert_nice)
+        compas_sdtool.configure(settings.compas_sdtool_path)
         if starting and settings.concurrency and settings.concurrency != self.jobs.max_workers:
             self.jobs.resize(settings.concurrency)
 
@@ -412,8 +434,10 @@ class Application:
                 await asyncio.gather(task, return_exceptions=True)
         self._scheduler = self._trial = None
         await self.watcher.stop()
+        await self.announcer.stop()
         await self.jobs.shutdown()
         await self.notifications.stop()
+        await self.client_sessions.close()
         await self.sync.close()
         await self.db.close()
         self.started = False

@@ -4,6 +4,7 @@
 # [ipod_classic]
 # usb_serial = "000A27000000000F"   # udev ID_SERIAL_SHORT
 # fs_uuid = "ABCD-1234"             # data partition
+# A serial every unit of a model shares (e.g. "HiBy_R1") matches only together with the entry's fs_uuid.
 # usb_vendor_id = "05ac"
 # usb_product_id = "1261"
 # model = "classic_7g"

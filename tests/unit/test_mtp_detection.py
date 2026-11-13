@@ -156,7 +156,7 @@ async def test_device_types_flag_android_as_beta_usb_mtp(env):
     types = {x["type"]: x for x in (await c.get("/api/v1/device-types")).json()}
     assert types["android"]["beta"] and types["android"]["usb_mtp"]
     assert not types["flashdrive"]["beta"] and not types["flashdrive"]["usb_mtp"]
-    assert "hiby_compas" not in types
+    assert not types["hiby_compas"]["beta"]
 
 
 async def test_added_by_hand_is_recognised_when_plugged_in(env):

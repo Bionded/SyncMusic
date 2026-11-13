@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from syncmusic.libraries.folder import MEDIA_EXTS
 from syncmusic.libraries.remote import Entry, FtpSource, MirrorSource, RemoteError, SmbSource
 
-Source = Literal["local", "ftp", "smb", "mtp"]
+Source = Literal["local", "ftp", "smb", "mtp", "disk"]
 PREVIEW_DEPTH = 2  # the folder itself and one level of subfolders
 PREVIEW_MAX_DIRS = (
     60  # folder listings a preview may cost: a huge tree is counted partly ("at least")

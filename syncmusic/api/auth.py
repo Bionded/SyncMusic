@@ -22,6 +22,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from syncmusic.infra.auth import COOKIE, SESSION_DAYS, Auth, AuthState, verify_password
 
 GATED = ("/api", "/openapi.json", "/docs", "/redoc")
+# the client API authenticates its own requests (client tokens, `api/routes/clients.py`)
+OWN_AUTH = ("/api/client/",)
 OPEN = frozenset({"/api/v1/health", "/api/v1/auth", "/api/v1/auth/login", "/api/v1/auth/logout"})
 MAX_DELAY_S = 30
 
@@ -67,6 +69,7 @@ class AuthGate:
             scope["type"] in ("http", "websocket")
             and scope["path"].startswith(GATED)
             and scope["path"].rstrip("/") not in OPEN
+            and not scope["path"].startswith(OWN_AUTH)
         ):
             auth = self.auth()
             state = await auth.state()

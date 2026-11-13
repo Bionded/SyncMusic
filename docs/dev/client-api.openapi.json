@@ -1,0 +1,1108 @@
+{
+  "components": {
+    "schemas": {
+      "AckDone": {
+        "properties": {
+          "fid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fid"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "AckDone",
+        "type": "object"
+      },
+      "AckFailed": {
+        "properties": {
+          "error": {
+            "default": "other",
+            "enum": [
+              "no_space",
+              "io",
+              "unsupported",
+              "other"
+            ],
+            "title": "Error",
+            "type": "string"
+          },
+          "fid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fid"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "AckFailed",
+        "type": "object"
+      },
+      "AckRequest": {
+        "properties": {
+          "deleted": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Deleted",
+            "type": "array"
+          },
+          "done": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AckDone"
+            },
+            "title": "Done",
+            "type": "array"
+          },
+          "failed": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AckFailed"
+            },
+            "title": "Failed",
+            "type": "array"
+          },
+          "storage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage"
+          }
+        },
+        "title": "AckRequest",
+        "type": "object"
+      },
+      "ClientEvent": {
+        "additionalProperties": true,
+        "description": "One thing the user did on the client. Unknown types and fields are kept (forward compatible).",
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "clock": {
+            "default": "unknown",
+            "enum": [
+              "rtc",
+              "ntp",
+              "unknown"
+            ],
+            "title": "Clock",
+            "type": "string"
+          },
+          "completed": {
+            "default": false,
+            "title": "Completed",
+            "type": "boolean"
+          },
+          "eid": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Eid",
+            "type": "string"
+          },
+          "fid": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fid"
+          },
+          "finished": {
+            "default": false,
+            "title": "Finished",
+            "type": "boolean"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "on": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On"
+          },
+          "played_s": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Played S"
+          },
+          "position_s": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position S"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "seq": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "type": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Type",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "maximum": 5.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "eid",
+          "type"
+        ],
+        "title": "ClientEvent",
+        "type": "object"
+      },
+      "ClientInfo": {
+        "description": "What a client says about itself when it pairs (shown in the UI, never trusted).",
+        "properties": {
+          "app": {
+            "default": "",
+            "maxLength": 64,
+            "title": "App",
+            "type": "string"
+          },
+          "app_version": {
+            "default": "",
+            "maxLength": 32,
+            "title": "App Version",
+            "type": "string"
+          },
+          "manufacturer": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Manufacturer",
+            "type": "string"
+          },
+          "model": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Model",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Name",
+            "type": "string"
+          },
+          "os": {
+            "default": "",
+            "maxLength": 32,
+            "title": "Os",
+            "type": "string"
+          },
+          "os_version": {
+            "default": "",
+            "maxLength": 32,
+            "title": "Os Version",
+            "type": "string"
+          },
+          "uid": {
+            "maxLength": 64,
+            "minLength": 8,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Uid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uid"
+        ],
+        "title": "ClientInfo",
+        "type": "object"
+      },
+      "EventsRequest": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/ClientEvent"
+            },
+            "maxItems": 1000,
+            "title": "Events",
+            "type": "array"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "title": "EventsRequest",
+        "type": "object"
+      },
+      "FinishRequest": {
+        "properties": {
+          "status": {
+            "default": "complete",
+            "enum": [
+              "complete",
+              "partial",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "FinishRequest",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Inventory": {
+        "properties": {
+          "items": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InventoryItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "kind": {
+            "default": "full",
+            "enum": [
+              "full",
+              "delta"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "removed": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Removed",
+            "type": "array"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          }
+        },
+        "title": "Inventory",
+        "type": "object"
+      },
+      "InventoryItem": {
+        "properties": {
+          "fid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fid"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size": {
+            "default": 0,
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "InventoryItem",
+        "type": "object"
+      },
+      "PairRequest": {
+        "properties": {
+          "capabilities": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Capabilities",
+            "type": "object"
+          },
+          "client": {
+            "$ref": "#/components/schemas/ClientInfo"
+          },
+          "code": {
+            "maxLength": 32,
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "client"
+        ],
+        "title": "PairRequest",
+        "type": "object"
+      },
+      "SyncRequest": {
+        "properties": {
+          "capabilities": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capabilities"
+          },
+          "events_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Events Cursor"
+          },
+          "inventory": {
+            "$ref": "#/components/schemas/Inventory",
+            "default": {
+              "items": [],
+              "kind": "full",
+              "removed": []
+            }
+          },
+          "mode": {
+            "default": "full",
+            "enum": [
+              "full",
+              "update"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "title": "SyncRequest",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "syncmusic__api__routes__clients__RenameRequest": {
+        "properties": {
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "RenameRequest",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Wi-Fi clients pair with a SyncMusic server, sync files and send listening events. Guide: docs/dev/client-protocol.md.",
+    "title": "SyncMusic client API",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/client/v1/events": {
+      "post": {
+        "description": "Listening data up: stored (deduplicated by eid), handed to the libraries shortly after or by the next sync.",
+        "operationId": "events_api_client_v1_events_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Events Api Client V1 Events Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Events"
+      }
+    },
+    "/api/client/v1/files/{fid}": {
+      "get": {
+        "description": "With the bearer token, or with the `ticket` of the open session (the `url` of a fetch item).",
+        "operationId": "file_api_client_v1_files__fid__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fid",
+            "required": true,
+            "schema": {
+              "title": "Fid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ticket",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ticket"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "File"
+      }
+    },
+    "/api/client/v1/hello": {
+      "get": {
+        "operationId": "hello_api_client_v1_hello_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Hello Api Client V1 Hello Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Hello"
+      }
+    },
+    "/api/client/v1/me": {
+      "get": {
+        "operationId": "me_api_client_v1_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Me Api Client V1 Me Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Me"
+      },
+      "patch": {
+        "operationId": "rename_api_client_v1_me_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/syncmusic__api__routes__clients__RenameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rename Api Client V1 Me Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename"
+      }
+    },
+    "/api/client/v1/me/token/rotate": {
+      "post": {
+        "operationId": "rotate_api_client_v1_me_token_rotate_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Rotate Api Client V1 Me Token Rotate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Rotate"
+      }
+    },
+    "/api/client/v1/pair": {
+      "post": {
+        "operationId": "pair_api_client_v1_pair_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pair Api Client V1 Pair Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pair"
+      }
+    },
+    "/api/client/v1/status": {
+      "get": {
+        "operationId": "status_api_client_v1_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Status Api Client V1 Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Status"
+      }
+    },
+    "/api/client/v1/sync": {
+      "post": {
+        "operationId": "start_sync_api_client_v1_sync_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Sync"
+      }
+    },
+    "/api/client/v1/sync/{session_id}": {
+      "get": {
+        "operationId": "get_sync_api_client_v1_sync__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Sync"
+      }
+    },
+    "/api/client/v1/sync/{session_id}/ack": {
+      "post": {
+        "operationId": "ack_api_client_v1_sync__session_id__ack_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ack Api Client V1 Sync  Session Id  Ack Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ack"
+      }
+    },
+    "/api/client/v1/sync/{session_id}/finish": {
+      "post": {
+        "operationId": "finish_api_client_v1_sync__session_id__finish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Finish Api Client V1 Sync  Session Id  Finish Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finish"
+      }
+    },
+    "/api/client/v1/sync/{session_id}/plan": {
+      "get": {
+        "operationId": "plan_page_api_client_v1_sync__session_id__plan_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "section",
+            "required": true,
+            "schema": {
+              "title": "Section",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Plan Page Api Client V1 Sync  Session Id  Plan Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Plan Page"
+      }
+    }
+  }
+}

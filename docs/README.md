@@ -16,7 +16,8 @@ listened to back. This guide is for people who use SyncMusic; developer notes ar
 9. [Recipes](09-recipes.md) - rotating a changing selection of music
 
 For contributors: [architecture](dev/architecture.md), [add a device](dev/add-a-device.md),
-[add a library](dev/add-a-library.md), [add a processor](dev/add-a-processor.md) and
+[add a library](dev/add-a-library.md), [add a processor](dev/add-a-processor.md), the
+[Wi-Fi client protocol](dev/client-protocol.md) for client app authors and
 [CONTRIBUTING](../CONTRIBUTING.md).
 
 SyncMusic 0.2.0 is the first stable release. See the [changelog](../CHANGELOG.md) for known limitations.

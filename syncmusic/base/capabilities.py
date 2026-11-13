@@ -70,6 +70,8 @@ class DeviceCapabilities(BaseModel):
     model_config = ConfigDict(extra="forbid")  # overrides are user input: reject misspelled keys
 
     formats: set[str] = set()  # playable codecs, e.g. {"mp3", "aac", "alac", "wav"}
+    # a kind played by a narrower set than `formats` (a player app for audiobooks or podcasts): its own list
+    kind_formats: dict[MediaKind, set[str]] = {}
     max_sample_rate: int | None = None
     max_bit_depth: int | None = None
     # the player handles at most this many tracks (device profile)
@@ -107,6 +109,19 @@ class DeviceCapabilities(BaseModel):
     # lossless plays but costs CPU/battery (Rockbox on slow targets): suggest converting it to MP3
     prefer_lossy: bool = False
 
+    def formats_for(self, kind: MediaKind) -> set[str]:
+        """The formats a `kind` plays: its own list where the device has one, else `formats` (empty = every)."""
+        own = self.kind_formats.get(kind)
+        if own is None:
+            return self.formats
+        return own & self.formats if self.formats else own
+
+    def for_kind(self, kind: MediaKind) -> DeviceCapabilities:
+        """These capabilities as seen by one kind (its formats); the same object when it has no list of its own."""
+        if kind not in self.kind_formats:
+            return self
+        return self.model_copy(update={"formats": self.formats_for(kind)})
+
     def supports_kind(self, kind: MediaKind) -> bool:
         return {
             MediaKind.MUSIC: self.supports_music,
@@ -139,6 +154,7 @@ class DeviceCapabilities(BaseModel):
 OUTPUT_FIELDS = frozenset(
     {
         "formats",
+        "kind_formats",
         "max_sample_rate",
         "max_bit_depth",
         "video_profile",

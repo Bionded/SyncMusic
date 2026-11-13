@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -137,6 +137,7 @@ class Store:
                 ("DELETE FROM device_items WHERE device_id = ?", (device_id,)),
                 ("DELETE FROM dropped_feedback WHERE device_id = ?", (device_id,)),
                 ("DELETE FROM device_health WHERE device_id = ?", (device_id,)),
+                ("DELETE FROM client_pairings WHERE device_id = ?", (device_id,)),
             ]
         )
 
@@ -819,6 +820,33 @@ class Store:
             "tried_at = ? WHERE id = ?",
             (int(count), error, utcnow().isoformat(), row_id),
         )
+
+    async def remap_pending(self, device_id: str, relinks: Mapping[str, str]) -> int:
+        """Point the device's pending listening data at the new item keys of re-linked items (a library whose ids
+        changed); their failed attempts start again. Returns the rows moved."""
+        moved: list[tuple[str, int]] = []
+        for row in await self.pending_feedback(device_id):
+            data = dict(row.data)
+            ref = data.get("ref")
+            if isinstance(ref, dict):  # a play: {"library_id", "item_id"}
+                new = relinks.get(f"{ref.get('library_id')}/{ref.get('item_id')}")
+                if new is not None:
+                    lib, _, item = new.partition("/")
+                    data["ref"] = {"library_id": lib, "item_id": item}
+            elif isinstance(ref, str):
+                new = relinks.get(ref)
+                if new is not None:
+                    data["ref"] = new
+            else:
+                new = None
+            if new is not None:
+                moved.append((json.dumps(data), row.id))
+        if moved:
+            await self.db.executemany(
+                "UPDATE pending_feedback SET data = ?, attempts = 0, last_error = NULL WHERE id = ?",
+                moved,
+            )
+        return len(moved)
 
     async def delete_pending(self, row_ids: list[int]) -> None:
         await self.db.executemany(

@@ -48,7 +48,9 @@ def device_lists(
                 unknown += 1
             else:
                 keys.append(key)
-        out[name] = keys
+        # entries that all match nothing: unreadable, never an emptied playlist
+        if keys or not paths:
+            out[name] = keys
     return out, unknown
 
 

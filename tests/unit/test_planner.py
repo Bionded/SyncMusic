@@ -892,3 +892,23 @@ def test_other_instances_items_are_kept_in_mirror_mode_and_never_orphans():
         assert a.kind == ActionKind.KEEP and not a.orphan and a.entry is not None
         assert not plan.count(ActionKind.REMOVE)
         assert not any("orphan" in w for w in plan.warnings)
+
+
+def test_turning_a_kind_off_removes_our_items_of_it_in_every_mode():
+    """No rule selects podcasts any more: SyncMusic's own podcast items leave the device also in additive mode;
+    while a rule still syncs podcasts, additive keeps the unselected ones."""
+    music, pod = _tracks()[0], _tracks()[3]
+    chain = Chain([])
+    m = _manifest([_entry(t, chain, IPOD_CAPS, kind=t.kind) for t in (music, pod)])
+    music_only = Rule(id="music", criteria={"all": []}, kind=[MediaKind.MUSIC])
+    for mode in ("additive", "mirror"):
+        plan = _plan(_device([music_only], mode=mode), [music, pod], m, caps=IPOD_CAPS)
+        assert _kinds(plan) == {"1": "keep", "4": "remove"}, mode
+        reason = next(a.reason for a in plan.actions if a.kind == ActionKind.REMOVE)
+        if mode == "additive":
+            assert reason == "no longer synced: no rule selects podcasts for this device"
+    some_pods = Rule(
+        id="pods", criteria={"all": [{"is": {"title": "nothing"}}]}, kind=[MediaKind.PODCAST]
+    )
+    kept = _plan(_device([music_only, some_pods], mode="additive"), [music, pod], m, caps=IPOD_CAPS)
+    assert _kinds(kept)["4"] == "keep"

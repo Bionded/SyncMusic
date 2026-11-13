@@ -277,13 +277,38 @@ def test_conversion_ffmpeg(web_server, chrome, tmp_path):
     }
     assert len(tops) == 1, tops
     _field(page, "ffmpeg_path").fill(str(tmp_path / "ffmpeg"))
-    page.get_by_role("button", name="Check").click()
+    page.get_by_role("button", name="Check", exact=True).click()
     page.wait_for_selector('[data-ffmpeg-state="error"]')
     assert "does not run" in page.locator("[data-ffmpeg]").inner_text()
     _save(page, ok=False)
     assert httpx.get(f"{url}/api/v1/settings").json()["ffmpeg_path"] is None
     assert no_horizontal_scroll(page)
     page.locator("#set-conv").screenshot(path=str(tmp_path / "conv.png"))
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_compas_sdtool_entry(web_server, chrome, tmp_path, width):
+    """the compas-sdtool entry: not found, where it comes from and its licence, a wrong path checked, Download asks
+    first (cancelled here)."""
+    url, _app = web_server
+    page = open_page(chrome, url + "/#/settings", width)
+    page.wait_for_selector('[data-sdtool-state="missing"]')
+    credit = page.locator("[data-sdtool-credit]")
+    assert "Compás Tools" in credit.inner_text() and "GPL-3.0" in credit.inner_text()
+    assert "github.com/Starnished66/compas-tools" in credit.locator("a").get_attribute("href")
+    _field(page, "compas_sdtool_path").fill(str(tmp_path / "compas-sdtool"))
+    page.get_by_role("button", name="Check tool").click()
+    page.wait_for_function(
+        "() => document.querySelector('[data-sdtool]').innerText.includes('does not start')"
+        " || document.querySelector('[data-sdtool]').innerText.includes('Not found')"
+    )
+    page.get_by_role("button", name="Download").click()
+    dialog = page.locator(".modal")
+    dialog.wait_for()
+    assert "compas-sdtool-linux-" in dialog.inner_text() and "GPL-3.0" in dialog.inner_text()
+    dialog.get_by_role("button", name="Cancel").click()
+    assert no_horizontal_scroll(page)
+    page.locator("#set-compas").screenshot(path=str(tmp_path / f"compas-{width}.png"))
 
 
 @pytest.mark.parametrize("width", [1280, 390])

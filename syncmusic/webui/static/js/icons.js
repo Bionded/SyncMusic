@@ -88,6 +88,7 @@ const PATHS = {
   rockbox: "M6 2h12a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zM8 4.5h8v7H8zM10 9.5l2-3l2 3M12 14.5v5M9.5 17h5",
   usb: "M9 2h6v5H9zM7 7h10v10a3 3 0 0 1-3 3h-4a3 3 0 0 1-3-3zM11 4h.01M13 4h.01M10 12h4",
   ftp: "M4 4h16v6H4zM4 14h16v6H4zM7.5 7h.01M7.5 17h.01M11 7h5M11 17h5",
+  client: "M8 3h8v18H8zM11 18h2M4.5 9a5 5 0 0 0 0 6M19.5 9a5 5 0 0 1 0 6",
   android: "M7 2h10a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zM6 5h12M6 18h12M11 20h2",
   unknown: "M4 5h16v14H4zM10 10a2 2 0 1 1 2.8 1.8c-.5.3-.8.7-.8 1.2v.5M12 16h.01",
 };
@@ -112,7 +113,7 @@ addStrings({
   "icon.navidrome": "Subsonic-compatible server", "icon.abs": "Audiobookshelf", "icon.jellyfin": "Jellyfin", "icon.plex": "Plex", "icon.folder": "Folder library",
   "icon.smb": "SMB share", "icon.ftpsrc": "FTP source", "icon.ipod-classic": "iPod", "icon.ipod-nano": "iPod nano",
   "icon.ipod-mini": "iPod mini", "icon.rockbox": "Rockbox player", "icon.hiby": "HiBy player", "icon.usb": "USB flash drive",
-  "icon.ftp": "FTP server", "icon.android": "Android player", "icon.unknown": "Unknown drive",
+  "icon.ftp": "FTP server", "icon.client": "Wi-Fi client", "icon.android": "Android player", "icon.unknown": "Unknown drive",
   // generic fallbacks of typeIcon (names of)
   "icon.device": "Device", "icon.library": "Library",
 });
@@ -133,11 +134,11 @@ export function logo(size = 22) {
 
 // device/library type → icon; data-type-icon keeps the type names of
 const TYPE_ICONS = {
-  ipod: "ipod-classic", rockbox: "rockbox", hiby: "hiby", flashdrive: "usb", ftp: "ftp", smb: "smb", android: "android",
+  ipod: "ipod-classic", rockbox: "rockbox", hiby: "hiby", hiby_compas: "hiby", flashdrive: "usb", ftp: "ftp", smb: "smb", android: "android", client: "client",
   subsonic: "navidrome", folder: "folder", audiobookshelf: "abs", jellyfin: "jellyfin", plex: "plex",
   device: "devices", library: "libraries", unknown: "unknown",
 };
-const TYPE_LABELS = { ipod: "ipod-classic", flashdrive: "usb", subsonic: "navidrome", audiobookshelf: "abs" };
+const TYPE_LABELS = { ipod: "ipod-classic", flashdrive: "usb", hiby_compas: "hiby", subsonic: "navidrome", audiobookshelf: "abs" };
 const LIBRARY_TYPES = new Set(["subsonic", "navidrome", "folder", "audiobookshelf", "jellyfin", "plex"]);
 
 // the type name's data-type-icon hook; unknown types fall back to a generic device or library

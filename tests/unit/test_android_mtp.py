@@ -170,3 +170,36 @@ def test_hidden_and_refused_without_libmtp(monkeypatch):
     monkeypatch.setattr(ctypes.util, "find_library", real)
     if real("mtp"):
         assert android_mtp.AndroidMtp.unavailable_reason() is None
+
+
+async def test_playlist_files_edited_on_the_player_are_read_back(tmp_path):
+    dev, _ = _device(tmp_path)
+    manifest = Manifest(header=ManifestHeader(device_id="a"))
+    assert await dev.read_playlists(manifest) == {}  # no playlist folder yet
+    folder = dev.mount / "Playlists"
+    folder.mkdir(parents=True)
+    (folder / "Дорога.m3u8").write_text("#EXTM3U\n../Music/a.mp3\n/Music/b.mp3\n", encoding="utf-8")
+    (folder / "notes.txt").write_text("x")
+    assert await dev.read_playlists(manifest) == {"Дорога": ["Music/a.mp3", "Music/b.mp3"]}
+
+    s = await dev.begin()
+    await dev.remove_playlists(s, ["Дорога"])
+    assert not (folder / "Дорога.m3u8").exists() and (folder / "notes.txt").exists()
+    dev2, _ = _device(tmp_path, playlists=False)
+    assert await dev2.read_playlists(manifest) is None
+
+
+async def test_absolute_playlist_entries_map_to_paths_under_base_path(tmp_path):
+    dev, _ = _device(tmp_path)  # base_path Music/SyncMusic
+    folder = dev.mount / "Playlists"
+    folder.mkdir(parents=True)
+    (folder / "Mix.m3u8").write_text(
+        "/storage/emulated/0/Music/SyncMusic/Music/a.mp3\n/sdcard/Music/SyncMusic/Music/b.mp3\n"
+        "/storage/1A2B-3C4D/Music/SyncMusic/Music/c.mp3\n../Music/d.mp3\n"
+        "/storage/self/primary/Music/SyncMusic/Music/e.mp3\n",
+        encoding="utf-8",
+    )
+    manifest = Manifest(header=ManifestHeader(device_id="a"))
+    assert await dev.read_playlists(manifest) == {
+        "Mix": ["Music/a.mp3", "Music/b.mp3", "Music/c.mp3", "Music/d.mp3", "Music/e.mp3"]
+    }

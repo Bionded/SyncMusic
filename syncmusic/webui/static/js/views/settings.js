@@ -9,12 +9,13 @@
 // restore after a preview), Import / export (templates, device settings, import after a preview),
 // About (versions, host, paths of the bootstrap configuration, Logs, API docs). One Save / Discard bar for every stored
 // setting; Backup, Import / export and About are outside its form. Update installs the newer commit (332.2).
-import { html, bytes, when, setHtml } from "../dom.js";
+import { html, raw, bytes, when, setHtml } from "../dom.js";
 import { t, addStrings } from "../i18n.js";
 import { get, patch, post, del } from "../api.js";
-import { pageHead, toast, unsavedBar, confirm, typedConfirm, badge, errorBox } from "../ui.js";
+import { pageHead, toast, unsavedBar, confirm, dialog, typedConfirm, badge, errorBox } from "../ui.js";
 import { icon } from "../icons.js";
 import { windowsEditor, bindWindows, readWindows } from "../windows.js";
+import { sdtoolCredit, downloadSdtool } from "../sdtool.js";
 
 const STRINGS = {
   "set.sub": "SyncMusic {version} on {host}",
@@ -22,6 +23,36 @@ const STRINGS = {
   "set.jump": "Go to section",
   "set.sec.general": "Appearance",
   "set.sec.access": "Access",
+  "set.sec.clients": "Wi-Fi clients",
+  "set.cl_allow": "Allow Wi-Fi clients",
+  "set.cl_allow_sub": "Phones and other apps that speak the SyncMusic client protocol can pair with this server and sync over the network. Off: every client request is refused (paired clients keep their pairing).",
+  "set.cl_mdns": "Announce on the network",
+  "set.cl_mdns_sub": "Clients find this server by themselves (mDNS). Off: enter the address in the client by hand.",
+  "set.cl_code_min": "Pairing code valid for",
+  "set.cl_code_min_sub": "How long a new pairing code can be used.",
+  "set.cl_poll": "Clients check in every",
+  "set.cl_poll_sub": "How often a paired client asks whether there is something new to sync.",
+  "set.cl_add": "Add client",
+  "set.cl_add_title": "Pair a Wi-Fi client",
+  "set.cl_add_text": "Scan the code with the client app, or enter the server address and the pairing code there.",
+  "set.cl_address": "Server address",
+  "set.cl_code": "Pairing code",
+  "set.cl_expires": "Valid for {time}",
+  "set.cl_expired": "The code has expired.",
+  "set.cl_paired": "{name} is paired. Choose what it gets on its device page.",
+  "set.cl_open_device": "Open device",
+  "set.cl_need_allow": "Allow Wi-Fi clients first.",
+  "set.cl_none": "No clients are paired yet.",
+  "set.cl_seen": "last seen {when}",
+  "set.cl_never": "not seen yet",
+  "set.cl_revoked": "Revoked",
+  "set.cl_rename": "Rename",
+  "set.cl_rename_title": "Rename {name}",
+  "set.cl_name": "Name",
+  "set.cl_revoke": "Revoke",
+  "set.cl_revoke_title": "Revoke {name}?",
+  "set.cl_revoke_text": "The client can no longer sync with this server until it is paired again. Its device and history stay.",
+  "set.cl_revoke_done": "{name} can no longer sync.",
   "set.acc_on": "Require a password",
   "set.acc_on_sub": "Off: anyone on your network can use SyncMusic (fine at home). On: the web UI and the API ask for a password. Exposed beyond your network? Put SyncMusic behind a reverse proxy with HTTPS.",
   "set.acc_local": "This window runs on the SyncMusic computer itself: it never needs the password.",
@@ -103,6 +134,7 @@ const STRINGS = {
   "set.upd_gap": "Update after a library change at most every",
   "set.upd_gap_sub": "A change waits for the device's next slot; Update now on the device runs at once.",
   "set.minutes": "min",
+  "set.seconds": "s",
   "set.nc_budget": "Memory for them (without cache)",
   "set.nc_max": "Larger files go to a temporary file (without cache)",
   "set.limit": "Write speed limit",
@@ -169,6 +201,13 @@ const STRINGS = {
   "set.instance": "Instance name",
   "set.instance_sub": "How this SyncMusic is named on players it syncs and in other instances. Empty: the host name. Id:",
   "set.ffmpeg": "ffmpeg",
+  "set.sec.compas": "HiBy R1 with Compás",
+  "set.sdtool": "compas-sdtool",
+  "set.compas_sdtool": "compas-sdtool",
+  "set.sdtool_sub": "Builds the player's library during the sync, so the music, hearts and play counts are there right after unplugging. Empty: next to SyncMusic, then in the data folder's tools/.",
+  "set.sdtool_found": "Found compas-sdtool {version} ({build}) · library format {format}",
+  "set.sdtool_missing": "Not found. Without it the player indexes new music itself after unplugging.",
+  "set.sdtool_check": "Check tool",
   "set.ffmpeg_sub": "Empty: the ffmpeg on the PATH. Its ffprobe must be next to it.",
   "set.ffmpeg_check": "Check",
   "set.ffmpeg_found": "Found ffmpeg {version} · encoders:",
@@ -402,6 +441,8 @@ const NUMBERS = {
   update_change_gap_min: ["set.upd_gap", true], //
   default_update_every_min: ["set.upd_every", true], // empty = none
   db_backup_keep: ["set.dbb_keep", true], //
+  client_code_minutes: ["set.cl_code_min", true],
+  client_poll_s: ["set.cl_poll", true],
 };
 const CACHE_USE = ["with", "without"];
 
@@ -490,6 +531,18 @@ function resourcesBox(r) {
       ${r.caches.map((c) => html`<tr><td>${t("set.res_caches")}: ${c.label}</td><td class="mono" data-res-cache="${c.id}">${t("set.res_cache_line", { entries: c.entries, items: c.items })}</td></tr>`)}</tbody></table>
     <div class="ds-row"><span class="ds-label">${t("set.res_free")}<small>${t("set.res_free_sub")}</small></span>
       <button type="button" class="btn small" data-action="freeMemory" ${r.busy ? "disabled" : ""}>${t("set.res_free")}</button></div></div>`;
+}
+
+// "Found compas-sdtool 1.1.0 (tools-…+player-…) · library format 8", or why it is not usable
+function sdtoolLine(f) {
+  if (!f) return "";
+  if (f.error === "not found") return html`<div class="set-ff" data-sdtool-state="missing"><span class="set-ff-head">${icon("info", { size: 16 })}<span>${t("set.sdtool_missing")}</span></span>
+    <button type="button" class="btn small" data-action="downloadSdtool">${t("sdtool.download")}</button></div>`;
+  if (f.error) return html`<div class="set-ff err" data-sdtool-state="error"><span class="set-ff-head">${icon("xcircle", { size: 16 })}<span>${f.error}</span></span>
+    <button type="button" class="btn small" data-action="downloadSdtool">${t("sdtool.download")}</button></div>`;
+  return html`<div class="set-ff" data-sdtool-state="ok"><span class="set-ff-head">${icon("ccheck", { size: 16 })}
+    <span>${t("set.sdtool_found", { version: f.version || "?", build: f.build || "?", format: f.database_format ?? "?" })}</span></span>
+    <span class="mono muted">${f.path}</span></div>`;
 }
 
 // "Found ffmpeg 6.1.1 · encoders: aac alac …", or why it does not run
@@ -584,6 +637,38 @@ function accessBox(a) {
   </div>`;
 }
 
+function clientsBox(c) {
+  if (!c) return "";
+  const list = c.clients || [];
+  const info = (x) => [x.client?.os, x.client?.app && `${x.client.app} ${x.client.app_version || ""}`.trim()].filter(Boolean).join(" · ");
+  return html`<div data-nosave data-clients="${c.allowed ? "on" : "off"}">
+    <label class="ds-check" data-set-row><input type="checkbox" id="cl-allow" data-change="clientsAllow" ${c.allowed ? "checked" : ""}>
+      <span class="ds-label">${t("set.cl_allow")}<small>${t("set.cl_allow_sub")}</small></span></label>
+    <label class="ds-check" data-set-row><input type="checkbox" id="cl-mdns" data-change="clientsMdns" ${c.mdns ? "checked" : ""} ${c.allowed ? "" : "disabled"}>
+      <span class="ds-label">${t("set.cl_mdns")}<small>${t("set.cl_mdns_sub")}</small></span></label>
+    <div class="ds-row" data-set-row><span class="ds-label">${t("set.cl_add")}<small>${c.allowed ? t("set.cl_add_text") : t("set.cl_need_allow")}</small></span>
+      <button type="button" class="btn small primary" data-action="clientAdd" ${c.allowed ? "" : "disabled"}>${icon("plus", { size: 16 })}${t("set.cl_add")}</button></div>
+    <div class="set-io-list" data-client-list>${list.length ? list.map((x) => html`<div class="set-io-row" data-client="${x.device_id}">
+      <span><a href="#/devices/${encodeURIComponent(x.device_id)}"><b>${x.name}</b></a> ${x.revoked ? badge("neutral", t("set.cl_revoked")) : ""}
+        <small class="muted">${[info(x), x.last_seen ? t("set.cl_seen", { when: when(x.last_seen) }) : t("set.cl_never")].filter(Boolean).join(" · ")}</small></span>
+      <div class="toolbar cl-actions"><button type="button" class="btn small" data-action="clientRename" data-id="${x.device_id}" data-name="${x.name}">${t("set.cl_rename")}</button>
+        ${x.revoked ? "" : html`<button type="button" class="btn small danger" data-action="clientRevoke" data-id="${x.device_id}" data-name="${x.name}">${t("set.cl_revoke")}</button>`}</div></div>`)
+      : html`<p class="muted">${t("set.cl_none")}</p>`}</div>
+  </div>`;
+}
+
+async function clientsState() {
+  const [c, v] = await Promise.all([get("/clients").catch(() => null), get("/settings").catch(() => null)]);
+  return c && { ...c, mdns: v?.clients_mdns };
+}
+
+async function redrawClients(root) {
+  const box = root.querySelector("[data-clients]");
+  if (box) box.outerHTML = String(clientsBox(await clientsState()));
+}
+
+const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
 async function redrawAccess(root) {
   const box = root.querySelector("[data-access]");
   if (box) box.outerHTML = String(accessBox(await get("/auth")));
@@ -610,10 +695,11 @@ function general(v, version) {
 export const nav = "settings";
 
 export async function render(ctx) {
-  const [meta, v, version, cache, ffinfo, upd, dbb, access, store, res] = await Promise.all([get("/settings/schema"), get("/settings"), get("/version"),
+  const [meta, v, version, cache, ffinfo, upd, dbb, access, store, res, sdinfo] = await Promise.all([get("/settings/schema"), get("/settings"), get("/version"),
     get("/settings/cache").catch(() => null), get("/settings/ffmpeg").catch(() => null), get("/updates").catch(() => null),
     get("/db-backups").catch(() => null), get("/auth").catch(() => null), get("/system/storage").catch(() => null),
-    get("/system/resources").catch(() => null)]);
+    get("/system/resources").catch(() => null), get("/settings/compas-sdtool").catch(() => null)]);
+  const clients = await clientsState();
   ctx.state.devices = (await get("/devices").catch(() => null))?.registered || [];
   ctx.state.values = v;
   const index = html`<nav class="set-index" aria-label="${t("set.jump")}">${SECTIONS.map((s, i) =>
@@ -621,7 +707,7 @@ export async function render(ctx) {
     <label class="set-jump"><select data-change="jumpSelect" aria-label="${t("set.jump")}">${SECTIONS.map((s) =>
       html`<option value="${s}">${t(`set.sec.${s}`)}</option>`)}</select></label>`;
   const about = [["version", version.version], ["pygpod", version.pygpod], ["python", version.python], ["host", version.host], ["instance", version.instance?.name],
-    ["model", version.model], ["uptime", uptime(version.uptime_s)]].filter(([, x]) => x);
+    ["model", version.model], ["uptime", uptime(version.uptime_s)], ["compas_sdtool", version.compas_sdtool]].filter(([, x]) => x);
   return html`${pageHead(t("nav.settings"), t("set.sub", { version: version.version, host: version.host || "localhost" }),
     html`<a class="btn" href="#/logs">${icon("logs", { size: 16 })}${t("set.logs")}</a>`)}
     <div class="set-layout">${index}
@@ -643,7 +729,15 @@ export async function render(ctx) {
           ${row(t("set.nc_budget"), t("set.nc_budget_sub"), num("default_no_cache_budget_mb", v.default_no_cache_budget_mb, { unit: "MB" }))}
           ${row(t("set.nc_max"), t("set.nc_max_sub"), num("default_no_cache_file_max_mb", v.default_no_cache_file_max_mb, { unit: "MB" }))}
           ${row(t("set.limit"), t("set.limit_sub"), num("write_limit_mb_s", v.write_limit_mb_s, { unit: "MB/s", placeholder: t("set.limit_ph") }))}
-          ${row(t("set.syncs"), t("set.syncs_sub"), num("max_device_syncs", v.max_device_syncs, { placeholder: t("set.limit_ph") }))}`, t("set.sync_sub"))}
+          ${row(t("set.syncs"), t("set.syncs_sub"), num("max_device_syncs", v.max_device_syncs, { placeholder: t("set.limit_ph") }))}
+          ${sub("compas", html`
+          <div class="field" data-set-row><label for="set-compas_sdtool_path">${t("set.sdtool")}</label>
+            <div class="set-inline"><input id="set-compas_sdtool_path" type="text" class="mono" value="${v.compas_sdtool_path ?? ""}" placeholder="${sdinfo?.path || "compas-sdtool"}"
+              autocomplete="off" spellcheck="false" aria-describedby="set-compas_sdtool_path-h">
+              <button type="button" class="btn small" data-action="checkSdtool">${t("set.sdtool_check")}</button></div>
+            <div class="hint" id="set-compas_sdtool_path-h">${t("set.sdtool_sub")}</div></div>
+          <div data-sdtool>${sdtoolLine(sdinfo)}</div>
+          ${sdtoolCredit(sdinfo)}`)}`, t("set.sync_sub"))}
         ${section("libs", html`
           ${row(t("set.refresh"), t("set.refresh_sub"), radios("setRefresh", REFRESH, v.snapshot_refresh, t("set.refresh"), (x) => t(`set.refresh.${x}`)))}
           ${sub("conv", html`
@@ -696,6 +790,9 @@ export async function render(ctx) {
         ${section("system", html`
           ${general(v, version)}
           ${sub("access", accessBox(access))}
+          ${sub("clients", html`${clientsBox(clients)}
+          ${row(t("set.cl_code_min"), t("set.cl_code_min_sub"), num("client_code_minutes", v.client_code_minutes, { unit: t("set.minutes") }))}
+          ${row(t("set.cl_poll"), t("set.cl_poll_sub"), num("client_poll_s", v.client_poll_s, { unit: t("set.seconds") }))}`)}
           ${sub("res", html`<div data-nosave>${storageBox(store)}${resourcesBox(res)}</div>`)}
           ${sub("maint", html`
           ${row(t("set.loglevel"), t("set.loglevel_sub"), html`<select id="set-log_level" class="set-select" aria-label="${t("set.loglevel")}">${LOG_LEVELS.map((l) =>
@@ -866,7 +963,7 @@ async function save(ctx, form) {
   try {
     values = Object.fromEntries(Object.keys(NUMBERS).map((k) => [k, number(form, k)]));
   } catch (e) { toast(e.message, "error"); return false; }
-  for (const k of ["cache_max_gb", "default_no_cache_files", "default_no_cache_budget_mb", "default_no_cache_file_max_mb", "update_change_gap_min", "db_backup_keep"]) {
+  for (const k of ["cache_max_gb", "default_no_cache_files", "default_no_cache_budget_mb", "default_no_cache_file_max_mb", "update_change_gap_min", "db_backup_keep", "client_code_minutes", "client_poll_s"]) {
     if (values[k] === null) delete values[k]; // required: an emptied field keeps the stored value
   }
   ctx.state.values = await patch("/settings", {
@@ -881,6 +978,7 @@ async function save(ctx, form) {
     snapshot_refresh: checked("setRefresh"),
     instance_name: form.querySelector("#set-instance_name").value.trim(),
     ffmpeg_path: form.querySelector("#set-ffmpeg_path").value.trim() || null,
+    compas_sdtool_path: form.querySelector("#set-compas_sdtool_path").value.trim() || null,
     convert_nice: Number(form.querySelector("#set-convert_nice").value),
     notification_days: Number(form.querySelector("#set-notification_days").value) || null,
     log_level: form.querySelector("#set-log_level").value || null,
@@ -910,6 +1008,71 @@ function jumpTo(root, id) {
 }
 
 export const actions = {
+  async clientsAllow(el) {
+    await patch("/settings", { clients_allowed: el.checked });
+    await redrawClients(el.closest("#content"));
+  },
+  async clientsMdns(el) {
+    await patch("/settings", { clients_mdns: el.checked });
+  },
+  async clientAdd(el) {
+    const root = el.closest("#content");
+    let code;
+    try { code = await post("/clients/pairings"); } catch (e) { toast(e.message, "error"); return; }
+    let timer = null, paired = null;
+    const body = html`<div class="cl-pair" data-cl-pair>
+      <div class="cl-qr" data-cl-qr aria-hidden="true">${raw(code.qr_svg)}</div>
+      <dl class="cl-codes"><dt>${t("set.cl_address")}</dt><dd class="mono" data-cl-url>${code.url}</dd>
+        <dt>${t("set.cl_code")}</dt><dd class="mono cl-code" data-cl-code>${code.display}</dd></dl>
+      <p class="muted" data-cl-left role="status"></p></div>`;
+    const before = new Set(((await get("/clients").catch(() => null))?.clients || []).map((x) => x.device_id));
+    const tick = async (back) => {
+      const left = Math.max(0, Math.round((Date.parse(code.expires_at) - Date.now()) / 1000));
+      const line = back.querySelector("[data-cl-left]");
+      if (!line) return;
+      const now = (await get("/clients").catch(() => null))?.clients || [];
+      const fresh = now.find((x) => !before.has(x.device_id));
+      if (fresh) {
+        paired = fresh;
+        clearInterval(timer);
+        setHtml(back.querySelector("[data-cl-pair]"), html`<p role="status" data-cl-done>${t("set.cl_paired", { name: fresh.name })}</p>
+          <a class="btn primary" href="#/devices/${encodeURIComponent(fresh.device_id)}" data-cl-open>${t("set.cl_open_device")}</a>`);
+        back.querySelector("[data-cl-open]").addEventListener("click", () => back.querySelector("[data-v='__close']")?.click());
+        return;
+      }
+      line.textContent = left ? t("set.cl_expires", { time: mmss(left) }) : t("set.cl_expired");
+      if (!left) { clearInterval(timer); back.querySelector("[data-cl-qr]")?.classList.add("expired"); }
+    };
+    const shown = dialog({ title: t("set.cl_add_title"), message: t("set.cl_add_text"), body, buttons: [{ label: t("common.close"), value: null }] });
+    const back = [...document.querySelectorAll("#overlay .modal-back")].pop();
+    await tick(back);
+    timer = setInterval(() => tick(back), 2000);
+    await shown;
+    clearInterval(timer);
+    if (!paired) await del(`/clients/pairings/${encodeURIComponent(code.code)}`).catch(() => null);
+    await redrawClients(root);
+  },
+  async clientRename(el) {
+    const root = el.closest("#content");
+    let name = el.dataset.name;
+    const ok = await dialog({
+      title: t("set.cl_rename_title", { name }),
+      body: html`<div class="field"><label for="cl-name">${t("set.cl_name")}</label><input id="cl-name" type="text" maxlength="64" value="${name}" autocomplete="off"></div>`,
+      initialFocus: "#cl-name",
+      buttons: [{ label: t("common.cancel"), value: false }, { label: t("common.save"), value: true, kind: "primary" }],
+      onButton: (v, back) => { name = back.querySelector("#cl-name").value.trim(); return !v || name ? true : false; },
+    });
+    if (!ok || !name) return;
+    await patch(`/clients/${encodeURIComponent(el.dataset.id)}`, { name });
+    await redrawClients(root);
+  },
+  async clientRevoke(el) {
+    const name = el.dataset.name;
+    if (!await confirm({ title: t("set.cl_revoke_title", { name }), message: t("set.cl_revoke_text"), ok: t("set.cl_revoke"), danger: true })) return;
+    await post(`/clients/${encodeURIComponent(el.dataset.id)}/revoke`);
+    toast(t("set.cl_revoke_done", { name }));
+    await redrawClients(el.closest("#content"));
+  },
   async accessToggle(el) {
     const root = el.closest("#content"), a = await get("/auth");
     if (el.checked && !a.has_password) {
@@ -1002,6 +1165,21 @@ export const actions = {
     try {
       const f = await get(`/settings/ffmpeg${path ? `?${new URLSearchParams({ path })}` : ""}`);
       el.closest("form").querySelector("[data-ffmpeg]").innerHTML = String(ffmpegLine(f));
+    } finally { el.disabled = false; }
+  },
+  async checkSdtool(el) {
+    const path = el.closest("form").querySelector("#set-compas_sdtool_path").value.trim();
+    el.disabled = true;
+    try {
+      const f = await get(`/settings/compas-sdtool${path ? `?${new URLSearchParams({ path })}` : ""}`);
+      el.closest("form").querySelector("[data-sdtool]").innerHTML = String(sdtoolLine(f));
+    } finally { el.disabled = false; }
+  },
+  async downloadSdtool(el) {
+    el.disabled = true;
+    try {
+      const f = await downloadSdtool();
+      if (f) el.closest("form").querySelector("[data-sdtool]").innerHTML = String(sdtoolLine(f));
     } finally { el.disabled = false; }
   },
   async runDiag(el) {

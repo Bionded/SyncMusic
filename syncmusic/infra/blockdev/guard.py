@@ -54,11 +54,18 @@ class GuardError(PermissionError):
     """The guard refused the operation."""
 
 
+# USB serials every unit of a model shares: never enough on their own. An allowlist entry with such a serial matches
+# a disk only when its file system UUID matches too.
+GENERIC_SERIALS = frozenset({"HiBy_R1"})
+
+
 @dataclass(frozen=True)
 class Allowlist:
     serials: frozenset[str] = frozenset()
     fs_uuids: frozenset[str] = frozenset()
     names: dict[str, str] = field(default_factory=dict)  # serial -> entry name
+    # fs UUID -> the generic serial its entry names: the UUID matches only on a disk with that serial
+    uuid_serials: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path) -> Allowlist:
@@ -72,22 +79,39 @@ class Allowlist:
         serials: set[str] = set()
         uuids: set[str] = set()
         names: dict[str, str] = {}
+        uuid_serials: dict[str, str] = {}
         for name, entry in doc.items():
             if not isinstance(entry, dict):
                 continue
+            uuid = str(entry["fs_uuid"]) if entry.get("fs_uuid") else None
             # `usb_serial_aliases`: the same device under another serial
             for serial in [entry.get("usb_serial"), *entry.get("usb_serial_aliases", [])]:
-                if serial:
-                    serials.add(str(serial))
-                    names[str(serial)] = name
-            if entry.get("fs_uuid"):
-                uuids.add(str(entry["fs_uuid"]))
-        return cls(frozenset(serials), frozenset(uuids), names)
+                if not serial:
+                    continue
+                if str(serial) in GENERIC_SERIALS:
+                    # shared by every unit of the model: only together with the entry's fs UUID
+                    if uuid:
+                        uuid_serials[uuid] = str(serial)
+                    else:
+                        log.warning(
+                            "allowlist entry [%s]: generic serial %s without fs_uuid is ignored",
+                            name,
+                            serial,
+                        )
+                    continue
+                serials.add(str(serial))
+                names[str(serial)] = name
+            if uuid:
+                uuids.add(uuid)
+        return cls(frozenset(serials), frozenset(uuids), names, uuid_serials)
 
     def allows(self, disk: BlockDeviceInfo, node: BlockDeviceInfo) -> bool:
         if disk.serial and disk.serial in self.serials:
             return True
-        return bool(node.uuid and node.uuid in self.fs_uuids)
+        if not (node.uuid and node.uuid in self.fs_uuids):
+            return False
+        required = self.uuid_serials.get(node.uuid)
+        return required is None or disk.serial == required
 
 
 def check_target(

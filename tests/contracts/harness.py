@@ -411,6 +411,34 @@ def hiby_sql(mount: Path, db: str, sql: str, *args: Any) -> None:
     con.close()
 
 
+def compas_tree(mount: Path, plugins: tuple[str, ...] = ("Audiobooks", "Podcasts")) -> Path:
+    """A virtual HiBy R1 card written by the Compás firmware (device.json, plugin assets)."""
+    import json
+
+    (mount / ".compas").mkdir(parents=True, exist_ok=True)
+    (mount / ".compas" / "device.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "model": "r1",
+                "player_version": "v9.9.9",
+                "plugin_api": 19,
+                "database_format": 8,
+            }
+        )
+    )
+    for name in plugins:
+        (mount / ".plugin-assets" / name).mkdir(parents=True, exist_ok=True)
+    return mount
+
+
+def _compas_device(tmp: Path) -> Device:
+    from syncmusic.devices.HibyR1.compas import HibyCompas
+
+    mount = compas_tree(tmp / "compas")
+    return HibyCompas(DeviceConfig(id="compas1", type="hiby_compas", name="Compás"), mount, None)
+
+
 def _hiby_device(tmp: Path) -> Device:
     from syncmusic.devices.HibyR1.sonixos import Hiby
 
@@ -492,6 +520,17 @@ def _ftp_device(tmp: Path) -> Device:
     return FtpDevice(
         DeviceConfig(id="ftp1", type="ftp", name="FTP", settings=settings), root / base, None
     )
+
+
+def _client_device(tmp: Path) -> Device:
+    """A Wi-Fi client: `mount` is its outbox on the server; it reported 1 GB of storage."""
+    from syncmusic.devices.client import ClientDevice
+
+    dev = ClientDevice(
+        DeviceConfig(id="client1", type="client", name="Phone"), tmp / "outbox", None
+    )
+    dev.report({"formats": ["mp3", "flac"], "storage": {"total": 10**9, "free": 10**9}}, {})
+    return dev
 
 
 def _smb_device(tmp: Path) -> Device:
@@ -591,11 +630,12 @@ DEVICES: dict[str, DeviceHarness] = {
     "hiby": DeviceHarness(
         make=_hiby_device, inject_feedback=_hiby_feedback, manifest_path=MANIFEST, can_format=False
     ),
-    # Beta stub, file sync only
+    "hiby_compas": DeviceHarness(make=_compas_device, manifest_path=MANIFEST, can_format=False),
     # format needs a block device: covered on loop images by the mount/format tests
     "flashdrive": DeviceHarness(make=_flash_device, manifest_path=MANIFEST, can_format=False),
     # a network device: nothing to format
     "ftp": DeviceHarness(make=_ftp_device, manifest_path=MANIFEST, can_format=False),
+    "client": DeviceHarness(make=_client_device, manifest_path=MANIFEST, can_format=False),
     "smb": DeviceHarness(make=_smb_device, manifest_path=MANIFEST, can_format=False),
     # not a block device: nothing to format (fake MTP backend)
     "android": DeviceHarness(make=_android_device, manifest_path=MANIFEST, can_format=False),

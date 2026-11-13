@@ -376,7 +376,7 @@ export const actions = {
     el.disabled = true;
     toast(t("prog.ejecting", { name: cfg.name }));
     try { await post(`/devices/${encodeURIComponent(cfg.id)}/eject`); } finally { el.disabled = false; }
-    toast(ejectedText(cfg, t("prog.ejected", { name: cfg.name })));
+    toast(ejectedText(cfg, t("prog.ejected", { name: cfg.name }), ctx.state.job?.result?.player_notice));
   },
 };
 

@@ -19,6 +19,10 @@ addStrings({
   "tips.hiby.split": "Split genres, Split artists and Join albums are settings of the player (Settings → Library). Device settings → Player library → Split genres follows the player by default; if you set it to Off or On, choose the same on the R1 - the sync report warns while the two differ.",
   "tips.hiby.fs": "exFAT is the recommended file system for big cards. If the player or the computer reports file system errors, run Repair on this page.",
   "tips.hiby.automount": "Do not let the computer's own automounter open the player while SyncMusic uses it (a file manager window counts too).",
+  "tips.hiby_compas.storage": "Choose Storage on the R1 when you plug it in: SyncMusic works with the card as a USB disk.",
+  "tips.hiby_compas.eject": "Eject in SyncMusic before unplugging. After unplugging, let Compás update its library (or use Settings → Update Music Database): new music shows once that has finished.",
+  "tips.hiby_compas.plugins": "Audiobooks and podcasts are synced only when the Audiobooks or Podcasts plugin is installed on the player. Synced podcast episodes are in the Podcasts plugin's File Manager.",
+  "tips.hiby_compas.automount": "Do not let the computer's own automounter open the player while SyncMusic uses it (a file manager window counts too).",
   "var.copy": "Files as they are",
   "var.lossless": "Lossless as {to}",
   "var.fit": "{q} for lossless, only when it doesn't fit",
@@ -198,6 +202,7 @@ export const hibyReboot = (type) => (type === "hiby" ? html`<div class="callout"
 // (`tips.<type>.<key>`) and the docs section they come from. Add a type here to give it a card.
 const DEVICE_TIPS = {
   hiby: { keys: ["eject", "detect", "split", "fs", "automount"], docs: "04-devices.md#tips-for-the-hiby-r1" },
+  hiby_compas: { keys: ["storage", "eject", "plugins", "automount"], docs: "04-devices.md#hiby-r1-compás" },
 };
 const TIPS_CLOSED = "deviceTipsClosed";
 export const hasTips = (type) => type in DEVICE_TIPS;
@@ -236,7 +241,8 @@ export function betaBadge(type) {
   return BETA_TYPES.has(type) ? html` <span class="tag beta" data-beta title="${t(`beta.${type}`)}">${t("beta.badge")}</span>` : "";
 }
 
-export function ejectedText(cfg, text) {
+export function ejectedText(cfg, text, notice = cfg.notice) {
+  if (notice) text = `${text} ${notice}`;
   if (cfg.type !== "hiby" || sessionStorage.getItem("hibyRebootHint")) return text;
   sessionStorage.setItem("hibyRebootHint", "1");
   return `${text} ${t("hiby.reboot")}`;

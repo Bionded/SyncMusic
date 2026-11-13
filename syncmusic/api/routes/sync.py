@@ -422,6 +422,18 @@ def router(facade: AppFacade) -> APIRouter:
         """A server device (FTP) logs in with these settings, not saved (Device settings' Test and save); the server's reason comes back as the error."""
         return await facade.check_device(device_id, req.settings)
 
+    @r.get("/devices/register/folders")
+    async def register_folders(
+        path: str = "", disk: str | None = None, mount_path: str | None = None
+    ) -> dict[str, Any]:
+        """Before Register: the subfolders of `path` on the disk or folder and its free space (base-folder picker)."""
+        return await facade.browse_folders(path, None, disk, mount_path)
+
+    @r.get("/devices/{device_id}/folders")
+    async def device_folders(device_id: str, path: str = "") -> dict[str, Any]:
+        """The subfolders of `path` on a registered device and its free space (base-folder picker)."""
+        return await facade.browse_folders(path, device_id, None, None)
+
     @r.get("/devices/register/peek")
     async def register_peek(
         disk: str | None = None, mount_path: str | None = None

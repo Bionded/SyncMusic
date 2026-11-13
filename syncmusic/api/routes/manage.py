@@ -84,14 +84,15 @@ class SharesRequest(BaseModel):
 class BrowseRequest(BaseModel):
     """Read-only folder picker; server fields are ignored for `local`."""
 
-    source: Literal["local", "ftp", "smb", "mtp"] = "local"
+    # disk: a connected USB disk (`disk`), paths from its root; mounted read-only for this when it is not mounted
+    source: Literal["local", "ftp", "smb", "mtp", "disk"] = "local"
     path: str = "/"
     host: str = ""
     port: int | None = Field(None, ge=1, le=65535)
     username: str = ""
     password: str = ""
     tls: bool = False
-    disk: str = ""  # mtp: the found player
+    disk: str = ""  # mtp: the found player; disk: the /dev path
     storage: str | None = None  # mtp: the storage's name (None: the first)
 
 
@@ -414,6 +415,18 @@ def router(facade: AppFacade) -> APIRouter:
     async def settings_ffmpeg(path: str | None = None) -> dict[str, Any]:
         """The ffmpeg at `path` (default: the one in use): version, encoders found, missing ones, error."""
         return await facade.ffmpeg_check(path)
+
+    @r.get("/settings/compas-sdtool")
+    async def settings_compas_sdtool(path: str | None = None) -> dict[str, Any]:
+        """The compas-sdtool at `path` (default: the setting, else the usual places): found, version, build,
+        database format, error, where it comes from and its licence."""
+        return await facade.compas_sdtool(path)
+
+    @r.post("/settings/compas-sdtool/download", status_code=202)
+    async def settings_compas_sdtool_download() -> dict[str, Any]:
+        """Download compas-sdtool for this computer from SyncMusic's release (checksum, architecture and build
+        checked) into the data folder, as a job."""
+        return await facade.compas_sdtool_download()
 
     @r.get("/settings/backup")
     async def settings_backup(secrets: bool = False) -> JSONResponse:

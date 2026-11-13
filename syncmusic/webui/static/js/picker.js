@@ -4,9 +4,9 @@
 // folders (open one), a preview (folders and media files in the first two levels), New folder on device targets (a
 // name only: the sync creates it), Select / Cancel. `pickerButton(kind)` renders the button; the view spreads
 // `pickerActions` into its actions. kinds: "lib-local", "lib-remote", "dev-net", "dev-flash" (with `mount`).
-import { html, setHtml } from "./dom.js";
+import { html, setHtml, bytes } from "./dom.js";
 import { t, addStrings } from "./i18n.js";
-import { post } from "./api.js";
+import { get, post } from "./api.js";
 import { dialog, errorBox } from "./ui.js";
 import { icon } from "./icons.js";
 
@@ -26,6 +26,7 @@ addStrings({
   "pick.media_one": "{n} media file",
   "pick.media": "{n} media files",
   "pick.need_host": "Enter the server address first.",
+  "pick.need_folder": "Enter the folder path first.",
   "pick.share_first": "Open a share first - the folder goes inside it.",
   "pick.crumbs": "Folder path",
   "pick.root": "Root",
@@ -34,6 +35,7 @@ addStrings({
   "pick.new_ok": "Add",
   "pick.new_bad": "A folder name without / and not . or ..",
   "pick.new_note": "New folder - created by the first sync.",
+  "pick.space": "Free on the disk: {free} of {total}",
 });
 
 export function pickerButton(kind, { mount = "" } = {}) {
@@ -48,6 +50,7 @@ const TARGET = {
   "dev-net": '[id$="-n-base_path"], [id$="-n-remote_path"]',
   "dev-flash": '[id$="-base_folder"]',
   "dev-mtp": "#regMtpFolder",
+  "dev-disk": "#regBaseFolder",
 };
 
 /** Put the Browse button inline after its field (one row: field flex 1, button auto; it wraps below when the
@@ -74,6 +77,14 @@ function request(root, kind, mount) {
   if (kind === "lib-local") return { source: "local", path: val(root, '[id$="-src-root"]') || "/" };
   if (kind === "dev-flash") {
     const base = val(root, '[id$="-base_folder"]').replace(/^\/+|\/+$/g, "");
+    return { source: "local", path: base ? join(mount, base) : mount, root: mount };
+  }
+  if (kind === "dev-disk") { // Register: a found disk (read from its root) or the folder typed above
+    const base = val(root, "#regBaseFolder").replace(/^\/+|\/+$/g, "");
+    const disk = root.dataset.disk;
+    if (disk) return { source: "disk", disk, path: `/${base}`, root: "/" };
+    const mount = val(root.closest("form") || document, "#regPath");
+    if (!mount) throw new Error(t("pick.need_folder"));
     return { source: "local", path: base ? join(mount, base) : mount, root: mount };
   }
   if (kind === "dev-mtp") {
@@ -112,6 +123,7 @@ function apply(root, kind, req, path) {
   };
   if (kind === "lib-local") return set('[id$="-src-root"]', path);
   if (kind === "dev-flash") return set('[id$="-base_folder"]', path === req.root ? "" : path.slice(req.root.replace(/\/$/, "").length + 1));
+  if (kind === "dev-disk") return set("#regBaseFolder", path === req.root ? "" : path.slice(req.root === "/" ? 1 : req.root.replace(/\/$/, "").length + 1));
   if (kind === "dev-mtp") return set("#regMtpFolder", path === "/" ? "./" : path.slice(1)); // relative to the storage
   if (kind === "lib-remote") {
     const url = new URL(val(root, "#libAddress"));
@@ -164,6 +176,18 @@ async function load(st, path) {
   }
 }
 
+/** A disk's free and total space above the folder list (device folders only; nothing shown when unknown). */
+async function showSpace(el, kind, req) {
+  if (!el || !(kind === "dev-disk" || kind === "dev-flash")) return;
+  const q = req.source === "disk" ? `disk=${encodeURIComponent(req.disk)}` : `mount_path=${encodeURIComponent(req.root || "")}`;
+  try {
+    const r = await get(`/devices/register/folders?${q}`);
+    if (!r.total_bytes) return;
+    el.textContent = t("pick.space", { free: bytes(r.free_bytes), total: bytes(r.total_bytes) });
+    el.hidden = false;
+  } catch { /* the listing shows its own error */ }
+}
+
 const formOf = (el) => el.closest("[data-pick-form]") || el.closest("form") || el.closest("#regNetwork") || document;
 
 export const pickerActions = {
@@ -184,7 +208,7 @@ export const pickerActions = {
     const st = { req: browse, top: root || "/", writable: kind.startsWith("dev-"), path: req.path, parent: null };
     const shown = dialog({
       title: t("pick.title"),
-      body: html`<div class="picker" data-picker data-pick="${kind}"></div>`,
+      body: html`<p class="hint" data-pick-space hidden></p><div class="picker" data-picker data-pick="${kind}"></div>`,
       buttons: [{ label: t("common.cancel"), value: null }, { label: t("pick.use"), value: "use", kind: "primary" }],
     });
     st.back = [...document.querySelectorAll("#overlay .modal-back")].pop();
@@ -209,6 +233,7 @@ export const pickerActions = {
       view(st, { path: st.path, parent: st.parent, folders: [], virtual: true });
     });
     load(st, req.path);
+    showSpace(st.back.querySelector("[data-pick-space]"), kind, req);
     if ((await shown) === "use" && st.path) apply(form, kind, req, st.path);
   },
 };

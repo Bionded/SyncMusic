@@ -539,6 +539,9 @@ def evaluate_ruleset(
         for t in res.tracks:
             excluded.setdefault(t.ref.key(), ex.id)
 
+    kinds: set[MediaKind] = set()
+    for r in enabled:  # a rule without a kind selects every kind
+        kinds |= set(r.kind) if r.kind else set(MediaKind)
     items: dict[str, list[str]] = {}
     results: list[RuleResult] = []
     skipped_kinds = 0
@@ -592,4 +595,6 @@ def evaluate_ruleset(
                         playlists.append(
                             DevicePlaylist(name=pl.name, refs=refs, source=pl.ref, smart=pl.smart)
                         )
-    return Selection(items=items, excluded=excluded, playlists=playlists, warnings=warnings)
+    return Selection(
+        items=items, excluded=excluded, playlists=playlists, warnings=warnings, kinds=kinds
+    )

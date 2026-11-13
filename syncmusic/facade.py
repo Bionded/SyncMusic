@@ -13,6 +13,7 @@ import platform
 import re
 import shutil
 import socket
+import tempfile
 import threading
 import time
 import uuid
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote, urlsplit
 
+import httpx
 from pydantic import ValidationError
 
 from syncmusic import __version__
@@ -96,6 +98,7 @@ from syncmusic.core.sync import (
     suggested_processors,
 )
 from syncmusic.core.thumbs import file_cover
+from syncmusic.devices.HibyR1 import compas_sdtool
 from syncmusic.infra import (
     bundle,
     dbbackup,
@@ -105,6 +108,7 @@ from syncmusic.infra import (
     ffmpeg,
     self_update,
     storage,
+    updates,
 )
 from syncmusic.infra.blockdev.format import FS_LABELS, filesystem_support
 from syncmusic.infra.blockdev.guard import GuardError
@@ -113,6 +117,7 @@ from syncmusic.infra.discovery import Kind
 from syncmusic.infra.events import Event
 from syncmusic.infra.ffmpeg import FfmpegError
 from syncmusic.infra.housekeeping import disk_free
+from syncmusic.infra.jobs import JobContext
 from syncmusic.infra.log import LEVELS, matches, parse_log
 from syncmusic.infra.notify import WebhookNotifier
 from syncmusic.libraries import browse
@@ -293,6 +298,19 @@ def _public_library(cfg: LibraryConfig) -> dict[str, Any]:
     return out
 
 
+def _sdtool_line(data_dir: Path) -> str | None:
+    """Settings → About: the compas-sdtool in use (its build from the release's metadata when there is one, with
+    its origin and licence), None when there is none."""
+    tool = compas_sdtool.locate(compas_sdtool.configured(), data_dir)
+    if tool is None:
+        return None
+    try:
+        build = json.loads(tool.with_name(tool.name + ".json").read_text("utf-8")).get("build")
+    except (OSError, ValueError, AttributeError):
+        build = None
+    return f"{build or tool} (Compás Tools, {compas_sdtool.LICENSE})"
+
+
 def _read_text(path: Path) -> str | None:
     try:
         return path.read_text(errors="replace").strip("\x00\n ") or None
@@ -362,6 +380,7 @@ class AppFacade:
             "instance": {"id": self.app.instance_id, "name": self.app.instance_name},
             "model": _read_text(Path("/proc/device-tree/model")),
             "uptime_s": _uptime_s(),
+            "compas_sdtool": _sdtool_line(self.app.config.data_dir),
         }
 
     # --- events (the UI's live updates; REST clients use GET /events) ----------------------------------
@@ -878,6 +897,7 @@ class AppFacade:
                     "network": c.network,
                     # an MTP player: also detected on USB like a disk
                     "usb_mtp": c.usb_mtp,
+                    "paired": c.paired,  # created by pairing: not offered at Register
                     "beta": c.beta,  # a Beta badge in the UI
                     "music_only": c.music_only,
                     "settings_schema": _schema(c),
@@ -1904,6 +1924,68 @@ class AppFacade:
         """Settings → Conversion: version and encoders of the ffmpeg at `path` (default: the one in use)."""
         return await asyncio.to_thread(ffmpeg.check, path or None)
 
+    async def compas_sdtool(self, path: str | None = None) -> dict[str, Any]:
+        """Settings → Devices → compas-sdtool: the tool at `path` (default: the setting, else the usual places)."""
+        setting = (await self.app.store.app_settings()).compas_sdtool_path
+        want = path or setting
+        out: dict[str, Any] = {
+            "setting": setting,
+            "searched": [str(p) for p in compas_sdtool.candidates(want, self.app.config.data_dir)],
+            "asset": compas_sdtool.asset_name(),
+            "source_url": compas_sdtool.SOURCE_URL,
+            "license": compas_sdtool.LICENSE,
+            "path": None,
+            "version": None,
+            "build": None,
+            "database_format": None,
+            "error": None,
+        }
+        tool = compas_sdtool.locate(want, self.app.config.data_dir)
+        if tool is None:
+            out["error"] = "not found"
+            return out
+        out["path"] = str(tool)
+        with tempfile.TemporaryDirectory() as card:
+            (Path(card) / ".compas").mkdir()
+            try:
+                got = await compas_sdtool.info(tool, Path(card))
+            except compas_sdtool.SdtoolError as e:
+                out["error"] = str(e)
+                return out
+        out.update(version=got.version, build=got.build, database_format=got.database_format)
+        return out
+
+    async def compas_sdtool_download(self) -> dict[str, Any]:
+        """Settings → Devices / the Compás device page: download compas-sdtool from SyncMusic's release, as a job."""
+        repo = self.app.config.update_repo.strip()
+        if not repo or repo.lower() == "none":
+            raise SyncError("downloads are turned off (update_repo = none)", "invalid")
+
+        async def job(ctx: JobContext) -> dict[str, Any]:
+            ctx.progress(None, "downloading compas-sdtool")
+            try:
+                releases = await self.app.update_checker.releases(repo)
+            except (httpx.HTTPError, OSError, ValueError) as e:
+                raise SyncError(
+                    f"the releases cannot be read: {type(e).__name__}", "unavailable"
+                ) from e
+            try:
+                got = await compas_sdtool.install(
+                    releases, updates.running_version(), self.app.config.data_dir
+                )
+            except compas_sdtool.SdtoolError as e:
+                raise SyncError(str(e), "invalid") from e
+            return {
+                "path": str(got.path),
+                "version": got.version,
+                "build": got.build,
+                "database_format": got.database_format,
+            }
+
+        return self.app.jobs.submit("download", "download compas-sdtool", job).model_dump(
+            mode="json"
+        )
+
     async def diagnostics(self) -> list[dict[str, Any]]:
         """Settings → Maintenance → System check: the install's checks (doctor: versions,
         ffmpeg, space, folders, device access, udev, clock, Docker), library connections, USB devices, the Pi's
@@ -2206,6 +2288,7 @@ class AppFacade:
                 raise SyncError(found["error"], "invalid")
         await self.app.store.put_app_settings(settings)
         self.app.apply_settings(settings)
+        await self.app.announce()
         return _public_settings(settings)
 
     # --- devices ---------------------------------------------------------------------------------
@@ -2844,6 +2927,15 @@ class AppFacade:
     async def wipe_device(self, device_id: str, confirm: str) -> dict[str, Any]:
         return (await self.app.sync.wipe(device_id, confirm)).model_dump(mode="json")
 
+    async def browse_folders(
+        self, path: str, device_id: str | None, disk: str | None, mount_path: str | None
+    ) -> dict[str, Any]:
+        if not (device_id or disk or mount_path):
+            raise SyncError("browse needs a device, a disk or a folder", "invalid")
+        return await self.app.sync.browse_folders(
+            path, device_id=device_id, disk=disk, mount_path=mount_path
+        )
+
     async def peek_manifest(self, disk: str | None, mount_path: str | None) -> dict[str, Any]:
         return await self.app.sync.peek_manifest(disk, mount_path)
 
@@ -3008,6 +3100,20 @@ class AppFacade:
         """One folder of a local path / FTP server / SMB share / found MTP player's storage with a preview (read-only)."""
         try:
             path = browse.norm(path)
+            if source == "disk":
+
+                def on_disk(root: Path) -> dict[str, Any]:
+                    def list_dir(p: str) -> list[Any]:
+                        with os.scandir(root / p.lstrip("/")) as it:
+                            return [(e.name, e.is_dir(), 0, 0) for e in it]
+
+                    here = root / path.lstrip("/")
+                    if not here.is_dir():
+                        raise SyncError(f"{path} does not exist on the disk", "not_found")
+                    return browse.browse_with(path, list_dir).model_dump()
+
+                listed: dict[str, Any] = await self.app.sync.read_device_root(on_disk, disk=disk)
+                return listed
             if source == "mtp":
 
                 def listing(b: Any) -> dict[str, Any]:

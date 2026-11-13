@@ -35,8 +35,11 @@ def _allowlisted_serials() -> set[str]:
 
 def kind_of(entry: dict) -> str:
     """The kind of player an allowlist section is, from its model: "ipod" (a stock iPod Classic), "rockbox" (an
-    iPod mini with Rockbox), "hiby" (a HiBy R1) or "flash" (no model: a USB drive the tests may reformat)."""
+    iPod mini with Rockbox), "hiby" (a HiBy R1 with SonixOS), "compas" (a HiBy player with the Compás firmware) or
+    "flash" (no model: a USB drive the tests may reformat)."""
     model = str(entry.get("model", ""))
+    if "compas" in model:
+        return "compas"
     if model.startswith("classic"):
         return "ipod"
     if model.startswith("mini"):
@@ -74,7 +77,9 @@ def connected(section: str):
     """The section's device as the scan sees it now, or None (not connected)."""
     serials = serials_of(section)
     fs_uuid = (
-        hw_value(section, "fs_uuid") if kind_of(_allowlist().get(section, {})) == "hiby" else ""
+        hw_value(section, "fs_uuid")
+        if kind_of(_allowlist().get(section, {})) in ("hiby", "compas")
+        else ""
     )
     for disk in scan_block_devices():
         if disk.serial in serials and (
@@ -126,6 +131,7 @@ classic_disk = _disk_fixture("ipod", "iPod Classic")
 mini_disk = _disk_fixture("rockbox", "iPod mini with Rockbox")
 flash_disk = _disk_fixture("flash", "flash drive")
 hiby_disk = _disk_fixture("hiby", "HiBy R1")
+compas_disk = _disk_fixture("compas", "HiBy player with Compás")
 
 
 def allowlisted_mounts() -> list[tuple[str, str]]:

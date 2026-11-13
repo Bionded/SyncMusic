@@ -31,8 +31,10 @@ DEVICES: dict[str, str] = {
     "flashdrive": "syncmusic.devices.flashdrive:FlashDrive",
     "ftp": "syncmusic.devices.ftp:FtpDevice",
     "hiby": "syncmusic.devices.HibyR1.sonixos:Hiby",
+    "hiby_compas": "syncmusic.devices.HibyR1.compas:HibyCompas",
     "ipod": "syncmusic.devices.iPod.ipod:IPod",
     "rockbox": "syncmusic.devices.Rockbox.rockbox:Rockbox",
+    "client": "syncmusic.devices.client:ClientDevice",
     "smb": "syncmusic.devices.smb:SmbDevice",
 }
 PROCESSORS: dict[str, str] = {

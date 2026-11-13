@@ -88,6 +88,11 @@ def run_on(app, coro, timeout: float = 30):
 UI_LOCALE = "en-GB"
 
 
+# Register shows every step on one page in the tests that fill its fields directly (the step-by-step flow has
+# its own test, which removes this)
+ALL_STEPS = "try { localStorage.getItem('sm.regSteps') || localStorage.setItem('sm.regSteps', 'all') } catch (e) {}"
+
+
 class _Browser:
     """The Playwright browser with `locale=UI_LOCALE` as the default of every new page and context."""
 
@@ -95,10 +100,14 @@ class _Browser:
         self._browser = browser
 
     def new_page(self, **options):
-        return self._browser.new_page(**{"locale": UI_LOCALE, **options})
+        page = self._browser.new_page(**{"locale": UI_LOCALE, **options})
+        page.add_init_script(ALL_STEPS)
+        return page
 
     def new_context(self, **options):
-        return self._browser.new_context(**{"locale": UI_LOCALE, **options})
+        context = self._browser.new_context(**{"locale": UI_LOCALE, **options})
+        context.add_init_script(ALL_STEPS)
+        return context
 
     def __getattr__(self, name):
         return getattr(self._browser, name)

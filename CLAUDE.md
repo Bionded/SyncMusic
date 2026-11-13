@@ -14,8 +14,11 @@ and video from **libraries** through a per-device chain of **processors** onto *
 - Libraries: Navidrome / any Subsonic server, plain folder (local, SMB, FTP), Audiobookshelf, Jellyfin (video: beta).
   Plex is in the code (`syncmusic/libraries/plex.py`) but **not available**: retired in the registry.
 - Devices: stock iPods (iTunesDB through the `pygpod` library), Rockbox players, HiBy R1 (SonixOS), USB flash drives
-  and other mass-storage players, FTP, Android over MTP (beta). The Compás firmware of the HiBy R1 is a
-  non-functional placeholder (`syncmusic/devices/HibyR1/compas.py`), not registered.
+  and other mass-storage players, FTP, Android over MTP (beta), HiBy R1 with the Compás firmware (USB storage,
+  `syncmusic/devices/HibyR1/compas.py`; listening data read from its tagcache and plugin files), paired Wi-Fi
+  clients (`syncmusic/devices/client.py`: files wait in a server-side outbox until the client downloads and acks
+  them; sessions in `syncmusic/core/client_sessions.py`, API in `syncmusic/api/routes/clients.py`; a reference client that drives the whole protocol is
+  `syncmusic/reference_client.py`, the protocol conformance checks `syncmusic/client_conformance.py`).
 - Processors: transcode, retag, covers, lyrics, video.
 - Version: see `pyproject.toml` (0.2.x, beta). Upgrades from 0.2.0 on are supported (downgrades are not): every
   schema change is a numbered migration with an upgrade test, and players synced by an older version keep working
@@ -129,6 +132,5 @@ throwaway daemon outside the repository (its own `--config` file and data dir).
 - System tools above (ffmpeg, the filesystem tools, sg3-utils); libmtp for Android devices.
 
 ## Open items
-- Compás firmware for the HiBy R1: placeholder only.
 - Android (MTP): beta; the media-folder layout still needs a check on more real devices.
 - Plex: retired until a video library needs it.

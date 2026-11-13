@@ -29,6 +29,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
@@ -118,7 +119,8 @@ from syncmusic.core.plan_adjust import (
 from syncmusic.core.planner import meta_hash, meta_snapshot, over_delete_threshold, reverse_changes
 from syncmusic.core.playlist_reverse import Policy, playlists_after_reverse, push_playlists
 from syncmusic.core.prepare import CAPS_HASH_VERSION, Chain, NoCache, Preparer, initial_plan_item
-from syncmusic.core.proc_templates import DEFAULT_PROCESSOR_TEMPLATES, with_tag_step
+from syncmusic.core.proc_templates import DEFAULT_PROCESSOR_TEMPLATES, TAG_STEP, with_tag_step
+from syncmusic.core.relink import apply_relinks, find_relinks
 from syncmusic.core.reverse import ReverseSync
 from syncmusic.core.rules import defaults as rule_defaults
 from syncmusic.core.rules import evaluate_ruleset, validate_ruleset
@@ -168,6 +170,7 @@ NAME_MAX = 64
 WIPE_KEEPS = {
     "rockbox": "/.rockbox",
     "hiby": "/.local",
+    "hiby_compas": "the player's own folders (library, plugins, themes) and firmware updates",
     "android": "everything outside its SyncMusic folder",
 }
 
@@ -187,6 +190,14 @@ class SyncError(RuntimeError):
     def __init__(self, message: str, code: str = "sync_error") -> None:
         super().__init__(message)
         self.code = code
+
+
+BACKUP_LAYOUT = {
+    k: "{library_path}" for k in ("music", "music_multi_disc", "podcast", "audiobook", "video")
+}
+BACKUP_BASE_FOLDER = (
+    "SyncMusic"  # where a backup disk keeps its files unless the user picks another
+)
 
 
 class RegisterRequest(BaseModel):
@@ -223,6 +234,8 @@ class PlanContext:
     waiting: set[str] = field(default_factory=set)
     # the review's choice per playlist conflict, given with apply
     playlist_choices: dict[str, Policy] = field(default_factory=dict)
+    # foreign device: old -> new item keys the plan re-linked in memory (written when the take-over is applied)
+    relinks: dict[str, str] = field(default_factory=dict)
 
 
 def _only_keeps(pc: PlanContext) -> bool:
@@ -444,11 +457,14 @@ class SyncService:
         self._ejecting: set[str] = set()  # never mounted again until the eject is over
         # ejected (powered off) but its disk not yet reported gone: never mounted again until unplugged
         self._ejected: set[str] = set()
+        # the last sync's note for the player (SyncReport.player_notice), shown on eject until the next sync
+        self._player_notice: dict[str, str] = {}
         # one instance per plugged MTP player: it holds the player's only MTP session, so every job
         # shares it; closed on eject, unplug or a settings change
         self._mtp_open: dict[str, Device] = {}
         # device id -> {reason, plan_id} of a connect-time sync that waits for the user
         self._waiting: dict[str, dict[str, Any]] = {}
+        self._client_sync_wanted: set[str] = set()  # Wi-Fi clients told to sync on their next poll
         self._scheduled_on: dict[
             str, dt.date
         ] = {}  # device id -> the day its daily sync last started
@@ -888,6 +904,8 @@ class SyncService:
                     "library_accounts": cfg.library_accounts,
                     "connected": connected,
                     "disk": cd.disk.path if cd else None,
+                    # the player now runs another firmware: the type its disk is claimed by
+                    "firmware_switch": cd.firmware_switch if cd else None,
                     # USB disk present without a medium / file system: storage not shared yet
                     "no_medium": cd is not None
                     and cd.data_partition is None
@@ -917,6 +935,7 @@ class SyncService:
                     "health_warning": None if network else (await self.health(cfg.id))["warning"],
                     # ejected but its disk is not gone yet (powered off): not idle, nothing to ask it
                     "ejected": cfg.id in self._ejected,
+                    "player_notice": self._player_notice.get(cfg.id),
                     # a damaged file system is an error too: the sidebar, dashboard and list show it
                     "error": (
                         self._errors.get(cfg.id)
@@ -1020,6 +1039,8 @@ class SyncService:
                     cd.disk.path,
                 )
                 req = req.model_copy(update={"disk": cd.disk.path, "mount_path": None})
+        if req.type in registry.DEVICES and registry.device_class(req.type).paired:
+            raise SyncError(f"a {req.type!r} device is added by pairing, not registered", "invalid")
         network = req.type in registry.DEVICES and registry.device_class(req.type).network
         if req.disk and req.type is None:  # a found MTP player: its type comes from the probe
             found = next(
@@ -1152,8 +1173,21 @@ class SyncService:
         if "time_sync" in cls.Settings.model_fields and "time_sync" not in cfg.settings:
             # new devices set their clock; a stored config without it keeps the old "off"
             cfg.settings["time_sync"] = True
+        backup = cfg.settings.get("purpose") == "backup"
+        if backup:  # a backup disk: the library files as they are, nothing deleted unless asked
+            cfg.settings.setdefault("base_folder", BACKUP_BASE_FOLDER)
+            # the library's own folder structure where it knows it (else the default template of the kind)
+            cfg.settings.setdefault("layout", BACKUP_LAYOUT)
+            if "mode" not in req.rule_set.model_fields_set:
+                cfg.rule_set = cfg.rule_set.model_copy(update={"mode": "additive"})
+            cfg.sync = cfg.sync.model_copy(update={"verify": "all"})
         cls.Settings.model_validate(cfg.settings)  # needed by the constructor below
         template_id = req.processor_template_id
+        if backup and template_id is None and req.processors is None:
+            # no processing: the tag step is there (every chain has one) but off
+            req = req.model_copy(
+                update={"processors": [ProcessorSlot(type=TAG_STEP, enabled=False)]}
+            )
         if template_id is None and req.processors is None:
             template_id = DEFAULT_PROCESSOR_TEMPLATES.get(type_name)
         if template_id:
@@ -1178,6 +1212,74 @@ class SyncService:
             await self.detector.disk_added(cd.disk)  # re-match: now registered
         self.ctx.bus.publish("device.registered", device_id=cfg.id, type=cfg.type)
         return cfg
+
+    async def read_device_root[T](
+        self,
+        read: Callable[[Path], T],
+        *,
+        device_id: str | None = None,
+        disk: str | None = None,
+        mount_path: str | None = None,
+    ) -> T:
+        """Run `read(root)` in a thread on the root of a registered device (opened as for a sync), a folder, or
+        a connected disk (an unregistered disk that is not mounted is mounted read-only just for this)."""
+        if device_id is not None:
+            device = await self.open_device(device_id)
+            return await asyncio.to_thread(read, device.mount)
+        if mount_path:
+            root = Path(mount_path)
+            if not await asyncio.to_thread(root.is_dir):
+                raise SyncError(f"{root} is not a directory", "invalid")
+            return await asyncio.to_thread(read, root)
+        cd = next((c for c in self.detector.connected.values() if c.disk.path == disk), None)
+        if cd is None:
+            raise SyncError(f"no connected disk {disk}", "not_found")
+        if cd.mountpoint is not None:
+            return await asyncio.to_thread(read, cd.mountpoint)
+        guard = self.ctx.guard
+        if cd.data_partition is None or guard is None:
+            raise SyncError(f"{disk} has no file system to browse", "invalid")
+        try:
+            return await mnt.probe_read(guard, cd.data_partition, self.ctx.config.mount_root, read)
+        except (GuardError, mnt.BlockdevError) as e:
+            raise SyncError(f"cannot read {disk}: {e}", "unmountable") from e
+
+    async def browse_folders(
+        self,
+        path: str = "",
+        *,
+        device_id: str | None = None,
+        disk: str | None = None,
+        mount_path: str | None = None,
+    ) -> dict[str, Any]:
+        """The base-folder picker: the subfolders of `path` (relative to the device's root) and the disk's free
+        space, read only."""
+        parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".")]
+        if any(p == ".." for p in parts):
+            raise SyncError("the folder must stay on the device", "invalid")
+
+        def listing(root: Path) -> dict[str, Any]:
+            here = root.joinpath(*parts)
+            folders = (
+                sorted(
+                    (e.name for e in os.scandir(here) if e.is_dir() and not e.name.startswith(".")),
+                    key=str.casefold,
+                )
+                if here.is_dir()
+                else []
+            )
+            usage = shutil.disk_usage(root)
+            return {
+                "path": "/".join(parts),
+                "exists": here.is_dir(),
+                "folders": folders,
+                "free_bytes": usage.free,
+                "total_bytes": usage.total,
+            }
+
+        return await self.read_device_root(
+            listing, device_id=device_id, disk=disk, mount_path=mount_path
+        )
 
     async def peek_manifest(self, disk: str | None, mount_path: str | None) -> dict[str, Any]:
         """Register's question before the form is sent: was this device synced by SyncMusic, and whose is it."""
@@ -1272,13 +1374,16 @@ class SyncService:
         manifest = await device.read_manifest()
         if manifest is None:
             raise SyncError(f"{cfg.name} was never synced: the first sync makes it home", "invalid")
-        if foreign_manifest(manifest, cfg):
-            raise SyncError(f"{cfg.name} belongs to another registration", "invalid")
         ctx = manifest_io.context()
         if not ctx.instance_id:
             raise SyncError("this instance has no id", "invalid")
         home = InstanceInfo(id=ctx.instance_id, name=ctx.instance_name, since=utcnow())
-        manifest.header = manifest.header.model_copy(update={"home": home})
+        # synced by another registration (registered here again): becoming home takes its managed files over, as a
+        # confirmed sync would; the next plan re-links items whose library ids changed
+        uid = cfg.identity.manifest_device_id
+        manifest.header = manifest.header.model_copy(
+            update={"home": home, "device_id": cfg.id, "device_uid": uid}
+        )
         await device.write_manifest(manifest)
         self.drop_plans(cfg.id)
         self.ctx.bus.publish("device.updated", device_id=cfg.id)
@@ -2057,12 +2162,26 @@ class SyncService:
         snaps = {} if removal and not attached else await self._snapshots(cfg)
         planprogress.step("device", detail=cfg.name)
         manifest = await self._read_manifest(cfg, device)
+        relinked = await self._relink(cfg, device, manifest, snaps)
+        foreign_relinks: dict[str, str] = {}
+        if manifest is not None and foreign_manifest(manifest, cfg):
+            # another registration's device: re-linked only in this plan's copy, written once the take-over is
+            # confirmed (otherwise every item whose library id changed would be added again next to it)
+            foreign_relinks = find_relinks(manifest, snaps)
+            apply_relinks(manifest, foreign_relinks)
+            relinked = len(foreign_relinks)
         snaps.update(await self._managed_snapshots(cfg, manifest, attached))
         planprogress.step("compare")
         plan = await self._space_plan(
             cfg, device, snaps, manifest, cfg.processors, force=force, auto=auto, attached=attached
         )
         planprogress.step("checks")
+        if relinked:
+            plan.warnings.insert(
+                0,
+                f"re-linked {relinked} item(s): their library ids changed (server reinstalled or library re-created), "
+                "the files on the device stay",
+            )
         if manifest is not None:
             plan.resuming = manifest.header.interrupted
         merging = [
@@ -2122,7 +2241,7 @@ class SyncService:
             found = await device.read_contents()
             existing = len(found.items)
             matches = match_existing(found, tracks)
-        pc = PlanContext(plan, matches, existing, foreign)
+        pc = PlanContext(plan, matches, existing, foreign, relinks=foreign_relinks)
         if register:
             self.plans[plan.id] = pc
             self._trim_plans(device_id, plan.id)
@@ -2283,6 +2402,7 @@ class SyncService:
             )
             connected = False
         prof = await asyncio.to_thread(device.profile, connected)
+        player = await asyncio.to_thread(device.player_info) if connected else {}
         fields = prof.model_dump(mode="json")["fields"]
         if cls.music_only:  # not configurable
             for k in ("supports_music", "supports_podcasts", "supports_audiobooks"):
@@ -2293,6 +2413,7 @@ class SyncService:
             "label": prof.label,
             "known": prof.known,
             "music_only": cls.music_only,
+            "player": player,
             "fields": fields,
         }
 
@@ -2487,6 +2608,10 @@ class SyncService:
                 )
                 raise
             await self.store.put_report(report, ctx.info.id)
+            if report.player_notice:
+                self._player_notice[cfg.id] = report.player_notice
+            else:
+                self._player_notice.pop(cfg.id, None)
             self.ctx.bus.publish(
                 "sync.finished",
                 device_id=cfg.id,
@@ -2494,6 +2619,7 @@ class SyncService:
                 report_id=report.id,
                 status=report.status,
                 failed=len(report.failures),
+                notice=report.player_notice or None,
             )
             return report.model_dump(mode="json")
 
@@ -2623,6 +2749,12 @@ class SyncService:
         device: Device,
         playlist_choices: Mapping[str, Policy] | None = None,
     ) -> ReverseReport:
+        try:  # extra: the reverse sync goes on without it (an unreachable library is reported there)
+            manifest = await device.read_manifest()
+            if manifest is not None and not foreign_manifest(manifest, cfg):
+                await self._relink(cfg, device, manifest, await self._snapshots(cfg))
+        except Exception as e:  # noqa: BLE001
+            log.info("%s: no re-link check before the reverse sync: %s", cfg.id, e)
         libraries, why = await self._libraries_now(cfg)
         report = await self.reverse_sync.run(cfg, device, libraries, why, playlist_choices)
         self.ctx.bus.publish("reverse.finished", device_id=cfg.id, **report.model_dump())
@@ -2640,6 +2772,34 @@ class SyncService:
             # e.g. "Most played" on another connected device changes
             await self.mark_libraries_changed(list(libraries), except_device=cfg.id)
         return report
+
+    async def _relink(
+        self,
+        cfg: DeviceConfig,
+        device: Device,
+        manifest: Manifest | None,
+        snaps: Mapping[str, LibrarySnapshot],
+    ) -> int:
+        """Move managed items whose library ids changed to their new ids (core/relink.py), in `manifest` and on the
+        device, with the listening data still waiting for them. Returns how many moved."""
+        if manifest is None or foreign_manifest(manifest, cfg):
+            return 0
+        relinks = find_relinks(manifest, snaps)
+        if not relinks:
+            return 0
+        apply_relinks(manifest, relinks)
+        await device.write_manifest(manifest)
+        moved = await self.store.remap_pending(cfg.id, relinks)
+        keys = frozenset(manifest.items)
+        await self.store.set_device_items(cfg.id, set(keys))
+        self._device_items[cfg.id] = keys
+        log.warning(
+            "%s: re-linked %d items whose library ids changed (%d pending listening data moved)",
+            cfg.id,
+            len(relinks),
+            moved,
+        )
+        return len(relinks)
 
     async def _step0(
         self,
@@ -2890,6 +3050,11 @@ class SyncService:
             await device.wipe()
         elif first_sync == "adopt" and pc.matches:
             plan, base = await self._adopt(cfg, device, chain, pc)
+        elif pc.relinks:  # a take-over: the entries the plan re-linked move to their new ids
+            base = await device.read_manifest()
+            if base is not None:
+                apply_relinks(base, pc.relinks)
+                await self.store.remap_pending(cfg.id, pc.relinks)
         if not update:
             self.ctx.bus.publish("sync.started", device_id=cfg.id, plan_id=plan.id)
         applier = Applier(
@@ -3089,7 +3254,11 @@ class SyncService:
             log.info("%s: ejected after the sync: it can be unplugged", device_id)
             cfg = await self.config(device_id)
             self.ctx.bus.publish(
-                "device.auto_ejected", device_id=device_id, name=cfg.name, type=cfg.type
+                "device.auto_ejected",
+                device_id=device_id,
+                name=cfg.name,
+                type=cfg.type,
+                notice=self._player_notice.get(device_id),
             )
         except SyncError as e:
             log.warning("%s: eject after the sync failed: %s", device_id, e)
@@ -3425,6 +3594,41 @@ class SyncService:
             self._manifest_paths[device_id] = (st, paths)
         return paths
 
+    async def _kept_off(self, cfg: DeviceConfig, manifest: Manifest, gone: set[str]) -> RuleSet:
+        """The device's own rules once these manifest items must stay off it: the picks lose them and, if a template
+        still selects them, the device's own template excludes them."""
+        snaps = await self._readable_snapshots(cfg)
+        tracks = {
+            k: t
+            for k, e in manifest.items.items()
+            if e.ref.library_id in snaps
+            and (t := snaps[e.ref.library_id].track(e.ref.item_id)) is not None
+        }
+        tid = own_template_id(cfg.id)
+        templates = await self.store.templates()
+        own_before = templates.get(tid)
+        rs = player_contents.without_manual(as_rules(own_before), gone, tracks, manifest.items)
+        draft = {**templates, tid: own_template(cfg, own_before, rs)}
+        linked = cfg.rule_set.model_copy(
+            update={"template_ids": list(dict.fromkeys([*cfg.rule_set.template_ids, tid]))}
+        )
+        still = evaluate_ruleset(linked, snaps, draft).items
+        return add_device_exclusions(rs, [k.split("/", 1)[1] for k in gone if k in still])
+
+    async def keep_off_device(self, device_id: str, keys: list[str]) -> int:
+        """The user deleted these items on the device itself (a Wi-Fi client's `deleted_by_user`): change the rules
+        as Player contents -> Remove does, so no sync brings them back. Returns how many were on the device."""
+        cfg = await self.config(device_id)
+        manifest = await (await self.open_device(device_id)).read_manifest()
+        gone = {k for k in keys if manifest is not None and k in manifest.items}
+        if manifest is None or not gone:
+            return 0
+        rs = await self._kept_off(cfg, manifest, gone)
+        if rs != as_rules((await self.store.templates()).get(own_template_id(cfg.id))):
+            await self.set_own_rules(cfg, rs)
+        log.info("%s: %d items deleted on the device stay off it", cfg.id, len(gone))
+        return len(gone)
+
     async def remove_from_device(
         self, device_id: str, keys: list[str], exclude: bool = True
     ) -> JobInfo:
@@ -3465,26 +3669,9 @@ class SyncService:
         if manifest is None:
             return self._remove_unmanaged(cfg, extra)
         gone = set(keys) - set(foreign)
-        snaps = await self._readable_snapshots(cfg)
-        tracks = {
-            k: t
-            for k, e in manifest.items.items()
-            if e.ref.library_id in snaps
-            and (t := snaps[e.ref.library_id].track(e.ref.item_id)) is not None
-        }
-        # the picks lose them and, if a template still selects them, the device's own template excludes them
         tid = own_template_id(cfg.id)
-        templates = await self.store.templates()
-        own_before = templates.get(tid)
-        rs = as_rules(own_before)
-        if exclude:
-            rs = player_contents.without_manual(rs, gone, tracks, manifest.items)
-            draft = {**templates, tid: own_template(cfg, own_before, rs)}
-            linked = cfg.rule_set.model_copy(
-                update={"template_ids": list(dict.fromkeys([*cfg.rule_set.template_ids, tid]))}
-            )
-            still = evaluate_ruleset(linked, snaps, draft).items
-            rs = add_device_exclusions(rs, [k.split("/", 1)[1] for k in gone if k in still])
+        own_before = (await self.store.templates()).get(tid)
+        rs = await self._kept_off(cfg, manifest, gone) if exclude else as_rules(own_before)
         before = cfg
         changed = rs != as_rules(own_before)
         if changed:
@@ -3921,15 +4108,26 @@ class SyncService:
         plan = pc.plan
         if plan.needs_confirmation or plan.does_not_fit:
             reasons = plan.confirmation_reasons + (["does not fit"] if plan.does_not_fit else [])
-            self._waiting[cfg.id] = {"reason": "; ".join(reasons), "plan_id": plan.id}
-            self.ctx.bus.publish(
-                "sync.needs_confirmation",
-                device_id=cfg.id,
-                plan_id=plan.id,
-                reason="; ".join(reasons),
-            )
+            self.wait_for_user(cfg.id, "; ".join(reasons), plan.id)
             return None
         return await self.apply(plan.id)
+
+    def wait_for_user(self, device_id: str, reason: str, plan_id: str) -> None:
+        """A plan started without the user (automatic sync, a Wi-Fi client) waits for their confirmation."""
+        self._waiting[device_id] = {"reason": reason, "plan_id": plan_id}
+        self.ctx.bus.publish(
+            "sync.needs_confirmation", device_id=device_id, plan_id=plan_id, reason=reason
+        )
+
+    def request_client_sync(self, device_id: str) -> None:
+        """'Sync now' for a Wi-Fi client: its next status poll is told to sync."""
+        self._client_sync_wanted.add(device_id)
+
+    def sync_requested(self, device_id: str) -> bool:
+        return device_id in self._client_sync_wanted
+
+    def client_sync_started(self, device_id: str) -> None:
+        self._client_sync_wanted.discard(device_id)
 
     async def sync_all(self, mode: Literal["full", "update"] = "full") -> dict[str, Any]:
         """'Sync all connected': every connected, idle device with a library gets a full sync (a

@@ -77,3 +77,10 @@ usb_serial_aliases = [  # the same kind on xdist workers gw1..gw15 (tests/emulat
 usb_vendor_id = "32bb"
 usb_product_id = "0101"
 model = "hiby_r1_sonixos"
+
+[emulated_compas]
+# HiBy R1 with the Compás firmware: one whole-disk exFAT volume, the Compás storage gadget's product id
+usb_serial = "EMU000000COMPAS"
+usb_serial_aliases = ["EMU000000CO01R1", "EMU000000CO02R1", "EMU000000CO03R1", "EMU000000CO04R1", "EMU000000CO05R1", "EMU000000CO06R1", "EMU000000CO07R1", "EMU000000CO08R1", "EMU000000CO09R1", "EMU000000CO10R1", "EMU000000CO11R1", "EMU000000CO12R1", "EMU000000CO13R1", "EMU000000CO14R1", "EMU000000CO15R1"]
+usb_vendor_id = "32bb"
+usb_product_id = "0004"

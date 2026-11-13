@@ -87,6 +87,33 @@ jobs:
             dist/SHA256SUMS
           if-no-files-found: error
 
+  # compas-sdtool (Compás Tools, GPL-3.0): the HiBy R1 Compás player's own library code as a separate program,
+  # offered for download by the app; built per architecture with its licence notices and source revisions
+  sdtool:
+    needs: meta
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, os: ubuntu-24.04 }
+          - { arch: arm64, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake
+      - name: Build and verify compas-sdtool
+        run: JOBS=$(nproc) scripts/build-compas-sdtool.sh dist
+      - name: Licence notices (once)
+        if: matrix.arch == 'x86_64'
+        run: tar -C dist -czf dist/compas-sdtool-notices.tar.gz compas-sdtool-notices
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdtool-${{ matrix.arch }}
+          path: |
+            dist/compas-sdtool-linux-*
+            dist/compas-sdtool-notices.tar.gz
+          if-no-files-found: error
+
   docker:
     needs: meta
     runs-on: ubuntu-24.04
@@ -112,7 +139,7 @@ jobs:
             ${{ env.IMAGE }}:${{ needs.meta.outputs.prerelease == 'true' && 'beta' || 'latest' }}
 
   release:
-    needs: [meta, binaries, docker]
+    needs: [meta, binaries, sdtool, docker]
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
@@ -126,6 +153,13 @@ jobs:
         with:
           name: binaries
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sdtool-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums of compas-sdtool
+        run: cd dist && sha256sum compas-sdtool-* >> SHA256SUMS && cat SHA256SUMS
       - uses: actions/download-artifact@v4
         with:
           name: notes

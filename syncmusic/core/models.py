@@ -296,6 +296,8 @@ class Selection(BaseModel):
     excluded: dict[str, str] = {}
     playlists: list[DevicePlaylist] = []
     warnings: list[str] = []
+    # the media kinds the enabled rules sync, whatever the device plays (None = not known: every kind counts)
+    kinds: set[MediaKind] | None = None
 
     def refs(self) -> list[ItemRef]:
         return [ItemRef.parse(k) for k in self.items]
@@ -533,6 +535,9 @@ class AppSettings(BaseModel):
     # ffprobe next to it) and the nice level conversions run at
     ffmpeg_path: str | None = None
     convert_nice: int = Field(10, ge=0, le=19)
+    # Settings → Devices: compas-sdtool, which builds a HiBy R1 Compás player's library during the sync (None =
+    # looked for next to the SyncMusic binary, then in <data dir>/tools)
+    compas_sdtool_path: str | None = None
     # Settings → Maintenance: the app's log level at runtime; None = the configuration file's
     log_level: Literal["DEBUG", "INFO", "WARNING"] | None = None
     # Settings → Updates: which releases count as updates - stable releases only, or the pre-releases
@@ -575,6 +580,13 @@ class AppSettings(BaseModel):
     db_backup_every: Literal["off", "6h", "daily", "weekly"] = "daily"
     db_backup_keep: int = Field(7, ge=1, le=365)
     db_backup_dir: str | None = None
+    # Settings → Clients: Wi-Fi client apps may pair and sync (off: the client API answers nothing but an error
+    # and nothing is announced); the server announces itself on the LAN via mDNS; how long a pairing code is valid;
+    # how often a client asks whether a sync is due
+    clients_allowed: bool = False
+    clients_mdns: bool = True
+    client_code_minutes: int = Field(10, ge=1, le=60)
+    client_poll_s: int = Field(300, ge=30, le=86400)
 
     @field_validator("ffmpeg_path")
     @classmethod
@@ -584,6 +596,18 @@ class AppSettings(BaseModel):
             return None
         if not v.strip().rsplit("/", 1)[-1].startswith("ffmpeg"):
             raise ValueError("must be the path of an ffmpeg binary (a file named ffmpeg…)")
+        return v.strip()
+
+    @field_validator("compas_sdtool_path")
+    @classmethod
+    def _sdtool_name(cls, v: str | None) -> str | None:
+        """Only a compas-sdtool binary: the setting runs the file it names."""
+        if v is None or not v.strip():
+            return None
+        if not v.strip().rsplit("/", 1)[-1].startswith("compas-sdtool"):
+            raise ValueError(
+                "must be the path of a compas-sdtool binary (a file named compas-sdtool…)"
+            )
         return v.strip()
 
     @field_validator("webhook_url")
@@ -1129,6 +1153,8 @@ class PlaylistConflict(BaseModel):
 class SyncPlan(BaseModel):
     id: str
     device_id: str
+    # the media kinds the device's rules sync (Selection.kinds); a device keeps its own data of the others
+    synced_kinds: set[MediaKind] | None = None
     device_uid: str | None = (
         None  # DeviceIdentity.manifest_device_id of the writer (None: written before)
     )
@@ -1247,6 +1273,8 @@ class SyncReport(BaseModel):
     suggest_gentle: bool = False
     # what the run held back on purpose (an update's removals above the delete threshold)
     warnings: list[str] = []
+    # what the user should do on the player after unplugging (Compás: reload the plugins): eject and notification
+    player_notice: str = ""
     # items not written because their library stayed unreachable: planned again by the next sync, no
     # failures; `warnings` names the library
     postponed: int = 0

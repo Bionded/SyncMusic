@@ -31,6 +31,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
@@ -67,6 +68,7 @@ from syncmusic.infra.blockdev.mount import probe_read
 log = logging.getLogger(__name__)
 
 HIBY_USB_VENDOR = "32bb"
+COMPAS_USB_PRODUCT = "0004"  # the Compás firmware's storage gadget (SonixOS presents 0101)
 DB_DIR = ".local"
 VOLUME_PREFIX = "/mnt/sd_0/"  # how SonixOS names the volume in its databases
 FAVOURITES_STATE = (
@@ -424,9 +426,12 @@ class ListeningState:
     episodes: dict[str, tuple[str, str, float, float, bool]] = field(default_factory=dict)
 
 
-def write_listening_state(mount: Path, state: ListeningState, db_dir: Path | None = None) -> None:
+def write_listening_state(
+    mount: Path, state: ListeningState, db_dir: Path | None = None, skip: Collection[str] = ()
+) -> None:
     """PLAY_COUNTS, audiobook resume points / finished flags and PODCAST_EPISODES rows (key `f:` + path, like the
-    player's), each database in one transaction."""
+    player's), each database in one transaction; the databases in `skip` (kept as the player had them) are not
+    written."""
     d = db_dir or mount / DB_DIR
 
     def run(db: str, work: Any) -> None:
@@ -462,7 +467,10 @@ def write_listening_state(mount: Path, state: ListeningState, db_dir: Path | Non
                     (VOLUME_PREFIX + book, last or 0),
                 )
 
-    run("audiobooks.db", books)
+    if "audiobooks.db" not in skip:
+        run("audiobooks.db", books)
+    if "podcast.db" in skip:
+        return
     run(
         "podcast.db",
         lambda con: con.executemany(
@@ -843,18 +851,25 @@ def organize_rules(mount: Path, db_dir: Path | None = None) -> str | None:
     return str(row[0]) if row and row[0] else None
 
 
-def clear_index(mount: Path, rules: str | None = None, db_dir: Path | None = None) -> None:
+def clear_index(
+    mount: Path,
+    rules: str | None = None,
+    db_dir: Path | None = None,
+    keep: Collection[str] = (),
+) -> None:
     """Delete the player's index of the card (INDEX_FILES with their journals) and recreate empty databases; the
     player's ORGANIZE_STATE rules (`rules`, else the old database's) are carried over so our rebuilt index is filed
-    the player's way."""
+    the player's way. The databases named in `keep` (of a kind SyncMusic does not sync) stay as they are."""
     d = db_dir or mount / DB_DIR
     rules = rules or organize_rules(mount, db_dir)
     for name in INDEX_FILES:
+        if name in keep:
+            continue
         for f in (name, f"{name}-journal", f"{name}-wal", f"{name}-shm"):
             (d / f).unlink(missing_ok=True)
     d.mkdir(exist_ok=True)
     for name in SCHEMAS:
-        _create(d / name)
+        _create(d / name)  # CREATE TABLE IF NOT EXISTS: a kept database keeps its rows
     if rules:
         con = sqlite3.connect(d / "library.db", isolation_level=None)
         try:
@@ -906,6 +921,7 @@ class Hiby(FileDeviceMixin, Device):
     type_name = "hiby"
     display_name = "HiBy player (SonixOS)"
     owns_device_tree = True
+    firmware_siblings = ("hiby_compas",)
     # the player's own settings and caches stay; Wipe clears only its index of the card (`wipe`)
     WIPE_KEEP = (*FileDeviceMixin.WIPE_KEEP, DB_DIR, ".temp")
     Settings: ClassVar[type[BaseModel]] = HibySettings
@@ -963,7 +979,11 @@ class Hiby(FileDeviceMixin, Device):
             identity=DeviceIdentity(
                 usb_serial=blk.serial if blk else None, fs_uuid=data.uuid if data else None
             ),
-            confidence=80,  # above the flash drive (10), which takes any USB disk
+            # above the flash drive (10), which takes any USB disk; an unmounted R1 that presents the
+            # Compás gadget id is most likely running Compás (that class claims it at 85)
+            confidence=60
+            if mount is None and blk is not None and blk.usb_product_id == COMPAS_USB_PRODUCT
+            else 80,
             data_partition=data.path if data else None,
             details={"fstype": data.fstype if data else None},
         )
@@ -1255,6 +1275,22 @@ class Hiby(FileDeviceMixin, Device):
             ]
         return out
 
+    @staticmethod
+    def _kept_databases(s: DeviceSession) -> set[str]:
+        """The player's databases of the kinds this device's rules do not sync: a full sync leaves them as they are
+        (the player's own audiobooks, podcast subscriptions and positions)."""
+        kinds: set[MediaKind] | None = s.data.get("synced_kinds")
+        if kinds is None:
+            return set()
+        return {
+            db
+            for db, kind in (
+                ("audiobooks.db", MediaKind.AUDIOBOOK),
+                ("podcast.db", MediaKind.PODCAST),
+            )
+            if kind not in kinds
+        }
+
     async def _delete_databases(self, s: DeviceSession, manifest: Manifest) -> _Fresh | None:
         """Every commit: an unfinished transaction's journal is backed up and dropped, the
         library's star changes go onto the player's hearts (so the merged hearts are known), then library.db,
@@ -1264,6 +1300,7 @@ class Hiby(FileDeviceMixin, Device):
         player's). None (in-place update) only when the delete itself fails."""
         backup = self._backup_dir() / f"full-{dt.datetime.now(dt.UTC):%Y%m%dT%H%M%S%fZ}"
         d = self._db_dir or self.mount / DB_DIR
+        kept = self._kept_databases(s)
 
         def drop_journals() -> None:
             backup.mkdir(parents=True, exist_ok=True)
@@ -1283,7 +1320,7 @@ class Hiby(FileDeviceMixin, Device):
             for name in SCHEMAS:
                 if (d / name).is_file():
                     shutil.copy2(d / name, backup / name)
-            clear_index(self.mount, db_dir=self._db_dir)
+            clear_index(self.mount, db_dir=self._db_dir, keep=kept)
             old_db = backup / "library.db"
             return _Fresh(data=data, old_db=old_db if old_db.is_file() else None, playlists=tables)
 
@@ -1400,7 +1437,9 @@ class Hiby(FileDeviceMixin, Device):
         for folder, (file, pos, finished) in resume.items():
             state.books[file if book_files[folder] == 1 else folder] = (file, pos, finished, None)
         try:
-            await asyncio.to_thread(write_listening_state, self.mount, state, self._db_dir)
+            await asyncio.to_thread(
+                write_listening_state, self.mount, state, self._db_dir, self._kept_databases(s)
+            )
         except (OSError, sqlite3.Error) as e:
             self._warn(s, f"play counts and positions not written to the player: {e}")
 

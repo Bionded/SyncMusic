@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from syncmusic.infra.blockdev.guard import Allowlist, GuardError, check_target
-from syncmusic.infra.blockdev.identify import parse_lsblk
+from syncmusic.infra.blockdev.identify import BlockDeviceInfo, parse_lsblk
 
 DATA = Path(__file__).parent / "data" / "lsblk_pi5.json"
 HARDWARE = Path(__file__).parent / "data" / "allowlist_pi5.toml"
@@ -364,3 +364,27 @@ def test_missing_allowlist_file_refuses_every_disk(disks, tmp_path):
     player = SimpleNamespace(ctx=SimpleNamespace(guard=guard), s=SimpleNamespace(usb_serial="ANY"))
     with pytest.raises(GuardError, match="not in the device allowlist"):
         AndroidMtp._check_allowed(player)  # type: ignore[arg-type]
+
+
+def _usb_disk(serial: str | None, uuid: str | None) -> BlockDeviceInfo:
+    return BlockDeviceInfo(
+        name="sdz", path="/dev/sdz", type="disk", tran="usb", rm=True, serial=serial, uuid=uuid
+    )
+
+
+def test_generic_serial_needs_the_entry_fs_uuid_too(tmp_path):
+    toml = tmp_path / "hw.toml"
+    toml.write_text(
+        '[player]\nusb_serial = "HiBy_R1"\nfs_uuid = "AAAA-0001"\n'
+        '[ipod]\nusb_serial = "000A27000000F00D"\nfs_uuid = "BBBB-0002"\n'
+        '[loose]\nusb_serial = "HiBy_R1"\n'
+    )
+    allow = Allowlist.load(toml)
+    assert "HiBy_R1" not in allow.serials
+    assert allow.allows(*[_usb_disk("HiBy_R1", "AAAA-0001")] * 2)
+    # the same model with another (e.g. reformatted) card is refused, even though the serial is listed
+    assert not allow.allows(*[_usb_disk("HiBy_R1", "CCCC-0003")] * 2)
+    # the UUID of a generic-serial entry does not match on a disk with another serial
+    assert not allow.allows(*[_usb_disk("OTHER", "AAAA-0001")] * 2)
+    # unique serials keep matching alone (an iPod's data partition UUID changes on every format)
+    assert allow.allows(*[_usb_disk("000A27000000F00D", "DDDD-0004")] * 2)

@@ -39,8 +39,12 @@ FIELDS = frozenset(
         "chapter",
         "date",
         "episode_code",
+        "library_path",
     }
 )
+# {library_path}: the file's path in its library without the extension (folders kept); a track whose library
+# does not know its path falls back to the default template of its kind
+LIBRARY_PATH = "{library_path}"
 INT_FIELDS = frozenset({"year", "disc", "disc_total", "track", "chapter"})
 RESERVED = frozenset(
     {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
@@ -283,6 +287,12 @@ def fit_path(parts: list[str], rules: PathRules) -> list[str]:
 def render(track: Track, ext: str, rules: PathRules, layout: PathLayout | None = None) -> str:
     """Relative POSIX path of `track` on the device (not yet de-duplicated, see `unique`)."""
     tpl = (layout or PathLayout()).template(track.kind, track.disc_total)
+    if LIBRARY_PATH in tpl:
+        lib = str(PurePosixPath(track.path).with_suffix("")) if track.path else ""
+        if lib.strip("/. "):
+            tpl = tpl.replace(LIBRARY_PATH, lib.replace("{", "{{").replace("}", "}}"))
+        else:
+            tpl = PathLayout().template(track.kind, track.disc_total)
     values = _values(track)
     raw = [c for c in tpl.split("/") if c.strip()]
     parts: list[str] = []
@@ -300,6 +310,8 @@ def render(track: Track, ext: str, rules: PathRules, layout: PathLayout | None =
 def playlist_path(
     name: str, rules: PathRules, folder: str = PLAYLIST_DIR, ext: str = ".m3u8"
 ) -> str:
+    if ":" in rules.forbidden_chars:  # "Rock: 80s" reads better as "Rock - 80s" than "Rock_ 80s"
+        name = re.sub(r"\s*:\s*", " - ", name).strip(" -") or name
     comp = sanitize_component(f"{name}{ext}", rules, has_ext=True)
     return f"{folder}/{comp}"
 

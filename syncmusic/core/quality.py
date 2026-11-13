@@ -28,18 +28,23 @@ WEAK_COVER_PX = 300
 
 def _transcode(profile: Profile, caps: DeviceCapabilities) -> dict[str, Any] | None:
     fmts = caps.formats
+    no_limit = not fmts  # an empty format set means the device plays every format
+
+    def plays(f: str) -> bool:
+        return no_limit or f in fmts
+
     lossy_target = "aac" if "aac" in fmts else "mp3"
     if profile == "max":
         lossless_target = next((f for f in ("flac", "alac") if f in fmts), "mp3")
         q_lossless = {} if lossless_target != "mp3" else {"bitrate_kbps": 320}
         rules = [
             {
-                "from": [f for f in LOSSLESS_SOURCES if f not in fmts],
+                "from": [f for f in LOSSLESS_SOURCES if not plays(f)],
                 "to": lossless_target,
                 "quality": q_lossless,
             },
             {
-                "from": [f for f in LOSSY_SOURCES if f not in fmts],
+                "from": [f for f in LOSSY_SOURCES if not plays(f)],
                 "to": lossy_target,
                 "quality": {"bitrate_kbps": 256 if lossy_target == "aac" else 320},
             },
@@ -47,10 +52,10 @@ def _transcode(profile: Profile, caps: DeviceCapabilities) -> dict[str, Any] | N
         rules = [r for r in rules if r["from"]]
         return {"rules": rules} if rules else None
     if profile == "space":
-        target = "mp3" if "mp3" in fmts else lossy_target
+        target = "mp3" if plays("mp3") else lossy_target
         vbr = {"vbr": 2} if target == "mp3" else {"vbr": 4}
         rules = [{"from": LOSSLESS_SOURCES, "to": target, "when": "always", "quality": vbr}]
-        unplayable = [f for f in LOSSY_SOURCES if f not in fmts]
+        unplayable = [f for f in LOSSY_SOURCES if not plays(f)]
         if unplayable:
             rules.append({"from": unplayable, "to": target, "quality": vbr})
         return {"rules": rules}

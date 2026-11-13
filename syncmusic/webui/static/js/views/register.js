@@ -41,6 +41,14 @@ addStrings({
   "reg.step_device": "1 · Device",
   "reg.step_what": "2 · What goes on it",
   "reg.step_procs": "3 · Processors",
+  "reg.purpose": "What is this disk for?",
+  "reg.purpose.player": "A player or car stick",
+  "reg.purpose.player_text": "Files in the formats the player plays, with the processing you choose below.",
+  "reg.purpose.backup": "A backup",
+  "reg.purpose.backup_text": "The library files as they are: every format, no processing, checked after writing. Nothing is deleted unless you switch the rules to Mirror later.",
+  "reg.base_folder": "Folder on the disk",
+  "reg.base_folder_help": "Everything goes into this folder; empty: the disk's top level. A new folder is created by the first sync.",
+  "reg.backup_procs": "A backup keeps the files as they are: no processing. You can add steps later in the device's Processors tab.",
   "reg.none_selected": "None selected",
   "reg.n_selected": "{n} selected",
   "reg.what_help": "Nothing is preselected. Templates can be changed any time under Device → Templates.",
@@ -88,6 +96,20 @@ addStrings({
   "reg.cont.keep": "Keep files",
   "reg.cont.keep_text": "Registers it as a new device; the items already on it are treated as files SyncMusic did not put there.",
   "reg.submit": "Register",
+  "reg.step_summary": "5 · Summary",
+  "reg.next": "Next",
+  "reg.back": "Back",
+  "reg.all_steps": "Show all steps on one page",
+  "reg.one_step": "Step by step",
+  "reg.sum.device": "Device",
+  "reg.sum.type": "Type",
+  "reg.sum.purpose": "Purpose",
+  "reg.sum.folder": "Folder on the disk",
+  "reg.sum.what": "What goes on it",
+  "reg.sum.procs": "Processing",
+  "reg.sum.first": "First sync",
+  "reg.sum.none": "—",
+  "reg.sum.as_is": "As is (backup)",
   "reg.missing": "Pick a drive or a folder and give the device a name.",
   "reg.choose": "Choose a template…",
   "reg.choose_copy": "Tick the templates to copy first.",
@@ -111,7 +133,7 @@ export async function render(ctx) {
     get("/library-types"), get("/processor-types"), get("/settings").catch(() => null),
   ]);
   ctx.state.procNames = Object.fromEntries(procTypes.map((p) => [p.type, p.display_name])); // step names
-  ctx.state.types = types;
+  ctx.state.types = types.filter((x) => !x.paired); // Wi-Fi clients come from pairing
   Object.assign(ctx.state, { libraries, templates, libTypes });
   ctx.state.procTemplates = procTemplates;
   ctx.state.unknown = devices.unknown;
@@ -122,8 +144,9 @@ export async function render(ctx) {
   return html`<div class="ed-head reg-head"><a class="iconbtn" href="#/devices" aria-label="${t("nav.devices")}" title="${t("nav.devices")}">${icon("left", { size: 18 })}</a>
       <div><h1>${t("reg.title")}</h1><div class="reg-drive ${selected ? "mono" : ""}" data-reg-drive>${driveLine(selected) || t("reg.sub")}</div></div></div>
     ${gone}
+    <ol class="reg-steps" data-reg-steps>${STEPS.map((k, i) => html`<li><button type="button" data-reg-goto="${i}">${t(`reg.${k}`)}</button></li>`)}</ol>
     <form class="grid" data-action="register" data-change="regChanged" style="max-width:860px">
-      <div class="card"><div class="card-head"><h2>${t("reg.step_device")}</h2></div><div class="card-body">
+      <div class="card" data-step="0"><div class="card-head"><h2>${t("reg.step_device")}</h2></div><div class="card-body">
         <fieldset style="border:0;padding:0;margin:0"><legend class="sr">${t("reg.disks")}</legend>
         ${devices.unknown.length ? devices.unknown.map((u) => diskChoice(u, ctx.state.selected === u.disk)) : html`<div class="callout">${t("reg.no_disks")}</div>`}
         <label class="row" style="cursor:pointer"><input type="radio" name="target" value="" ${ctx.state.selected ? "" : "checked"}>
@@ -133,23 +156,26 @@ export async function render(ctx) {
         </fieldset>
         <div class="field ${ctx.state.selected ? "hide" : ""}" id="regFolder"><label for="regPath">${t("reg.folder_path")}</label><input id="regPath" placeholder="/media/user/MYDRIVE"></div>
         <div id="regDetails">${details(ctx, selected)}</div>
+        <div id="regPurpose">${purposeFields(ctx)}</div>
         <div class="hide" id="regNetwork"></div>
       </div></div>
-      <div class="card"><div class="card-head"><h2>${t("reg.step_what")}</h2><span class="muted" data-reg-count>${t("reg.none_selected")}</span></div><div class="card-body">
+      <div class="card" data-step="1"><div class="card-head"><h2>${t("reg.step_what")}</h2><span class="muted" data-reg-count>${t("reg.none_selected")}</span></div><div class="card-body">
         <p class="muted" style="margin-top:0">${t("reg.what_help")}</p>
         <div id="regTemplates">${templateChips(ctx)}</div>
         <label class="checkrow reg-copy"><input type="checkbox" id="regCopy"> <span>${t("reg.copy")}<small class="muted" style="display:block">${t("reg.copy_help")}</small></span></label>
       </div></div>
-      <div class="card"><div class="card-head"><h2>${t("reg.step_procs")}</h2></div><div class="card-body"><div id="regProcs">${processors(ctx)}</div>
+      <div class="card" data-step="2"><div class="card-head"><h2>${t("reg.step_procs")}</h2></div><div class="card-body"><p class="muted" id="regBackupProcs" hidden>${t("reg.backup_procs")}</p><div id="regProcs">${processors(ctx)}</div>
         ${appSettings ? html`<p class="hint" data-reg-cache>${t(appSettings.default_no_cache ? "reg.cache_without" : "reg.cache_with")}</p>
           <p class="hint" data-reg-update>${appSettings.default_update_every_min ? t("reg.update_every", { n: appSettings.default_update_every_min }) : t("reg.update_none")}</p>` : ""}</div></div>
-      <div class="card"><div class="card-head"><h2>${t("reg.step_first")}</h2></div><div class="card-body">
+      <div class="card" data-step="3"><div class="card-head"><h2>${t("reg.step_first")}</h2></div><div class="card-body">
         <div id="regContinuity" hidden></div>
         <div id="regFirst"><p class="muted" style="margin-top:0">${t("reg.first_help")}</p>
         <div class="reg-opts" role="radiogroup" aria-label="${t("reg.step_first")}">${FIRST.map((v) => html`<label class="reg-opt"><input type="radio" name="firstSync" value="${v}" ${v === "keep" ? "checked" : ""}>
           <span><b>${t(`reg.first.${v}`)}</b><small>${t(`reg.first.${v}_text`)}</small></span></label>`)}</div></div>
         <div id="regFormatRow" ${formatOffered(ctx) ? "" : "hidden"}>${formatRow(ctx)}</div></div></div>
-      <div class="reg-actions"><a class="btn" href="#/devices">${t("common.cancel")}</a><button class="btn primary" type="submit">${t("reg.submit")}</button></div>
+      <div class="card" data-step="4" data-reg-summary-card><div class="card-head"><h2>${t("reg.step_summary")}</h2></div><div class="card-body"><dl class="reg-summary" id="regSummary"></dl></div></div>
+      <div class="reg-actions"><button class="btn ghost reg-all" type="button" data-reg-all>${t("reg.all_steps")}</button><span class="grow"></span><a class="btn" href="#/devices">${t("common.cancel")}</a>
+        <button class="btn" type="button" data-reg-back>${t("reg.back")}</button><button class="btn primary" type="button" data-reg-next>${t("reg.next")}</button><button class="btn primary" type="submit">${t("reg.submit")}</button></div>
     </form>`;
 }
 
@@ -207,6 +233,7 @@ function diskChoice(u, checked) {
 // "Add FTP device" on the Devices list opens this screen with the server choice made
 export function mounted(ctx, root) {
   const form = root.querySelector("form") || root;
+  if (form.matches?.('form[data-action="register"]')) wizard(root, form, ctx);
   if (form.querySelector?.("#regSuggest")) suggestProcs(form, ctx);
   if (form.querySelector?.("#regContinuity")) peekChanged(form, ctx);
   loadStorages(form);
@@ -218,6 +245,100 @@ export function mounted(ctx, root) {
 }
 
 const NETWORK = "network:"; // the "A server" choice of the target radios
+
+// Step by step: one card at a time (Back / Next, Enter = Next), a summary last; nothing is saved before Register.
+// "Show all steps on one page" (remembered in this browser) gives the single-page form with every field at once.
+const STEPS = ["step_device", "step_what", "step_procs", "step_first", "step_summary"];
+const ALL_KEY = "sm.regSteps";
+
+function wizard(root, form, ctx) {
+  const cards = [...form.querySelectorAll("[data-step]")];
+  const nav = root.querySelector("[data-reg-steps]");
+  const back = form.querySelector("[data-reg-back]");
+  const next = form.querySelector("[data-reg-next]");
+  const submit = form.querySelector('button[type="submit"]');
+  const toggle = form.querySelector("[data-reg-all]");
+  let step = 0;
+  const all = () => localStorage.getItem(ALL_KEY) === "all";
+  const show = () => {
+    const one = !all();
+    form.classList.toggle("reg-wizard", one);
+    nav.hidden = !one;
+    toggle.textContent = t(one ? "reg.all_steps" : "reg.one_step");
+    cards.forEach((c, i) => { c.hidden = one && i !== step; });
+    form.querySelector("[data-reg-summary-card]").hidden = !one || step !== cards.length - 1;
+    back.hidden = !one || step === 0;
+    next.hidden = !one || step === cards.length - 1;
+    submit.hidden = one && step !== cards.length - 1;
+    nav.querySelectorAll("[data-reg-goto]").forEach((b, i) => {
+      b.setAttribute("aria-current", i === step ? "step" : "false");
+      b.disabled = i > step;
+    });
+    if (one && step === cards.length - 1) setHtml(form.querySelector("#regSummary"), summary(form, ctx));
+  };
+  // the fields of the shown step must be valid before the next one (the browser shows what is wrong)
+  const valid = () => {
+    if (![...cards[step].querySelectorAll("input, select, textarea")].every((el) => el.closest("[hidden], .hide") || el.reportValidity())) return false;
+    const procs = cards[step].querySelector("#regProcs");
+    if (procs && !procs.hidden && !procsChosen(form)) { toast(t("reg.choose_procs"), "error"); return false; }
+    return true;
+  };
+  const go = (to) => {
+    if (to > step && !valid()) return;
+    step = Math.max(0, Math.min(cards.length - 1, to));
+    show();
+    cards[step].querySelector("input:not([type=hidden]), select, button")?.focus({ preventScroll: true });
+    cards[step].scrollIntoView?.({ block: "nearest" });
+  };
+  next.addEventListener("click", () => go(step + 1));
+  back.addEventListener("click", () => go(step - 1));
+  nav.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-reg-goto]");
+    if (b && !b.disabled) go(Number(b.dataset.regGoto));
+  });
+  toggle.addEventListener("click", () => {
+    localStorage.setItem(ALL_KEY, all() ? "steps" : "all");
+    show();
+  });
+  form.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || !form.classList.contains("reg-wizard") || step === cards.length - 1) return;
+    if (e.target.matches("textarea, button, a")) return;
+    e.preventDefault();
+    go(step + 1);
+  });
+  show();
+}
+
+/** A processor choice is made (a backup needs none: its card hides the choice). */
+function procsChosen(form) {
+  const mode = form.querySelector('input[name="procMode"]:checked')?.value;
+  return !!mode && !(mode === "template" && !form.querySelector("#regProcTemplate")?.value);
+}
+
+/** What Register will create, from the form as it is now. */
+function summary(form, ctx) {
+  const val = (sel) => form.querySelector(sel)?.value?.trim() || "";
+  const checked = (name) => form.querySelector(`input[name="${name}"]:checked`);
+  const label = (input) => input?.closest("label")?.querySelector("b")?.textContent || input?.closest("label")?.textContent?.trim() || "";
+  const type = ctx.state.types.find((x) => x.type === ctx.state.type);
+  const backup = checked("regPurpose")?.value === "backup";
+  const tpls = ctx.state.templates.filter((tp) => ctx.state.picked?.has(tp.id)).map((tp) => tp.name);
+  const target = ctx.state.selected === NETWORK ? t("reg.network") : ctx.state.selected || val("#regPath");
+  const mode = checked("procMode");
+  const procs = backup ? t("reg.sum.as_is")
+    : mode?.value === "template" ? form.querySelector("#regProcTemplate")?.selectedOptions?.[0]?.textContent || ""
+    : [...form.querySelectorAll('input[name="proc"]:checked')].map((x) => x.parentElement.textContent.trim()).join(", ");
+  const rows = [
+    ["reg.sum.device", [val("#regName"), target].filter(Boolean).join(" · ")],
+    ["reg.sum.type", type?.display_name || ctx.state.type],
+    checked("regPurpose") ? ["reg.sum.purpose", label(checked("regPurpose"))] : null,
+    form.querySelector("#regBaseFolder") ? ["reg.sum.folder", val("#regBaseFolder") || "/"] : null,
+    ["reg.sum.what", tpls.join(", ")],
+    ["reg.sum.procs", procs],
+    ["reg.sum.first", label(checked("continuity") || checked("firstSync"))],
+  ].filter(Boolean);
+  return html`${rows.map(([k, v]) => html`<dt>${t(k)}</dt><dd>${v || t("reg.sum.none")}</dd>`)}`;
+}
 
 function networkTypes(ctx) {
   // real servers first (FTP is the default choice), the Android player (MTP, no server) last
@@ -268,6 +389,26 @@ function details(ctx, unknown) {
         ${typeIcon(k, "device", 22)}<span>${n}${betaBadge(k)}</span></label>`)}</fieldset>
     <div class="field"><label for="regName">${t("reg.name")} *</label><input id="regName" required value="${probe?.suggested_name || ""}" autocomplete="off"></div>
     ${unknown?.mtp ? mtpFields(unknown) : ""}`;
+}
+
+/** A USB disk or folder registered as a flash drive: what it is for (player / backup) and the folder on it. */
+function purposeFields(ctx) {
+  if (ctx.state.type !== "flashdrive" || ctx.state.selected === NETWORK) return "";
+  return html`<div data-pick-form data-disk="${ctx.state.selected || ""}"><fieldset class="reg-opts reg-purpose"><legend>${t("reg.purpose")}</legend>
+    ${["player", "backup"].map((v) => html`<label class="reg-opt"><input type="radio" name="regPurpose" value="${v}" ${v === "player" ? "checked" : ""}>
+      <span><b>${t(`reg.purpose.${v}`)}</b><small>${t(`reg.purpose.${v}_text`)}</small></span></label>`)}</fieldset>
+    <div class="field"><label for="regBaseFolder">${t("reg.base_folder")}</label><input id="regBaseFolder" value="" autocomplete="off" placeholder="/">
+      ${pickerButton("dev-disk")}<p class="hint">${t("reg.base_folder_help")}</p></div></div>`;
+}
+
+/** Backup: no processing to choose (the processors card says so); the folder defaults to SyncMusic. */
+function purposeChanged(form) {
+  const backup = form.querySelector('input[name="regPurpose"]:checked')?.value === "backup";
+  form.querySelector("#regBackupProcs").hidden = !backup;
+  form.querySelector("#regProcs").hidden = backup;
+  const base = form.querySelector("#regBaseFolder");
+  if (base && backup && !base.value.trim()) base.value = "SyncMusic";
+  if (base && !backup && base.value.trim() === "SyncMusic") base.value = "";
 }
 
 /** A found Android player: its serial (the identity, read-only), the storage from the player and
@@ -441,6 +582,8 @@ export const actions = {
       const typed = form.querySelector("#regName")?.value;
       ctx.state.type = "";
       form.querySelector("#regDetails").innerHTML = String(details(ctx, unknown));
+      form.querySelector("#regPurpose").innerHTML = String(purposeFields(ctx));
+      purposeChanged(form);
       if (typed && !unknown) form.querySelector("#regName").value = typed;
       form.querySelector("#regProcs").innerHTML = String(processors(ctx));
       form.querySelector("#regTemplates").innerHTML = String(templateChips(ctx));
@@ -471,8 +614,12 @@ export const actions = {
       ctx.state.procTouched = true;
       const current = form.querySelector('input[name="procMode"]:checked')?.value;
       if (e.target.value && current !== "new") form.querySelector('input[name="procMode"][value="template"]').checked = true;
+    } else if (e.target.name === "regPurpose") {
+      purposeChanged(form);
     } else if (e.target.name === "regType") {
       ctx.state.type = e.target.value;
+      form.querySelector("#regPurpose").innerHTML = String(purposeFields(ctx));
+      purposeChanged(form);
       form.querySelector("#regProcs").innerHTML = String(processors(ctx));
       form.querySelector("#regTemplates").innerHTML = String(templateChips(ctx));
       countPicked(form, ctx);
@@ -513,9 +660,15 @@ export const actions = {
     const picked = [...ctx.state.picked];
     const copy = form.querySelector("#regCopy").checked;
     if (copy && !picked.length) { toast(t("reg.choose_copy"), "error"); return; }
+    const purpose = form.querySelector('input[name="regPurpose"]:checked')?.value;
+    if (purpose) { // a flash drive: what it is for and the folder on it
+      const base = form.querySelector("#regBaseFolder").value.trim().replace(/^\/+|\/+$/g, "");
+      settings = { ...(settings || {}), purpose, base_folder: base };
+    }
+    const backup = purpose === "backup"; // the server sets a backup's processing (none)
     const procMode = form.querySelector('input[name="procMode"]:checked')?.value;
     // no preselection: the processors are a choice; no template ticked = none yet
-    if (!procMode || (procMode === "template" && !form.querySelector("#regProcTemplate").value)) {
+    if (!backup && !procsChosen(form)) {
       toast(t("reg.choose_procs"), "error"); return;
     }
     const chosen = new Set([...form.querySelectorAll('input[name="proc"]:checked')].map((x) => Number(x.value)));
@@ -537,19 +690,19 @@ export const actions = {
         const merged = { name, library_ids: libs, rules: drafts.flatMap((d) => d.rules), excludes: drafts.flatMap((d) => d.excludes) };
         templateIds = [(await post("/templates", merged)).id];
       }
-      let procTemplate = procMode === "template" ? form.querySelector("#regProcTemplate").value : null;
+      let procTemplate = !backup && procMode === "template" ? form.querySelector("#regProcTemplate").value : null;
       if (procTemplate === "__draft__") { // the generated chain is stored only now
         procTemplate = (await post("/processor-templates", ctx.state.draft)).id;
       }
-      if (procMode === "new") {
+      if (!backup && procMode === "new") {
         procTemplate = (await post("/processor-templates", { name, device_type: type, processors: slots })).id;
       }
       cfg = await post("/devices/register", {
         name,
         type,
         rule_set: { template_ids: templateIds },
-        ...(procTemplate ? { processor_template_id: procTemplate } : { processors: slots }),
-        ...(network ? { settings } : disk ? { disk, ...(settings ? { settings } : {}) } : { mount_path: path }),
+        ...(backup ? {} : procTemplate ? { processor_template_id: procTemplate } : { processors: slots }),
+        ...(network ? { settings } : disk ? { disk, ...(settings ? { settings } : {}) } : { mount_path: path, ...(settings ? { settings } : {}) }),
         ...(ctx.state.peek
           ? { continuity: form.querySelector('input[name="continuity"]:checked')?.value || "continue" }
           : { first_sync_choice: form.querySelector('input[name="firstSync"]:checked')?.value || null }),

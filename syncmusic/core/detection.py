@@ -39,6 +39,9 @@ class ConnectedDisk:
     probes: list[ProbeResult] = field(default_factory=list)
     data_partition: str | None = None  # /dev path to mount
     mountpoint: Path | None = None  # existing mount of the data partition (automount), if any
+    firmware_switch: str | None = (
+        None  # a sibling type that now claims the disk better (player reflashed)
+    )
 
 
 def _nodes(disk: BlockDeviceInfo) -> list[BlockDeviceInfo]:
@@ -120,6 +123,27 @@ def probe_disk(disk: BlockDeviceInfo, mount: Path | None = None) -> list[ProbeRe
         if r is not None:
             results.append(r)
     return sorted(results, key=lambda r: -r.confidence)
+
+
+def firmware_switch(
+    type_name: str, own: ProbeResult | None, disk: BlockDeviceInfo, mount: Path | None
+) -> str | None:
+    """The sibling type (`firmware_siblings`, e.g. the same player with another firmware) whose probe claims
+    the disk with a higher confidence than the registered type's own probe; None when the type still fits."""
+    try:
+        siblings = registry.device_class(type_name).firmware_siblings
+    except Exception:  # noqa: BLE001 - unknown type
+        return None
+    best, name = own.confidence if own else 0, None
+    for sibling in siblings:
+        try:
+            r = registry.device_class(sibling).probe(disk, mount)
+        except Exception:  # noqa: BLE001 - a buggy probe must not break matching
+            log.debug("probe of %s as %s failed", disk.path, sibling, exc_info=True)
+            continue
+        if r is not None and r.confidence > best:
+            best, name = r.confidence, sibling
+    return name
 
 
 def data_partition(disk: BlockDeviceInfo, probe: ProbeResult | None) -> str | None:
@@ -210,10 +234,11 @@ class Detector:
             except Exception:  # noqa: BLE001 - unknown type / probe error: fall back to partitions
                 log.debug("probe of %s as %s failed", disk.path, cfg.type, exc_info=True)
             cd.device_id, cd.matched_by = cfg.id, how
+            cd.firmware_switch = firmware_switch(cfg.type, cls_probe, disk, mount)
             cd.probes = [cls_probe] if cls_probe else []
             cd.data_partition = data_partition(disk, cls_probe)
         else:
-            cd.device_id, cd.matched_by = None, None
+            cd.device_id, cd.matched_by, cd.firmware_switch = None, None, None
             cd.probes = mounted_probes or probe_disk(disk, mount)
             cd.data_partition = data_partition(disk, cd.probes[0] if cd.probes else None)
 

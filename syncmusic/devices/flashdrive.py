@@ -36,7 +36,11 @@ APPLE_USB_VENDOR = (
 class FlashDriveSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    formats: set[str] = {"mp3", "aac", "flac", "ogg", "opus", "wav"}
+    # playable formats; empty = no limit (a backup disk, or a player that plays what the library has)
+    formats: set[str] = set()
+    # what the disk is for: a player or car stick, or a backup that keeps the library files as they are
+    # (the Register flow sets no processors, additive mode and a base folder for a backup)
+    purpose: Literal["player", "backup"] = "player"
     layout: PathLayout = PathLayout()
     # the folder on the stick the path templates start in; "" = the stick's root. A change moves
     # the files on the next sync
@@ -65,7 +69,7 @@ class FlashDrive(FileDeviceMixin, Device):
     display_name = "USB flash drive"
     Settings: ClassVar[type[BaseModel]] = FlashDriveSettings
     capabilities: ClassVar[DeviceCapabilities] = DeviceCapabilities(
-        formats={"mp3", "aac", "flac", "ogg", "opus", "wav"},
+        formats=set(),  # no limit unless the settings name formats
         supports_podcasts=True,
         supports_audiobooks=True,
         supports_video=True,  # copied as they are: a player decides what it plays

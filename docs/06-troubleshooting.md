@@ -58,6 +58,11 @@ Files on the device whose source is gone from its library (or whose library was 
 By default items deleted from their library are removed by the next sync; others stay until you remove them on
 *Player contents → Orphans*.
 
+When a library server was reinstalled or its library re-created, the same files come back under new ids. SyncMusic
+re-links the items on the device to them (same title, artist, album, track number and length) instead of copying them
+again; the plan says "re-linked N items", and listening data read from the device goes to the new ids. Items that
+fit more than one library item are left as orphans.
+
 ![Player contents](img/device-contents.png)
 
 ## The sync stopped with "unmounted during the sync"

@@ -121,6 +121,15 @@ def test_a_released_database_upgrades_to_the_fresh_schema_with_its_data(tmp_path
 
             store = Store(d)
             assert [x.name for x in await store.devices()] == ["Test stick"]
+            # a stick from before keeps the formats it was synced with (new disks have no limit)
+            assert set((await store.devices())[0].settings["formats"]) == {
+                "aac",
+                "flac",
+                "mp3",
+                "ogg",
+                "opus",
+                "wav",
+            }
             assert [x.name for x in await store.libraries()] == ["Test music"]
             assert (await store.app_settings()).cache_max_gb == 7.5
             rows = await d.fetchall("SELECT kind, job_id FROM device_health ORDER BY id")

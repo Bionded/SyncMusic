@@ -192,7 +192,9 @@ def test_unique_suffix_respects_name_length():
 
 
 def test_playlist_path():
-    assert playlist_path("Мій: улюблене", VFAT) == "Playlists/Мій_ улюблене.m3u8"
+    assert playlist_path("Мій: улюблене", VFAT) == "Playlists/Мій - улюблене.m3u8"
+    assert playlist_path("Рок:80-ті", VFAT, ext=".m3u") == "Playlists/Рок - 80-ті.m3u"
+    assert playlist_path(":", VFAT) == "Playlists/_.m3u8"
 
 
 def test_video_without_series_goes_straight_into_videos():
@@ -268,3 +270,15 @@ def test_spill_into_numbered_folders():
     assert paths.spill(rel, full, 1, VFAT) == rel  # no limit
     short = rules.model_copy(update={"max_name_len": 8})
     assert paths.spill("M/Abcdefgh/x.mp3", {"m/abcdefgh": 3}, 1, short) == "M/Abcd (2)/x.mp3"
+
+
+def test_library_path_keeps_the_library_folder_structure() -> None:
+    layout = paths.PathLayout(music="{library_path}", music_multi_disc="{library_path}")
+    t = track("t1", path="Rock/Гурт {X}/01 Song.flac", title="Song")
+    assert paths.render(t, "flac", PathRules(), layout) == "Rock/Гурт {X}/01 Song.flac"
+
+
+def test_library_path_falls_back_to_the_default_layout_when_the_library_has_no_path() -> None:
+    layout = paths.PathLayout(music="{library_path}", music_multi_disc="{library_path}")
+    t = track("t1", title="Song", artist="A", album_artist="A", album="B", year=2020)
+    assert paths.render(t, "mp3", PathRules(), layout) == paths.render(t, "mp3", PathRules())

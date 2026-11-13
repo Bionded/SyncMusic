@@ -138,13 +138,13 @@ async def test_playlists_m3u8_relative(tmp_path):
     m = _manifest(dev, [(a, ra), (b, rb)])
     m.playlists = ["Мій: топ"]
     await dev.commit(s, m)
-    text = (dev.mount / "Playlists" / "Мій_ топ.m3u8").read_text(encoding="utf-8")
+    text = (dev.mount / "Playlists" / "Мій - топ.m3u8").read_text(encoding="utf-8")
     assert text.splitlines() == ["#EXTM3U", f"../{rb.path}", f"../{ra.path}"]
     assert (dev.mount / "Playlists" / f"../{ra.path}").resolve().is_file()
-    assert (await dev.read_contents()).playlists == ["Мій_ топ"]
+    assert (await dev.read_contents()).playlists == ["Мій - топ"]
     s = await dev.begin()
     await dev.set_playlists(s, [])
-    assert not (dev.mount / "Playlists" / "Мій_ топ.m3u8").exists()
+    assert not (dev.mount / "Playlists" / "Мій - топ.m3u8").exists()
 
 
 async def test_fat_file_size_limit(tmp_path):
@@ -445,3 +445,19 @@ async def test_capabilities_resolved_once_per_session(tmp_path, monkeypatch):
     s2 = await car.begin()
     ref = await car.put_track(s2, _item(tmp_path, "Ґанок"))
     assert ref.path.isascii()
+
+
+def test_a_new_disk_has_no_format_limit(tmp_path):
+    assert _dev(tmp_path).effective_capabilities().formats == set()
+    assert _dev(tmp_path, purpose="backup").effective_capabilities().formats == set()
+
+
+def test_stored_formats_still_limit(tmp_path):
+    caps = _dev(tmp_path, formats=["mp3", "aac"]).effective_capabilities()
+    assert caps.formats == {"mp3", "aac"}
+
+
+def test_purpose_is_player_or_backup(tmp_path):
+    assert _dev(tmp_path).s.purpose == "player"
+    with pytest.raises(ValueError):
+        _dev(tmp_path, purpose="radio")

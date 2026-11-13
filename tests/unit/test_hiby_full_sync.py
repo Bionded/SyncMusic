@@ -335,3 +335,36 @@ async def test_full_sync_of_an_emptied_favourites_table_writes_the_librarys_hear
     assert s.data["commit_counts"]["device_hearts"] == 1
     fb = await dev.read_feedback(m)
     assert not fb.stars
+
+
+@pytest.mark.parametrize(
+    ("synced", "kept"),
+    [
+        ({MediaKind.MUSIC}, True),
+        ({MediaKind.MUSIC, MediaKind.AUDIOBOOK, MediaKind.PODCAST}, False),
+        (None, False),
+    ],
+)
+async def test_full_sync_keeps_the_players_databases_of_kinds_not_synced(tmp_path, synced, kept):
+    """Rules that sync only music: the player's own podcast subscriptions/episodes and audiobooks stay as they
+    were; once the device syncs those kinds, the full sync writes their databases anew as before."""
+    dev = _dev(tmp_path)
+    m, _ = await _music(dev, tmp_path, ["Зірка"])
+    sub = "INSERT INTO PODCAST_SUBS(url, title) VALUES ('https://example.org/feed.xml', 'Шоу')"
+    hiby_sql(
+        dev.mount,
+        "podcast.db",
+        sub,
+        "INSERT INTO PODCAST_EPISODES(key, path, title, show, position, duration, played, touched)"
+        " VALUES ('f:Podcast/Шоу/1.mp3', 'Podcast/Шоу/1.mp3', 'Епізод', 'Шоу', 30, 60, 0, 1)",
+    )
+    s = await dev.begin()
+    s.manifest = m
+    s.data.update(reverse_ok=True, library_tracks={}, library_starred={}, synced_kinds=synced)
+    await dev.commit(s, m)
+    subs = _q(dev, "podcast.db", "SELECT title FROM PODCAST_SUBS")
+    episodes = _q(dev, "podcast.db", "SELECT position FROM PODCAST_EPISODES")
+    assert (subs, episodes) == (([("Шоу",)], [(30,)]) if kept else ([], []))
+    assert (
+        len(_q(dev, "library.db", "SELECT path FROM MEDIA_TABLE")) == 1
+    )  # music rebuilt either way

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from syncmusic.base.feedback import FeedbackRejected
 from syncmusic.core.models import (
     DeviceConfig,
@@ -15,9 +17,10 @@ from syncmusic.core.models import (
     SyncPlan,
 )
 from syncmusic.core.playlist_reverse import playlists_after_reverse, push_playlists
+from syncmusic.devices.HibyR1.compas import HibyCompas
 from syncmusic.devices.HibyR1.sonixos import Hiby
 from syncmusic.devices.Rockbox.rockbox import Rockbox
-from tests.contracts.harness import hiby_sql, hiby_tree, rockbox_tree
+from tests.contracts.harness import compas_tree, hiby_sql, hiby_tree, rockbox_tree
 from tests.unit.test_reverse import SinkLibrary
 
 
@@ -47,6 +50,9 @@ def _setup(tmp_path, kind="rockbox"):
     if kind == "rockbox":
         mount = rockbox_tree(tmp_path / "rb")
         dev = Rockbox(DeviceConfig(id="rb", type="rockbox", name="RB"), mount, None)
+    elif kind == "compas":
+        mount = compas_tree(tmp_path / "compas")
+        dev = HibyCompas(DeviceConfig(id="c", type="hiby_compas", name="C"), mount, None)
     else:
         mount = hiby_tree(tmp_path / "hiby")
         dev = Hiby(DeviceConfig(id="h", type="hiby", name="H"), mount, None)
@@ -90,12 +96,19 @@ def _write(dev, entries: list[str], name="Mix") -> None:
             )
         return
     (dev.mount / "Playlists").mkdir(exist_ok=True)
+    if isinstance(
+        dev, HibyCompas
+    ):  # the player edits its .m3u in place, appending absolute player paths
+        lines = ["#EXTM3U", *[f"/data/mnt/sd_0/Music/{e}.mp3" for e in entries]]
+        (dev.mount / "Playlists" / f"{name}.m3u").write_text("\n".join(lines) + "\n")
+        return
     lines = ["#EXTM3U", *[f"../Music/{e}.mp3" for e in entries]]
     (dev.mount / "Playlists" / f"{name}.m3u8").write_text("\n".join(lines) + "\n")
 
 
-async def test_device_edit_is_saved_merged(tmp_path):
-    dev, m, lib = _setup(tmp_path)
+@pytest.mark.parametrize("kind", ["rockbox", "hiby", "compas"])
+async def test_device_edit_is_saved_merged(tmp_path, kind):
+    dev, m, lib = _setup(tmp_path, kind)
     _write(dev, ["c", "a", "d"])  # device: reordered, removed b, added d
     lib.lists["pl1"] = [_ref("a"), _ref("b"), _ref("c"), _ref("e")]  # library: added e at the end
     report = ReverseReport()
@@ -115,8 +128,9 @@ async def test_unchanged_or_unknown_base_does_nothing(tmp_path):
     assert lib.saved == []
 
 
-async def test_smart_rule_and_conflict_are_warned_not_pushed(tmp_path):
-    dev, m, lib = _setup(tmp_path)
+@pytest.mark.parametrize("kind", ["rockbox", "hiby", "compas"])
+async def test_smart_rule_and_conflict_are_warned_not_pushed(tmp_path, kind):
+    dev, m, lib = _setup(tmp_path, kind)
     _write(dev, ["b", "a", "c"])
     m.playlist_smart = {"Mix"}
     report = ReverseReport()
@@ -333,3 +347,15 @@ async def test_pushed_device_playlist_leaves_the_device_unless_selected(tmp_path
         left = set(await dev.read_playlists(m) or {})
         assert left == {"Mix", "Kept", "Failed"}, kind
         assert not m.playlist_created and "Road" not in m.playlist_refs
+
+
+def test_a_playlist_whose_entries_all_match_nothing_is_left_out():
+    from syncmusic.core.models import Manifest, ManifestHeader
+    from syncmusic.core.playlist_reverse import device_lists
+
+    lists, unknown = device_lists(
+        Manifest(header=ManifestHeader(device_id="a")),
+        {"Mix": ["elsewhere/x.mp3"], "Empty": []},
+        True,
+    )
+    assert lists == {"Empty": []} and unknown == 1

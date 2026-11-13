@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 import pytest
 
 from syncmusic.base.device import Device
-from syncmusic.core.models import Manifest, ManifestEntry, ManifestHeader
+from syncmusic.core.models import Manifest, ManifestEntry, ManifestHeader, MediaKind
 
 
 def _manifest(dev: Device, refs) -> Manifest:
@@ -164,3 +164,22 @@ async def test_format(device, tmp_path):
     assert await device.read_manifest() is None
     assert not (await device.read_contents()).items
     assert type(device).probe(None, device.mount) is not None  # still recognised after format
+
+
+async def test_content_synced_by_others_survives_later_syncs(device, tmp_path):
+    """Whatever SyncMusic did not put there (here: an item committed outside the manifest, like a player's own
+    download or another app's file) is never removed or rewritten by later syncs, also when the rules sync only
+    some kinds."""
+    manifest, refs = await _sync(device, tmp_path, [("One", "A"), ("Two", "B")])
+    s = await device.begin()
+    other = device._harness.make_item(tmp_path, "Other app", "C")  # type: ignore[attr-defined]
+    other_ref = await device.put_track(s, other)
+    await device.commit(s, manifest)  # not in the manifest: not ours
+    s = await device.begin()
+    s.data["synced_kinds"] = {MediaKind.MUSIC}
+    gone_item, gone_ref = refs[1]
+    await device.remove_track(s, gone_ref)
+    manifest.items.pop(gone_item.track.ref.key())
+    await device.commit(s, manifest)
+    on_device = {i.device_ref for i in (await device.read_contents()).items}
+    assert other_ref.device_ref in on_device and gone_ref.device_ref not in on_device

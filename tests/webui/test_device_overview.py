@@ -313,6 +313,36 @@ def test_hiby_tips_card_collapses_and_remembers(web_server, chrome, tmp_path, wi
 
 
 @pytest.mark.parametrize("width", [1280, 390])
+def test_compas_tips_card(web_server, chrome, tmp_path, width):
+    """a HiBy R1 with Compás has its own Tips card (storage mode, library update after unplugging, plugins)."""
+    url, app = web_server
+    dev = _synced_stick(url, app, tmp_path)
+    page = open_page(chrome, url, width)
+
+    def handle(route):
+        r = route.fetch()
+        data = r.json()
+        if "config" in data:
+            data["config"]["type"] = "hiby_compas"
+        route.fulfill(response=r, body=json.dumps(data), content_type="application/json")
+
+    page.route(re.compile(r"/api/v1/devices/[^/?]+$"), handle)
+    page.goto(f"{url}/#/devices/{dev}")
+    card = page.locator('[data-device-tips="hiby_compas"]')
+    card.wait_for()
+    assert card.locator("[data-tip]").count() == 4
+    text = card.inner_text()
+    assert "Update Music Database" in text and "Podcasts plugin" in text and "tips." not in text
+    assert "04-devices.md#hiby-r1-compás" in card.locator("a").get_attribute("href")
+    assert (
+        page.locator("[data-hiby-reboot]").count() == 0
+    )  # the SonixOS reboot hint is not for Compás
+    assert no_horizontal_scroll(page)
+    shot(page, f"device-overview-compas-tips-{width}")
+    assert [e for e in page.errors if "Failed to load resource" not in e] == []
+
+
+@pytest.mark.parametrize("width", [1280, 390])
 def test_hiby_split_genres_setting_with_live_example(web_server, chrome, tmp_path, width):
     """a HiBy's Settings tab has the Player library card: Split genres follows the player by default, the
     separators show only for On, with a live example that follows the checkboxes."""

@@ -4,7 +4,7 @@
 # ruff: noqa: F811 - pytest fixtures imported from test_api_sync
 from __future__ import annotations
 
-from tests.contracts.harness import hiby_tree, rockbox_tree
+from tests.contracts.harness import compas_tree, hiby_tree, rockbox_tree
 from tests.unit.test_api_sync import _apply, env, music  # noqa: F401
 
 
@@ -46,6 +46,41 @@ async def test_sync_and_wipe_a_hiby_player(env, tmp_path):
     job = await app.jobs.wait(r.json()["id"])
     assert job.status == "succeeded" and job.result["type"] == "hiby", job.error
     assert (mount / ".local" / "library.db").is_file() and not list(mount.rglob("*.mp3"))
+
+
+async def test_sync_and_wipe_a_compas_player(env, tmp_path):
+    """Wipe on a Compás card removes the synced files and keeps the player's own folders byte for byte."""
+    app, c = env
+    mount = compas_tree(tmp_path / "card")
+    own = {
+        ".plugins/Audiobooks/main.lua": "lua",
+        ".plugin-assets/a.png": "png",
+        "Themes/t.json": "{}",
+        "Radio.txt": "r",
+        "fw.upt.parked": "fw",
+    }
+    for rel, text in own.items():
+        (mount / rel).parent.mkdir(parents=True, exist_ok=True)
+        (mount / rel).write_text(text)
+    before = {p.relative_to(mount): p.read_bytes() for p in mount.rglob("*") if p.is_file()}
+    body = {
+        "name": "Card",
+        "type": "hiby_compas",
+        "mount_path": str(mount),
+        "library_ids": ["music"],
+    }
+    dev = (await c.post("/api/v1/devices/register", json=body)).json()["id"]
+    plan = (await c.post(f"/api/v1/devices/{dev}/plan", json={})).json()
+    await _apply(app, c, plan["id"], first_sync="keep")
+    assert list((mount / "Music").rglob("*.mp3"))
+
+    r = await c.post(f"/api/v1/devices/{dev}/wipe", json={"confirm": "Card"})
+    assert r.status_code == 202, r.text
+    job = await app.jobs.wait(r.json()["id"])
+    assert job.status == "succeeded", job.error
+    assert not list(mount.rglob("*.mp3"))
+    for rel, data in before.items():
+        assert (mount / rel).read_bytes() == data, rel
 
 
 async def test_wipe_is_for_rockbox_only(env, tmp_path):

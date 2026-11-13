@@ -366,6 +366,7 @@ class Applier:
         self._caps = None  # the open session may know the model better (iPod generation)
         s.data["reverse_ok"] = self.reverse_ok
         s.data["device_positions"] = set(self.device_positions or ())
+        s.data["synced_kinds"] = plan.synced_kinds  # None: every kind is synced
         if manifest is not None:
             s.manifest = manifest
         manifest = await self._start_manifest(s)
@@ -407,6 +408,7 @@ class Applier:
             report.warnings += [
                 w for w in s.data.pop("commit_warnings", []) if w not in report.warnings
             ]
+            report.player_notice = s.data.pop("player_notice", "") or report.player_notice
             # what the device wrote into its own databases (HiBy: tracks / hearts / playlists)
             counts.update(s.data.pop("commit_counts", {}))
         except BaseException as e:
@@ -976,7 +978,8 @@ class Applier:
             return False
         await self.check_device()
         try:
-            if await self.device.set_position(s, track_ref(entry), pos):
+            finished = a.item.track.finished if a.item else False
+            if await self.device.set_position(s, track_ref(entry), pos, finished):
                 entry.last_position_s = pos
                 return True
         except Exception as e:  # noqa: BLE001

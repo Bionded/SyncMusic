@@ -9,6 +9,7 @@ import { badge, pageHead, toast, confirm, typedConfirm, errorBox, errorMessage, 
 import { schemaForm, FormError } from "../forms.js";
 import { go, goFrom } from "../router.js";
 import { refreshSidebar } from "../sidebar.js";
+import { downloadSdtool } from "../sdtool.js";
 import { deviceIcon, deviceState, dbSizeLine, dbSizeBar, etaText, isCheck, thumb, duration, hibyReboot, ejectedText, betaBadge, openJob, deviceTips, hasTips } from "./common.js";
 import { icon, typeIcon, typeLabel } from "../icons.js";
 import { rulesTab, rulesActions, rulesMounted } from "./rules.js";
@@ -24,6 +25,19 @@ import { accountDialog } from "./libraries.js";
 import { windowWaitText } from "../windows.js";
 
 addStrings({
+  "dev.cl_title": "Wi-Fi client",
+  "dev.cl_app": "App",
+  "dev.cl_os": "System",
+  "dev.cl_seen": "Last seen",
+  "dev.cl_never": "not yet",
+  "dev.cl_paired": "Paired",
+  "dev.cl_formats": "Plays",
+  "dev.cl_space": "Free space",
+  "dev.cl_space_val": "{free} free of {total}",
+  "dev.cl_revoked": "Revoked: this client can no longer sync until it is paired again (Settings → Wi-Fi clients).",
+  "dev.cl_sync": "The client is syncing: file {done} of {total}, {bytes}",
+  "dev.cl_planning": "The client asked to sync: the plan is being made.",
+  "dev.cl_manage": "Rename or revoke",
   "devs.sub": "Players and drives SyncMusic writes to. USB devices appear when plugged in.",
   "devs.add_ftp": "Add network device",
   "devs.empty_title": "No devices yet",
@@ -98,6 +112,12 @@ addStrings({
   "dev.repairing": "Checking and repairing {name}…",
   "dev.dz_unmount": "Unmount everywhere",
   "dev.foreign_title": "Also mounted by the system",
+  "dev.firmware_title": "This player now runs another firmware",
+  "dev.firmware_text": "It is registered for {old}, but it now runs {new}. Switch the device type to sync it the way this firmware expects; the music on it stays.",
+  "dev.firmware_switch": "Switch to {new}",
+  "dev.sdtool_title": "Music shows on the player only after it indexed it",
+  "dev.sdtool_text": "With compas-sdtool SyncMusic builds the player's library during the sync, so new music, hearts and play counts are there right after unplugging.",
+  "dev.firmware_switched": "{name} now syncs for {new}",
   "dev.lease_title": "Being synced by {name}",
   "dev.lease_text": "Another SyncMusic installation has been writing to this player since {since}. A sync started here is refused until it is done.",
   "dev.foreign_text": "Another program mounted it at {paths}. Two programs writing to it at once can damage the file system; see Troubleshooting to turn the system's automount off, or unmount it everywhere.",
@@ -290,6 +310,7 @@ addStrings({
   "dev.dz_delete": "Delete from SyncMusic",
   "dev.wipe_title": "Wipe {name}?",
   "dev.wipe_text": "Erases all music, playlists, Rockbox's database and play logs. Rockbox itself and its settings stay; it rebuilds the database on the next start.",
+  "dev.wipe_text_compas": "Erases the music, playlists, audiobooks and podcasts SyncMusic or you put on the card, and SyncMusic's records in the Audiobooks and Podcasts plugins. The player's own files stay: its library folder, plugins and their settings, themes, radio stations, firmware updates and the episodes the Podcasts plugin downloaded itself.",
   "dev.wipe_text_hiby": "Erases all music, playlists, podcasts and audiobooks. Also clears the player's library, play counts, favourites and resume positions - sync first if you want them in your libraries. The player's own settings (EQ presets, radio stations, streaming logins) stay.",
   "dev.wipe_text_android": "Erases everything SyncMusic put into its folder on the player (music, playlists, covers). Nothing else on the phone is touched.",
   "dev.format_text_hiby": "A new file system is created on the whole player. Also clears the player's library, play counts, favourites and resume positions - sync first if you want them in your libraries. The player's own settings (EQ presets, radio stations, streaming logins) are kept.",
@@ -537,6 +558,10 @@ async function load(ctx) {
     : await get(`/devices/${encodeURIComponent(id)}/home`).catch(() => null);
 }
 
+// the firmware a device type stands for (types with `firmware_siblings`); other types by their label
+const FIRMWARE = { hiby: "SonixOS", hiby_compas: "Compás" };
+const fwName = (type) => FIRMWARE[type] || typeLabel(type);
+
 async function renderDevice(ctx) {
   if (ctx.params.tab === "sync") { // the old Sync settings tab
     location.replace(`#/devices/${encodeURIComponent(ctx.params.id)}/settings`);
@@ -555,6 +580,8 @@ async function renderDevice(ctx) {
   const syncing = !!live?.busy && !updating && !live.ejecting;
   ctx.state.job = syncing ? await get(`/jobs/${encodeURIComponent(live.busy)}`).catch(() => null) : null;
   const clock = !!live?.setting_clock;
+  const client = cfg.type === "client" ? await get(`/clients/${encodeURIComponent(cfg.id)}`).catch(() => null) : null;
+  const sdtool = cfg.type === "hiby_compas" ? await get("/settings/compas-sdtool").catch(() => null) : null;
   const body = await TAB_RENDER[tab](ctx);
   ctx.redrawHead = () => { // a tab changed what the header shows (templates saved)
     const head = document.querySelector("[data-device-head]");
@@ -565,10 +592,17 @@ async function renderDevice(ctx) {
       <span>${t("dev.clock_text")}</span></span>${indetBar(t("dev.state.clock"))}</div>` : ""}
     ${live?.lease ? html`<div class="dev-note" role="status" data-lease><span class="dev-note-text">${icon("sync", { size: 16 })}<b>${t("dev.lease_title", { name: live.lease.name })}</b>
       <span>${t("dev.lease_text", { since: when(live.lease.since) })}</span></span></div>` : ""}
+    ${live?.firmware_switch && !live.busy ? html`<div class="dev-note" role="status" data-firmware-switch><span class="dev-note-text">${icon("info", { size: 16 })}<b>${t("dev.firmware_title")}</b>
+      <span>${t("dev.firmware_text", { old: fwName(cfg.type), new: fwName(live.firmware_switch) })}</span></span>
+      <button type="button" class="btn small" data-action="switchFirmware">${t("dev.firmware_switch", { new: fwName(live.firmware_switch) })}</button></div>` : ""}
+    ${sdtool?.error === "not found" ? html`<div class="dev-note" role="status" data-sdtool-offer><span class="dev-note-text">${icon("info", { size: 16 })}<b>${t("dev.sdtool_title")}</b>
+      <span>${t("dev.sdtool_text")}</span></span>
+      <button type="button" class="btn small" data-action="downloadSdtool">${t("sdtool.download")}</button></div>` : ""}
     ${live?.foreign_mounts?.length ? html`<div class="dev-note" role="status" data-foreign-mounts><span class="dev-note-text">${icon("info", { size: 16 })}<b>${t("dev.foreign_title")}</b>
       <span>${t("dev.foreign_text", { paths: live.foreign_mounts.join(", ") })}</span></span>
       <button type="button" class="btn small" data-action="unmountAll" ${live.busy ? "disabled" : ""}>${t("dev.unmount")}</button></div>` : ""}
     ${syncing ? progressStrip(cfg, live.busy, ctx.state.job) : ""}
+    ${client ? clientCard(client) : ""}
     ${live?.fs_damaged ? problemBox({ title: t("dev.fs_damaged"), message: t("dev.fs_damaged_text", { error: live.fs_damaged }),
       action: html`<span data-fs-damaged><button type="button" class="btn small" data-action="repairFs" ${live.busy ? "disabled" : ""}>${t("dev.repair")}</button>
         <a class="btn small" href="#/devices/${id}/settings">${t("dev.repair_wipe")}</a></span>` })
@@ -577,6 +611,34 @@ async function renderDevice(ctx) {
       ? html`<span class="tab" role="tab" aria-selected="false" aria-disabled="true" title="${t("devs.clock_title")}">${t(`dev.tab.${x}`)}</span>`
       : html`<a class="tab" role="tab" href="#/devices/${id}/${x}" aria-selected="${x === tab}">${t(`dev.tab.${x}`)}</a>`))}</div>
     <div role="tabpanel">${body}</div>`;
+}
+
+function clientSession(s) {
+  if (!s) return "";
+  const p = s.progress || {};
+  const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+  return s.status === "ready"
+    ? html`<span>${t("dev.cl_sync", { done: p.done, total: p.total, bytes: `${bytes(p.bytes_done || 0)} / ${bytes(p.bytes_total || 0)}` })}</span>
+      <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>`
+    : html`<span>${t("dev.cl_planning")}</span>`;
+}
+
+// a paired Wi-Fi client: what it reported when it paired / last synced, and its sync while it runs
+function clientCard(c) {
+  const cl = c.client || {}, caps = c.capabilities || {}, st = caps.storage || {};
+  const rows = [
+    ["app", [cl.app, cl.app_version].filter(Boolean).join(" ")],
+    ["os", cl.os],
+    ["seen", c.last_seen ? when(c.last_seen) : t("dev.cl_never")],
+    ["paired", when(c.created_at)],
+    ["formats", (caps.formats || []).join(", ")],
+    ["space", st.total ? t("dev.cl_space_val", { free: bytes(st.free || 0), total: bytes(st.total) }) : ""],
+  ].filter(([, v]) => v);
+  return html`<section class="card ds-card dev-client" data-client-card="${c.device_id}" aria-label="${t("dev.cl_title")}">
+    ${c.revoked ? html`<p class="hint warn" data-client-revoked>${t("dev.cl_revoked")}</p>` : ""}
+    <dl class="dev-client-facts">${rows.map(([k, v]) => html`<div><dt>${t(`dev.cl_${k}`)}</dt><dd>${v}</dd></div>`)}</dl>
+    <div class="dev-client-sync" data-client-sync aria-live="polite">${clientSession(c.session)}</div>
+    <a class="btn small ghost" href="#/settings?q=${encodeURIComponent(t("dev.cl_title"))}">${t("dev.cl_manage")}</a></section>`;
 }
 
 // the header: type icon, name, status badge, Gentle chip, model line, the automatic update line
@@ -1047,8 +1109,8 @@ async function unmountEverywhere(cfg, ask = true) {
 }
 
 // players that are wiped instead of formatted (their own system files stay; adds the HiBy)
-const WIPE_TYPES = new Set(["rockbox", "hiby", "android"]);
-const wipeText = (type) => ({ hiby: "dev.wipe_text_hiby", android: "dev.wipe_text_android" })[type] ?? "dev.wipe_text";
+const WIPE_TYPES = new Set(["rockbox", "hiby", "hiby_compas", "android"]);
+const wipeText = (type) => ({ hiby: "dev.wipe_text_hiby", hiby_compas: "dev.wipe_text_compas", android: "dev.wipe_text_android" })[type] ?? "dev.wipe_text";
 const formatText = (type) => (type === "hiby" ? "dev.format_text_hiby" : "dev.format_text");
 
 // the danger zone: one row per action with its consequence - Wipe for Rockbox (files only,
@@ -1494,7 +1556,7 @@ export const actions = {
     try {
       await post(`/devices/${encodeURIComponent(cfg.id)}/eject`);
     } finally { el.disabled = false; }
-    toast(ejectedText(cfg, t("dev.ejected", { name: cfg.name })));
+    toast(ejectedText(cfg, t("dev.ejected", { name: cfg.name }), ctx.state.live?.player_notice));
     ctx.rerender();
   },
   async playLog(el, ctx) {
@@ -1534,6 +1596,23 @@ export const actions = {
       await del(`/devices/${encodeURIComponent(cfg.id)}/health/errors`);
       toast(t("dev.io_cleared"), "ok");
     }
+    ctx.rerender();
+  },
+  async downloadSdtool(el, ctx) {
+    el.disabled = true;
+    try {
+      if (await downloadSdtool()) ctx.rerender();
+    } finally { el.disabled = false; }
+  },
+  async switchFirmware(el, ctx) {
+    const { cfg, live } = ctx.state;
+    el.disabled = true;
+    try {
+      ctx.state.cfg = await patch(`/devices/${encodeURIComponent(cfg.id)}`, { type: live.firmware_switch });
+    } finally {
+      el.disabled = false;
+    }
+    toast(t("dev.firmware_switched", { name: cfg.name, new: fwName(live.firmware_switch) }), "ok");
     ctx.rerender();
   },
   async bind(el, ctx) {
@@ -1589,6 +1668,12 @@ export function onEvent(ev, ctx, root) {
   }
   const tab = ctx.params.tab || "overview";
   if (ev.data?.device_id && ev.data.device_id !== id) return;
+  if (ev.type === "client.progress") {
+    const box = root?.querySelector("[data-client-sync]");
+    if (box) setHtml(box, clientSession({ status: "ready", progress: ev.data }));
+    return;
+  }
+  if (/^client\.(changed|revoked|paired)$/.test(ev.type)) { ctx.rerender(); return; }
   if (ev.type === "job.progress") {
     const strip = root?.querySelector("[data-progress-strip]");
     if (!strip || !strip.getAttribute("href").endsWith(`/${encodeURIComponent(ev.data.job_id)}`)) return;

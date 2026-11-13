@@ -318,7 +318,9 @@ async def test_processing_change_says_what_changed(tmp_path, library, preparer, 
     values in the replace reason, the mass re-process confirmation and one INFO log line; unchanged: no line."""
     import logging
 
-    dev = _flash(tmp_path)
+    dev = FlashDrive(
+        _cfg(formats=["mp3", "aac", "flac", "ogg", "opus", "wav"]), _flash(tmp_path).mount, None
+    )
     _, rep = await _sync(dev, library, preparer)
     m = await dev.read_manifest()
     (inputs,) = m.header.processing_inputs.values()  # one copy for all four items

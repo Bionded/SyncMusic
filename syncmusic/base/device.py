@@ -72,6 +72,8 @@ class Device(ABC):
     # an MTP player on USB (Android): also `network` (nothing to mount, format or label), but it is
     # detected by udev like a disk (infra/blockdev/mtp.py), connected only while plugged in, and eject ends the session
     usb_mtp: ClassVar[bool] = False
+    # created by pairing (a Wi-Fi client), never registered by hand: Register does not offer it
+    paired: ClassVar[bool] = False
     # still in beta: Android/MTP): the device-types API flags it, the UI shows a Beta badge
     beta: ClassVar[bool] = False
     # file systems `format` can create, first = default; the UI offers a choice only when there are several
@@ -82,6 +84,9 @@ class Device(ABC):
     # files (relative to the mount) read in full when the device connects: a read error there means the file
     # system is damaged, so it is flagged before a job writes to it (a player's own databases)
     probe_files: ClassVar[tuple[str, ...]] = ()
+    # the same player with another firmware (HiBy R1: SonixOS <-> Compás): when one of these types claims a
+    # registered device's disk better than its own type, the device page offers to switch the type
+    firmware_siblings: ClassVar[tuple[str, ...]] = ()
 
     @classmethod
     def unavailable_reason(cls) -> str | None:
@@ -112,6 +117,11 @@ class Device(ABC):
 
     def detected_profile(self) -> dict[str, Any]:
         """Profile fields the device reports itself (codecs, artwork, RTC ...)."""
+        return {}
+
+    def player_info(self) -> dict[str, Any]:
+        """What the player's firmware says about itself, shown with the profile: `firmware`, `version`,
+        `plugins` (list of names) - each optional; {} = nothing to show."""
         return {}
 
     def setting_profile(self) -> dict[str, Any]:
@@ -195,7 +205,7 @@ class Device(ABC):
 
     async def read_playlists(self, manifest: Manifest) -> dict[str, list[str]] | None:
         """The playlists on the device as name -> device-relative paths in order, for the reverse playlist sync
-        ; None: the device's playlists cannot be edited on it (stock iPod) or read back."""
+        ; None: the device's playlists cannot be edited on it or read back."""
         return None
 
     async def feedback_warnings(self) -> list[str]:
@@ -231,8 +241,11 @@ class Device(ABC):
     async def update_metadata(self, s: DeviceSession, ref: DeviceTrackRef, track: Track) -> None:
         """Default: nothing to update in place (files carry their own tags)."""
 
-    async def set_position(self, s: DeviceSession, ref: DeviceTrackRef, position_s: float) -> bool:
-        """Move the item's bookmark to the library's position. Default: the device keeps no bookmarks
+    async def set_position(
+        self, s: DeviceSession, ref: DeviceTrackRef, position_s: float, finished: bool = False
+    ) -> bool:
+        """Move the item's bookmark to the library's position (`finished`: the library marks it listened to the
+        end). Default: the device keeps no bookmarks
         that can be set (False)."""
         return False
 

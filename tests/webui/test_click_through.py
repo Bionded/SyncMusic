@@ -174,6 +174,10 @@ CONTROLS: dict[str, tuple[str, str]] = {
     "welcome:wizLibType": ("elsewhere", "test_welcome.py::test_first_run_wizard"),
     "welcome:wizSkip": ("elsewhere", "test_welcome.py::test_wizard_skip_and_existing_library"),
     "devices:ftpTest": ("elsewhere", "test_ftp_register.py::test_ftp_test_and_save"),
+    "devices:switchFirmware": (
+        "elsewhere",
+        "test_firmware_switch_ui.py::test_firmware_switch_note",
+    ),
     "devices:removeOrphans": (CLICK, CANCEL),
     "devices:playLog": (
         "elsewhere",
@@ -289,7 +293,16 @@ CONTROLS: dict[str, tuple[str, str]] = {
     "settings:jump": ("elsewhere", "test_settings.py::test_change_every_setting_and_reload"),
     "settings:testWebhook": (CLICK, ""),
     "settings:checkFfmpeg": (CLICK, ""),
+    "settings:checkSdtool": (CLICK, ""),
+    "settings:downloadSdtool": (CANCEL, ""),
+    "devices:downloadSdtool": (
+        "elsewhere",
+        "test_device_profile_ui.py::test_compas_page_offers_compas_sdtool",
+    ),
     "settings:runDiag": (CLICK, ""),
+    "settings:clientAdd": ("elsewhere", "test_clients_ui.py::test_pair_rename_revoke"),
+    "settings:clientRename": ("elsewhere", "test_clients_ui.py::test_pair_rename_revoke"),
+    "settings:clientRevoke": ("elsewhere", "test_clients_ui.py::test_pair_rename_revoke"),
     "settings:storageClear": ("elsewhere", "test_settings.py::test_storage_and_resources"),
     "settings:copyPath": ("elsewhere", "test_settings.py::test_storage_and_resources"),
     "settings:freeMemory": ("elsewhere", "test_settings.py::test_storage_and_resources"),

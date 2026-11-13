@@ -121,6 +121,12 @@ def meta_snapshot(t: Track) -> dict[str, str]:
     return out
 
 
+KIND_NAMES = {
+    MediaKind.MUSIC: "music",
+    MediaKind.PODCAST: "podcasts",
+    MediaKind.AUDIOBOOK: "audiobooks",
+    MediaKind.VIDEO: "videos",
+}
 NOT_STARTED_S = 5.0  # a resume position below this is "not started", like none
 
 
@@ -570,6 +576,8 @@ def plan_sync(
             known=tracks.get(key),
             lib_name=lib_names.get(entry.ref.library_id, entry.ref.library_id),
             unselected=unselected,
+            kind_off=selection.kinds is not None
+            and (tracks[key].kind if key in tracks else entry.kind) not in selection.kinds,
         )
         actions.append(action)
         if action.kind is ActionKind.REMOVE:
@@ -611,6 +619,7 @@ def plan_sync(
         changes += [PlaylistChange(name=n, change="remove") for n in sorted(written - planned)]
 
     plan = SyncPlan(
+        synced_kinds=selection.kinds,
         id=uuid.uuid4().hex,
         device_id=device.id,
         actions=actions,
@@ -693,9 +702,9 @@ def _candidates(
         item = chain.plan(base, caps)
         # videos: the `video` processor or the device decides the format, not the audio codec list
         if (
-            caps.formats
+            caps.formats_for(track.kind)
             and track.kind is not MediaKind.VIDEO
-            and item.file.format not in caps.formats
+            and item.file.format not in caps.formats_for(track.kind)
         ):
             unsupported.append(f"{track.title} ({item.file.format or 'unknown format'})")
             continue
@@ -834,9 +843,11 @@ def _unselected_action(
     known: Track | None,
     lib_name: str,
     unselected: Callable[[str, ManifestEntry], str],
+    kind_off: bool = False,
 ) -> PlanAction:
-    """What happens to a managed item that is not selected (any more): removed when deleted from its library or
-    in mirror mode, kept as an orphan when its library looks broken, otherwise kept (additive mode)."""
+    """What happens to a managed item that is not selected (any more): removed when deleted from its library, in
+    mirror mode or when no rule syncs its kind any more (in every mode: turning a kind off is the user's choice),
+    kept as an orphan when its library looks broken, otherwise kept (additive mode)."""
     if source_gone and not missing and deletable:
         return PlanAction(
             kind=ActionKind.REMOVE,
@@ -859,7 +870,7 @@ def _unselected_action(
             reason="orphan: gone from its library",
             orphan=True,
         )
-    if not (mirror or source_gone):  # additive: never removes; the entry stays managed
+    if not (mirror or kind_off or source_gone):  # additive: never removes; the entry stays managed
         return PlanAction(kind=ActionKind.KEEP, ref=entry.ref, title=entry.path, entry=entry)
     # source_gone here: the file is gone too
     title, sub = entry.path, None
@@ -874,7 +885,11 @@ def _unselected_action(
         entry=entry,
         size_delta=0 if missing else -entry.size,
         rules=list(entry.rules),
-        reason="gone from the device and its library" if source_gone else unselected(key, entry),
+        reason="gone from the device and its library"
+        if source_gone
+        else f"no longer synced: no rule selects {KIND_NAMES[entry.kind]} for this device"
+        if kind_off and not mirror
+        else unselected(key, entry),
     )
 
 

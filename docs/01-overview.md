@@ -34,7 +34,7 @@ A **device** is a player SyncMusic writes to:
 - **iPod** with Apple's firmware (tested on the iPod Classic) - SyncMusic writes the iPod
   database itself, so no iTunes is needed. The iPod nano 6G/7G cannot be supported.
 - **Rockbox** players (any player running Rockbox, e.g. an iPod with Rockbox installed).
-- **HiBy R1** (SonixOS).
+- **HiBy R1** (SonixOS), and the HiBy R1 with the **Compás** firmware (as USB storage).
 - **USB flash drive** or memory card (vfat, exFAT, ext4, NTFS) for car stereos and simple players.
 - A folder on an **FTP** or **SMB** server, for players and boxes that share their storage over the network.
 - **Android** phones and players over USB (MTP) - **Beta**.

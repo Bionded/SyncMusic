@@ -12,8 +12,8 @@ the serial must be in it. The tests use in-process fakes (tests/fake_mtp.py, tes
 Files go under `base_path` (default: the storage root) like a flash drive's tree, the manifest and the inflight list
 under `<base_path>/.syncmusic/`, playlists as `.m3u8` with relative paths in `<base_path>/Playlists/`. MTP cannot
 rename or overwrite: a file is deleted, then sent; the inflight list (written before every upload) lets the next
-session remove what an interrupted one sent. No reverse sync: play counts, ratings and positions live in each
-player app's private database, out of MTP's reach. Wipe deletes only the base folder's files.
+session remove what an interrupted one sent. Playlist files a player app edits or adds in `Playlists/` go back to the
+library; play counts, ratings and positions live in each player app's private database, out of MTP's reach. Wipe deletes only the base folder's files.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import ctypes.util
 import posixpath
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -42,12 +43,17 @@ from syncmusic.core.models import (
     PreparedItem,
 )
 from syncmusic.devices import _remote, paths
+from syncmusic.devices._filedevice import parse_playlist
 from syncmusic.devices.paths import PathLayout
 from syncmusic.infra.blockdev.guard import GuardError
 from syncmusic.infra.blockdev.identify import BlockDeviceInfo
 from syncmusic.infra.blockdev.mtp import is_mtp, usb_addresses
 
 T = TypeVar("T")
+# how player apps name the storage root in playlist entries (parse_playlist drops the leading slash)
+STORAGE_ROOT = re.compile(
+    r"^(?:storage/emulated/\d+|storage/self/primary|storage/[^/]+|sdcard|mnt/sdcard)/"
+)
 ROOT_SKIP = {
     "Android"
 }  # with the storage's root as base folder: the system's app data folder is not walked
@@ -416,6 +422,68 @@ class AndroidMtp(Device):
                 self._delete(b, rel)
             for rel, text in texts.items():
                 self._put(b, rel, text)
+
+        await self._run(work)
+
+    def _playlist_entries(self, b: MtpBackend) -> list[str]:
+        """File names of the .m3u8/.m3u files in the playlist folder (none when it does not exist)."""
+        try:
+            found = b.list(self.s.storage, self._abs(paths.PLAYLIST_DIR))
+        except FileNotFoundError:
+            return []
+        return [
+            e.name
+            for e in found
+            if not e.is_dir and PurePosixPath(e.name).suffix.lower() in (".m3u8", ".m3u")
+        ]
+
+    def _playlist_texts(self, b: MtpBackend) -> dict[str, bytes]:
+        """Device-relative path -> content of every .m3u8/.m3u in the playlist folder."""
+        out = {}
+        for name in self._playlist_entries(b):
+            rel = posixpath.join(paths.PLAYLIST_DIR, name)
+            if (data := self._read(b, rel)) is not None:
+                out[rel] = data
+        return out
+
+    async def read_playlists(self, manifest: Manifest) -> dict[str, list[str]] | None:
+        """Playlist files a player app edited or made in the playlist folder go back to the library; ours
+        keep their name, others are named by their file."""
+        if not self.s.playlists:
+            return None
+        ours = {
+            manifest.playlist_paths.get(n)
+            or paths.playlist_path(n, self.effective_capabilities().path_rules): n
+            for n in manifest.playlists
+        }
+        texts = await self._run(self._playlist_texts)
+        return {
+            ours.get(rel) or PurePosixPath(rel).stem: [
+                self._from_absolute(p)
+                for p in parse_playlist(data.decode("utf-8", errors="replace"), paths.PLAYLIST_DIR)
+            ]
+            for rel, data in sorted(texts.items())
+        }
+
+    def _from_absolute(self, path: str) -> str:
+        """A playlist entry as a path under `base_path`: player apps write absolute paths
+        (`/storage/emulated/0/...`, `/sdcard/...`), which `parse_playlist` returns without the leading slash."""
+        stripped = STORAGE_ROOT.sub("", path, count=1)
+        if stripped == path:
+            return path
+        base = self.s.base_path.strip("/")
+        if base and stripped.startswith(base + "/"):
+            return stripped[len(base) + 1 :]
+        return stripped
+
+    async def remove_playlists(self, s: DeviceSession, names: list[str]) -> None:
+        """The player's own playlist files of these names (`read_playlists` names them by their file) go."""
+        gone = set(names)
+
+        def work(b: MtpBackend) -> None:
+            for name in self._playlist_entries(b):
+                if PurePosixPath(name).stem in gone:
+                    self._delete(b, posixpath.join(paths.PLAYLIST_DIR, name))
 
         await self._run(work)
 

@@ -726,3 +726,33 @@ async def test_interrupted_ipod_patch_is_rolled_back_at_begin(tmp_path):
     s = await dev.begin()
     assert on_device.read_bytes() == before and not (dev.mount / PATCH_PATH).exists()
     await dev.abort(s)
+
+
+async def test_on_the_go_playlists_are_read_back_and_cleared_once_saved(tmp_path):
+    import struct
+
+    dev = _dev(tmp_path)
+    manifest, refs = await _sync(dev, tmp_path, [("Група крові", "Скрябін"), ("Зозуля", "Скрябін")])
+    assert await dev.read_playlists(manifest) == {}
+
+    from pygpod import Database
+
+    order = [str(t.dbid) for t in Database(str(dev.mount)).tracks]
+    pos = {r.device_ref: order.index(r.device_ref) for _, r in refs}
+    entries = [pos[refs[1][1].device_ref], pos[refs[0][1].device_ref]]
+    otg = dev.mount / "iPod_Control" / "iTunes" / "OTGPlaylistInfo"
+    otg.write_bytes(
+        b"mhpo" + struct.pack("<IIII", 0x14, 4, len(entries), 0) + struct.pack("<2I", *entries)
+    )
+
+    lists = await dev.read_playlists(manifest)
+    assert list(lists) == [next(iter(lists))] and next(iter(lists)).startswith("On-The-Go ")
+    assert next(iter(lists.values())) == [refs[1][1].path, refs[0][1].path]
+    assert await dev.read_playlists(manifest) == lists  # stable name until consumed
+
+    s = await dev.begin()
+    await dev.remove_playlists(s, list(lists))
+    await dev.commit(s, manifest)
+    assert not otg.exists()
+    assert await dev.read_playlists(manifest) == {}
+    assert not [p for p in Database(str(dev.mount)).playlists if p.name.startswith("OTG")]

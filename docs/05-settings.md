@@ -38,6 +38,11 @@ What a **newly registered** device starts with; each device can change them late
 | `update_change_gap_min` | 15 | A library change starts a device update at most this often (minutes). |
 | `max_device_syncs` | no limit | Device syncs running at the same time. |
 | `concurrency` | CPUs − 1 | Conversion threads (takes effect after a restart). |
+| `compas_sdtool_path` | none | *HiBy R1 with Compás*: the compas-sdtool program (empty: next to SyncMusic, then `<data_dir>/tools/`). **Check tool** shows its version and library format; **Download** fetches it from SyncMusic's release after you confirm (checksum, architecture and version are checked). compas-sdtool is part of [Compás Tools](https://github.com/Starnished66/compas-tools) (GPL-3.0); see [THIRD-PARTY.md](../THIRD-PARTY.md). |
+| `clients_allowed` | off | *Wi-Fi clients*: client apps may pair with this server and sync over the network. Off: the client API refuses every request and nothing is announced. Plain HTTP: use it only on a network you trust. |
+| `clients_mdns` | on | Announce the server on the local network (mDNS) while Wi-Fi clients are allowed, so apps find it without typing an address. |
+| `client_code_minutes` | 10 | How long a pairing code stays valid (single use; at most three are open at once). |
+| `client_poll_s` | 300 | How often a paired client asks whether a sync is due (seconds). |
 
 ### Libraries
 | Key | Default | Meaning |

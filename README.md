@@ -63,6 +63,7 @@ USB drives, FTP/SMB folders and Android players have no listening data to send b
 | iPod nano 6G and 7G, iPod touch, iPhone | not supported | refused: their database checksum cannot be written |
 | Rockbox players (iPods with Rockbox, other Rockbox targets) | supported | music only; play counts from Rockbox's playback log |
 | HiBy R1 (SonixOS) | supported | reboot the player after a sync so it shows the new music |
+| HiBy R1 (Compás) | supported | as USB storage; audiobooks and podcasts need the player's plugins |
 | USB flash drives and memory cards | supported | vfat, exFAT, ext4, NTFS |
 | FTP server, SMB share | supported | a folder on a network player, streamer or NAS |
 | Android players and phones (MTP) | **beta** | tested on an Android handheld only; no Android DAP was available for testing yet |
@@ -323,13 +324,12 @@ tests/hardware.toml). See
 
 ## Roadmap
 Plans, in no fixed order and without dates:
-1. **HiBy players with Compás** (the other HiBy firmware).
-2. **Plex**: back as a video library.
-3. **Cloud storage as devices**: Google Drive, OneDrive, S3, Dropbox, Nextcloud and similar as sync targets.
-4. **The same cloud storage as libraries.**
-5. **Android DAPs** (when one is available for testing): wired and wireless sync.
-7. **Companion apps for Android and Compás** for wireless sync.
-8. **Windows and macOS** - if there is demand and someone can test on them (today SyncMusic runs on Linux only).
+1. **Plex**: back as a video library.
+2. **Cloud storage as devices**: Google Drive, OneDrive, S3, Dropbox, Nextcloud and similar as sync targets.
+3. **The same cloud storage as libraries.**
+4. **Android DAPs** (when one is available for testing): wired and wireless sync.
+5. **Companion apps for Android and Compás** for wireless sync.
+6. **Windows and macOS** - if there is demand and someone can test on them (today SyncMusic runs on Linux only).
 9. **Rockbox database written by SyncMusic**: the tag database built during the sync, so the player shows the new
    music right away without *Initialize now* or a database rebuild on the player.
 
@@ -339,7 +339,7 @@ User guide: [`docs/`](docs/README.md) (concepts, installation, first run, device
 What changed in each release: [CHANGELOG.md](CHANGELOG.md).
 
 Contributing: [CONTRIBUTING.md](CONTRIBUTING.md) (setup, tests, code style, developer docs in
-[`docs/dev/`](docs/dev/architecture.md)), [code of conduct](CODE_OF_CONDUCT.md),
+[`docs/dev/`](docs/dev/architecture.md)), the [Wi-Fi client protocol](docs/dev/client-protocol.md) for app authors, [code of conduct](CODE_OF_CONDUCT.md),
 [security policy](SECURITY.md).
 
-License: [GPL-3.0-or-later](LICENSE). Third-party software and its licenses: [THIRD-PARTY.md](THIRD-PARTY.md). The logo and other artwork in `assets/branding/`: [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/); name and logo: [TRADEMARKS.md](TRADEMARKS.md).
+License: [GPL-3.0-or-later](LICENSE). Third-party software and its licenses: [THIRD-PARTY.md](THIRD-PARTY.md) (among them compas-sdtool from [Compás Tools](https://github.com/Starnished66/compas-tools), GPL-3.0, an optional separate download for HiBy R1 players with Compás). The logo and other artwork in `assets/branding/`: [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/); name and logo: [TRADEMARKS.md](TRADEMARKS.md).

@@ -32,6 +32,13 @@ FOOTER = """
   distribution's `python/licenses/`.
 - **ffmpeg** (external program, not bundled with the binary; the Docker image installs Debian's build, LGPL/GPL).
   SyncMusic only runs it as a separate process.
+- **compas-sdtool** (external program for HiBy R1 players with the Compás firmware; not bundled with the binary,
+  offered as a separate download from SyncMusic's releases): part of Compás Tools
+  (https://github.com/Starnished66/compas-tools, `sdtool/`) by the Compás authors, built from the Compás player's
+  sources (https://github.com/Starnished66/compas-player, the revision Compás Tools pins), GPL-3.0. Its release
+  assets carry the licence texts of Compás Tools, the player and the libraries it bundles, and the exact source
+  revisions (`compas-sdtool-notices.tar.gz`, `compas-sdtool-linux-<arch>.json`). SyncMusic only runs it as a
+  separate process; `scripts/build-compas-sdtool.sh` builds it from source.
 - **Debian packages** in the Docker image (parted, dosfstools, exfatprogs, e2fsprogs, ntfs-3g, sg3-utils, smbclient,
   …): each under its own license, see `/usr/share/doc/*/copyright` in the image.
 

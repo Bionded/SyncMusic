@@ -5,6 +5,57 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Android (MTP): playlist files a player app edits or adds in the *Playlists* folder go back to your library with the next sync.
+- Stock iPod: On-The-Go playlists made on the iPod go back to your library with the next sync.
+- Client protocol: each file in a sync plan now carries a download link that works without the token header (for players whose built-in downloader cannot send one), and empty lists sent as `{}` are accepted.
+- Wi-Fi clients (first part): the server can announce itself on the network and pair client apps with a short single-use code or a QR link; each client gets its own token that only works for its own device and can be revoked or renamed. Off until you allow Wi-Fi clients (API: `/api/v1/clients`, client side `/api/client/v1`).
+- Wi-Fi clients (second part): a paired client becomes a device of its own and syncs through the client API: it reports what it holds and what it plays, the server converts and prepares its files with the device's processors, and the client downloads them (interrupted downloads resume), confirms each file and gets deletions for tracks no rule selects any more. Plans that need a confirmation wait for it on the server.
+- Wi-Fi clients (third part): clients send what you did on them - plays, ratings, favourites and listening positions - as events; a batch sent twice counts once, events recorded offline can be sent later, and the next sync passes them to your libraries like a player's listening data.
+- The device page of a Wi-Fi client shows the app, system, formats, free space, when it was last seen and the progress while it downloads; the device guide has a Wi-Fi client section.
+- Settings → System → Wi-Fi clients: allow clients, announce the server on the network, add a client with a QR code and a pairing code (with a countdown), and rename or revoke paired clients.
+- Documentation of the Wi-Fi client protocol for app authors (`docs/dev/client-protocol.md`) with an OpenAPI description of the client API.
+- Plays, ratings, favourites and positions a Wi-Fi client sends reach the libraries within a minute, without waiting for the client's next sync.
+- A track the user deletes in a Wi-Fi client app stays off that client instead of coming back with the next sync.
+- Wi-Fi clients get each track's metadata and the libraries' ratings, favourites, play counts and resume positions with the sync plan.
+- Playlists edited or made in a Wi-Fi client app go back to the library (as for Rockbox and HiBy players).
+- A conformance check for Wi-Fi clients (`python -m syncmusic.client_conformance <server> <pairing code> <folder>`): pairs a throwaway client and checks what the server answers (pairing, tokens, plan paging, downloads with ranges, acks, repeated events, token rotation).
+- A small reference Wi-Fi client (`python -m syncmusic.reference_client pair|sync|play|rate|favourite|position|events`) that pairs, syncs into a folder (interrupted downloads resume) and sends listening events - an example for client authors and a quick way to try Wi-Fi sync.
+- HiBy R1 with Compás: with compas-sdtool (from Compás Tools, GPL-3.0) the sync builds the player's library on the computer, so new music is there right after unplugging. Set its path or download it (checksum, architecture and version checked) in Settings → Sync → HiBy R1 with Compás; release downloads include it for x86_64 and arm64 with its licence notices.
+- HiBy R1 with Compás: favourites (hearts), play counts and last played from your library go to the player for the songs it has already indexed; a song added today gets them at the next sync after the player indexed it.
+- Registering a device goes step by step (device, what goes on it, processors, first sync, summary) with Back and Next; *Show all steps on one page* keeps the single-page form.
+- HiBy R1 with Compás: audiobooks and podcasts in a format their plugin cannot play (for example WavPack or DSD) are converted.
+- HiBy R1 with Compás: podcast episodes synced by SyncMusic are listed in the Podcasts plugin's downloads.
+- HiBy R1 with Compás: audiobook and podcast positions from your library are written to the player's Audiobooks and Podcasts plugins.
+- USB disks registered as a backup keep the library's own folder structure (new path field `{library_path}`), and the folder picker shows the disk's free space.
+- HiBy R1 with the Compás firmware: a new device type, used as USB storage. The player version and installed plugins are read from the card; audiobooks and podcasts are synced only when the Audiobooks or Podcasts plugin is installed. Wipe keeps the player's and the plugins' own files, including podcast episodes the plugin downloaded.
+- HiBy R1 with Compás: play counts, last played and favourites come back from the player's library database, and audiobook and podcast positions from the Audiobooks and Podcasts plugins. A rebuilt or not yet updated player library never removes favourites.
+- HiBy R1 with Compás: the device profile shows the player's firmware version and installed plugins, and the device page has tips for this player.
+- HiBy R1: when a registered player comes back with the other firmware (SonixOS or Compás), its device page offers to switch the device type; the music on it stays.
+- USB disks can be registered as a backup: the library files are copied as they are (no format limit, no processing), verified after writing, into a `SyncMusic` folder, and nothing is deleted unless you choose mirror mode. Register asks what a USB disk is for and lets you pick the folder on it.
+
+### Changed
+- When no template or rule syncs a media kind to a device any more, the next sync removes what SyncMusic itself put there of that kind, also when the rules only add (shown in the plan as "no longer synced"); what the player or other apps keep there stays.
+- A newly registered USB flash drive or disk has no format limit by default: files are copied in the format the library has unless you choose formats. Disks registered before keep their formats.
+
+### Fixed
+- Android: playlists a player app saved with absolute paths (`/storage/emulated/0/…`, `/storage/self/primary/…`, `/sdcard/…`) now go back to the library, and a device playlist whose entries match no synced song no longer empties the library playlist.
+- Taking over a player that another SyncMusic synced no longer copies everything again as `(2)` files when the library's item ids changed in between (server reinstalled or library re-created): the files are recognised and kept.
+- *Make this instance home* now also works for a player that was synced by another registration of it, so Wipe and Format are available after registering it again instead of being refused.
+- HiBy R1 with Compás: playlists edited or made on the player (songs added, removed or reordered) go back to your library on the next sync instead of being overwritten; Navidrome smart playlists stay read-only and are written again from the server.
+- Pairing a Wi-Fi client while the web UI is opened via localhost now shows the server's network address in the QR code instead of an address the phone cannot reach.
+- HiBy R1 with Compás: the "restart the player or refresh the plugins" hint now also shows when ejecting and in the sync notification, and a position the Audiobooks or Podcasts plugin overwrote with its old one is written again by the next sync instead of being sent back to the library.
+- Register a device: the "What is this disk for?" question is spaced like the other fields, and on a phone Cancel and Next sit side by side.
+- HiBy R1 with Compás: *Wipe* is available in Device settings (it was refused with "format it instead"); it keeps the player's library folder, plugins, themes, radio stations and firmware updates.
+- HiBy R1 with Compás: audiobooks and podcast episodes finished in the library are marked finished/played in the plugins, and their lengths are written instead of 0.
+- HiBy R1 with Compás: after a sync that changed audiobooks or podcasts the report tells you to restart the player (or refresh its plugins), so the new positions are picked up.
+- Playlist names with a colon are written as "Name - Part" instead of "Name_ Part" on players whose file system cannot store ':'. HiBy R1 with Compás gets its playlists as `.m3u` like the player's own.
+- After a library server was reinstalled or a library re-created (new item ids, same files), the next sync no longer copies everything again as "(2)" files: the items on the device are re-linked to the new ids, and their play counts, favourites and positions still reach the library.
+- Hardware allowlist: an entry whose USB serial every unit of the model shares (HiBy R1) now matches a disk only when its file system UUID matches too, so a reformatted or another unit is no longer accepted by the serial alone.
+- HiBy R1 with Compás: audiobooks and podcast episodes that were never played no longer send a 0-second position back to the library.
+- HiBy R1 (SonixOS): a full sync no longer resets the player's podcast subscriptions and episodes, or its audiobook list, when the device's templates do not sync podcasts or audiobooks.
+- Quality profiles on a USB disk without a format limit: *Maximum quality* no longer shows a convert-everything-to-MP3 step, and *Save space* converts only lossless files.
+
 ## [0.2.3] - 2026-11-10
 
 ### Added

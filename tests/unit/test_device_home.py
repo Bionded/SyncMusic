@@ -170,3 +170,24 @@ async def test_rockbox_play_log_is_left_to_the_home(env, tmp_path):
     await _apply(app, c, plan["id"])
     after = config.read_bytes() if config.exists() else None
     assert after == before
+
+
+async def test_make_home_takes_over_another_registrations_device(env, tmp_path):
+    """Registered here again after another instance synced it: Make home is the way to Wipe, not a dead end."""
+    app, c = env
+    mount = rockbox_tree(tmp_path / "mini")
+    dev = await _synced(app, c, mount)
+    m = manifest_io.read(mount)
+    ours = m.header.device_uid
+    m.header = m.header.model_copy(update={"home": OTHER, "device_uid": "another-registration"})
+    manifest_io.write(mount, m)
+    manifest_io.drop_cache()
+
+    r = await c.post(f"/api/v1/devices/{dev}/make-home")
+    assert r.status_code == 200 and r.json()["is_home"] is True, r.text
+    manifest_io.drop_cache()
+    header = manifest_io.read(mount).header
+    assert header.home.id == app.instance_id and header.device_uid == ours
+    r = await c.post(f"/api/v1/devices/{dev}/wipe", json={"confirm": "Mini"})
+    assert r.status_code == 202, r.text
+    await app.jobs.wait(r.json()["id"])

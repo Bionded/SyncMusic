@@ -40,7 +40,10 @@ videos", "All movies", "All series").
 
 ## 2. Register a device
 Plug the player into a USB port of the machine SyncMusic runs on. It appears under **Devices** as an unregistered
-drive within a few seconds (*Waiting for a device…* in the wizard). Then *Register*:
+drive within a few seconds (*Waiting for a device…* in the wizard). Then *Register*. It goes step by step: *Next*
+(or Enter) checks the step and opens the next one, *Back* and the step names above go back without losing anything,
+and nothing is saved until *Register* on the last step. *Show all steps on one page* shows the whole form at once
+(remembered in this browser; *Step by step* switches back).
 
 1. **Device** - SyncMusic detects the type (stock iPod, Rockbox, HiBy R1, USB drive) and shows *Detected: …*; change
    it if it is wrong. An iPod with Rockbox can also be used with its Apple firmware. Give it a **Name**.
@@ -58,6 +61,8 @@ drive within a few seconds (*Waiting for a device…* in the wizard). Then *Regi
 
    *Format the drive first* (USB drives, iPods) or *Wipe the player first* (Rockbox, HiBy) start from a clean device;
    you confirm by typing the device name. An iPod keeps its partition table and firmware.
+5. **Summary** - the name, type, purpose and folder of a USB disk, the templates, the processing and the first-sync
+   choice. *Register* creates the device and opens its first plan.
 
 ![Registering a device](img/register.png)
 

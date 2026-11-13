@@ -11,6 +11,9 @@ addStrings({
   "pf.help": "What this device handles and where each value comes from. Processors and the plan use it.",
   "pf.model": "Model: {label}",
   "pf.model_id": "Model: {label} ({model})",
+  "pf.firmware": "Firmware: {firmware}",
+  "pf.plugins": "Player plugins: {plugins}",
+  "pf.plugins_none": "Player plugins: none found",
   "pf.offline": "Connect the device to see what it reports itself; until then the defaults and your choices are shown.",
   "pf.music_only": "Music only: this player takes no podcasts or audiobooks.",
   "pf.change": "Change",
@@ -57,6 +60,15 @@ const ORDER = ["formats", "max_sample_rate", "max_bit_depth", "max_tracks", "cov
 const FORMATS = ["mp3", "aac", "alac", "flac", "ogg", "opus", "wav", "aiff", "wv", "ape", "mpc", "wma"];
 const RATES = [44100, 48000, 88200, 96000, 176400, 192000];
 const DEPTHS = [16, 24];
+// the firmware line and the plugins of a player that reports them (empty for the others)
+function playerInfo(p) {
+  if (!p || !p.firmware) return "";
+  const fw = [p.firmware, p.version].filter(Boolean).join(" ");
+  const plugins = Array.isArray(p.plugins)
+    ? html`<p data-player-plugins>${p.plugins.length ? t("pf.plugins", { plugins: p.plugins.join(", ") }) : t("pf.plugins_none")}</p>` : "";
+  return html`<p data-player-firmware>${t("pf.firmware", { firmware: fw })}</p>${plugins}`;
+}
+
 const SOURCE_STATE = { detected: "ok", known_model: "ok", setting: "busy", override: "warn", default: "neutral" };
 
 function show(name, v) {
@@ -125,6 +137,7 @@ export function profileCard(profile) {
     <div class="card-head"><div><h2>${t("pf.title")}</h2><div class="sub">${t("pf.help")}</div></div></div>
     <div class="card-body">
       ${model ? html`<p id="profileModel">${model}</p>` : ""}
+      ${playerInfo(profile.player)}
       ${profile.connected ? "" : html`<p class="muted">${t("pf.offline")}</p>`}
       ${profile.music_only ? html`<p class="muted">${t("pf.music_only")}</p>` : ""}
       ${names.map((n) => row(n, profile.fields[n]))}

@@ -106,7 +106,7 @@ addStrings({
   "field.base_folder": "Base folder",
   "field.base_folder.help": "The folder on the drive the path layout starts in; empty: the drive's top level. A new folder is created by the first sync; after a change the next sync moves the files.",
   "field.layout": "Path layout",
-  "field.layout.help": "Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date}; {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths.",
+  "field.layout.help": "Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date} {library_path} (the path in the library, used by backups); {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths.",
   "field.layout.music": "Music",
   "field.layout.music_multi_disc": "Music, multi-disc",
   "field.layout.podcast": "Podcasts",

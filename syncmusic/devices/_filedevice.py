@@ -244,12 +244,17 @@ def _number(value: str | None) -> int | None:
 def playlist_members(playlist: Path, root: Path) -> list[str]:
     """Device-relative paths of an .m3u8/.m3u playlist's entries (relative to the playlist, or absolute from the
     device root), in order; entries outside the device are skipped."""
-    out = []
-    base = PurePosixPath(playlist.relative_to(root).parent.as_posix())
     try:
         text = playlist.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
+    return parse_playlist(text, playlist.relative_to(root).parent.as_posix())
+
+
+def parse_playlist(text: str, folder: str) -> list[str]:
+    """Device-relative paths of a playlist's entries; `folder`: the playlist's device-relative folder."""
+    out = []
+    base = PurePosixPath(folder)
     for line in text.splitlines():
         line = line.strip().lstrip("\ufeff").replace("\\", "/")
         if not line or line.startswith("#"):

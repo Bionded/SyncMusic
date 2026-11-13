@@ -100,7 +100,7 @@ export function words(n) {
       if (d.status === "partial") return [t(d.failed === 1 ? "notif.sync.partial_one" : "notif.sync.partial", { name, n: d.failed ?? "?" }), ""];
       if (d.status === "failed") return [t("notif.sync.verify_failed", { name }), ""];
       if (d.status === "cancelled") return [t("notif.sync.cancelled", { name }), ""];
-      return [t("notif.sync.succeeded", { name }), ""];
+      return [t("notif.sync.succeeded", { name }), d.notice || ""];
     case "sync.failed": return [t("notif.sync.failed", { name }), d.error || ""];
     case "update.sent": { //
       const list = ["plays", "ratings", "hearts", "positions", "finished"].filter((k) => d[k]).map((k) => t(`act.n.${k}`, { n: d[k] })).join(", ");
