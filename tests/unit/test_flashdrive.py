@@ -461,3 +461,59 @@ def test_purpose_is_player_or_backup(tmp_path):
     assert _dev(tmp_path).s.purpose == "player"
     with pytest.raises(ValueError):
         _dev(tmp_path, purpose="radio")
+
+
+@pytest.mark.parametrize(("serial", "allowed"), [("S1", True), ("OTHER", False)])
+async def test_format_fixed_usb_disk_needs_its_registration(tmp_path, monkeypatch, serial, allowed):
+    """A fixed USB disk (RM=0, a USB SSD) passes the guard for a format only as the registered device."""
+    from types import SimpleNamespace
+
+    import syncmusic.devices.flashdrive as fd
+    from syncmusic.infra.blockdev.guard import Guard, GuardError
+
+    disks = [_blk(rm=False)]
+    guard = Guard()
+    seen: dict[str, object] = {}
+
+    async def fake_format_disk(g, path, fs, name, registered=None):
+        g.check(path, "partition", registered, disks)
+        seen["registered"] = registered
+        return "/dev/sda1"
+
+    async def fake_mount(g, part, device_id, root, *, read_only=False, registered=None):
+        g.check(part, "mount", registered, disks)
+        return SimpleNamespace(path=tmp_path / "flash")
+
+    monkeypatch.setattr(fd, "format_disk", fake_format_disk)
+    monkeypatch.setattr(fd, "mount", fake_mount)
+    monkeypatch.setattr(fd, "scan_block_devices", lambda *_: disks)
+    dev = _dev(tmp_path)
+    dev.config.identity = dev.config.identity.model_copy(update={"usb_serial": serial})
+    dev.ctx = SimpleNamespace(guard=guard, config=SimpleNamespace(mount_root=tmp_path))
+    dev.block_path = "/dev/sda"
+    if allowed:
+        assert await dev.format("NEW") == "/dev/sda1"
+        assert "S1" in seen["registered"]
+    else:
+        with pytest.raises(GuardError, match="not a registered"):
+            await dev.format("NEW")
+
+
+async def test_format_without_serial_keeps_the_removable_check(tmp_path, monkeypatch):
+    import syncmusic.devices.flashdrive as fd
+    from syncmusic.infra.blockdev.guard import Guard, GuardError
+
+    disks = [_blk(rm=False, serial=None)]
+
+    async def fake_format_disk(g, path, fs, name, registered=None):
+        assert registered is None
+        g.check(path, "partition", registered, disks)
+
+    monkeypatch.setattr(fd, "format_disk", fake_format_disk)
+    from types import SimpleNamespace
+
+    dev = _dev(tmp_path)
+    dev.ctx = SimpleNamespace(guard=Guard(), config=SimpleNamespace(mount_root=tmp_path))
+    dev.block_path = "/dev/sda"
+    with pytest.raises(GuardError, match="not removable"):
+        await dev.format("NEW")

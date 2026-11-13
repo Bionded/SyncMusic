@@ -17,8 +17,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
       - name: System packages
@@ -28,7 +28,7 @@ jobs:
       - run: uv run pytest -n 2 -m "slow and not hardware and not integration and not heavy"
       - name: Screenshots of failed UI tests
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-artifacts
           path: tests/artifacts/

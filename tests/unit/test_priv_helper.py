@@ -25,7 +25,7 @@ class FakeGuard:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def check(self, target, operation, registered=None, disks=None):
+    def check(self, target, operation, registered=None, disks=None, *, fixed_usb=False):
         self.calls.append((target, operation))
         if not target.startswith("/dev/sdz"):
             raise GuardError(f"refusing {operation} on {target}: NVMe/MMC system disk")

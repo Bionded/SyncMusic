@@ -6,7 +6,10 @@ A target block device (disk or partition) is accepted only if:
   allowed and the allowlist names it (emulated test devices, tests/emulated.toml);
 - the disk is not NVMe / mmcblk, carries no system mountpoint (`/`, `/boot`, `/boot/firmware`, ...) and
   no swap area;
-- the disk is removable (`RM=1`) or a known iPod (USB vendor 05ac);
+- the disk is removable (`RM=1`) or a known iPod (USB vendor 05ac) - or a fixed USB disk (`RM=0`: USB SSDs, most
+  USB hard-disk enclosures) that the caller vouches for: either `registered` identities are given (and the disk must
+  match them, below), or `fixed_usb` is set for a non-destructive operation (the privileged helper, which never
+  sees the registrations: it may mount/read/eject such a disk but never format, partition or relabel it);
 - if an allowlist (tests/hardware.toml) is configured: the disk's USB serial or the partition's
   filesystem UUID is listed in it;
 - if `registered` identities are given (production): the disk serial / fs UUID is one of them;
@@ -122,6 +125,7 @@ def check_target(
     allow_loop: bool = False,
     registered: Iterable[str] | None = None,
     operation: str = "write",
+    fixed_usb: bool = False,
 ) -> tuple[BlockDeviceInfo, BlockDeviceInfo]:
     """Validate `target` (a /dev path) for `operation`. Returns (disk, node) or raises GuardError."""
     if operation not in OPERATIONS:
@@ -156,7 +160,11 @@ def check_target(
         if disk.tran != "usb":
             raise refuse(f"transport is {disk.tran!r}, not usb")
         if not disk.rm and disk.usb_vendor_id != APPLE_VENDOR_ID:
-            raise refuse("not removable and not an iPod")
+            vouched = registered is not None or (
+                fixed_usb and operation not in DESTRUCTIVE_OPERATIONS
+            )
+            if not vouched:
+                raise refuse("not removable and not an iPod")
         if allowlist is not None and not allowlist.allows(disk, node):
             raise refuse("not in the hardware allowlist")
     if registered is not None:
@@ -193,6 +201,8 @@ class Guard:
         operation: str,
         registered: Iterable[str] | None = None,
         disks: list[BlockDeviceInfo] | None = None,
+        *,
+        fixed_usb: bool = False,
     ) -> tuple[BlockDeviceInfo, BlockDeviceInfo]:
         return check_target(
             target,
@@ -201,4 +211,5 @@ class Guard:
             allow_loop=self.allow_loop,
             registered=registered,
             operation=operation,
+            fixed_usb=fixed_usb,
         )

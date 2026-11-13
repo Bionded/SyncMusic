@@ -90,7 +90,8 @@ class Helper:
         if not path.startswith("/dev/"):
             raise Refused(f"{path!r} is not a block device path")
         try:
-            self.guard.check(path, operation)
+            # the helper does not know the registrations: fixed USB disks (RM=0) pass for mount/read/eject only
+            self.guard.check(path, operation, fixed_usb=True)
         except GuardError as e:
             raise Refused(str(e)) from None
         return path

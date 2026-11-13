@@ -353,6 +353,10 @@ class DeviceIdentity(BaseModel):
         """The identities the blockdev guard accepts for this device: every serial and the fs UUID."""
         return [*self.serials(), *([self.fs_uuid] if self.fs_uuid else [])]
 
+    def format_guard_ids(self) -> list[str] | None:
+        """Identities for a format (new fs UUID): the serials, or None (removable-only check) without a serial."""
+        return self.guard_ids() if self.serials() else None
+
 
 class ProcessorSlot(BaseModel):
     type: str

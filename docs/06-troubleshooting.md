@@ -14,7 +14,8 @@ System* switches the log to `DEBUG` without a restart.
 - After a **Format** the file system ID changes; the device is still recognised by its USB serial.
 
 ## "Guard refused"
-SyncMusic only writes to disks that are connected over **USB** and are removable or a known iPod, and never to a disk
+SyncMusic only writes to disks that are connected over **USB** and are removable or a known iPod (or a fixed USB disk -
+a USB SSD or hard-disk enclosure - that you registered as a device), and never to a disk
 that holds a system mount or swap (or, if you configured an allowlist, a disk not on it). This is deliberate and
 cannot be switched off.
 

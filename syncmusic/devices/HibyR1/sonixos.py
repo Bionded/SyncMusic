@@ -919,7 +919,7 @@ class HibySettings(BaseModel):
 
 class Hiby(FileDeviceMixin, Device):
     type_name = "hiby"
-    display_name = "HiBy player (SonixOS)"
+    display_name = "HiBy R1 - SonixOS"
     owns_device_tree = True
     firmware_siblings = ("hiby_compas",)
     # the player's own settings and caches stay; Wipe clears only its index of the card (`wipe`)
@@ -1611,12 +1611,16 @@ class Hiby(FileDeviceMixin, Device):
                     self.block_path,
                     self.ctx.config.mount_root,
                     lambda root: self._save_settings(root, backup),
+                    registered=self.config.identity.format_guard_ids(),
                 )
         except Exception as e:  # noqa: BLE001 - a broken volume is what a format is for
             log.warning("%s: player settings not backed up before the format: %s", self.id, e)
         try:
-            await make_filesystem(guard, self.block_path, fs, name, whole_disk=True)  # type: ignore[arg-type]
-            m = await mount_fs(guard, self.block_path, self.id, self.ctx.config.mount_root)
+            registered = self.config.identity.format_guard_ids()
+            await make_filesystem(guard, self.block_path, fs, name, registered, whole_disk=True)  # type: ignore[arg-type]
+            m = await mount_fs(
+                guard, self.block_path, self.id, self.ctx.config.mount_root, registered=registered
+            )
             self.mount = m.path
             self._path_rules = None
 

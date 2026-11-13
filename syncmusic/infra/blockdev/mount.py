@@ -461,13 +461,25 @@ async def unmount(m: Mounted, *, force_reused: bool = False) -> None:
 
 
 async def probe_read[T](
-    guard: Guard, dev_path: str, mount_root: Path, read: Callable[[Path], T]
+    guard: Guard,
+    dev_path: str,
+    mount_root: Path,
+    read: Callable[[Path], T],
+    *,
+    registered: Iterable[str] | None = None,
 ) -> T:
     """Mount `dev_path` read-only under `<mount_root>/.probe-<name>`, run `read(mountpoint)` in a thread,
     unmount. For identifying unknown disks: the guard check in `mount()`
     applies (allowlisted / USB / removable / iPod only), nothing is ever written. An existing mount is reused
     and left alone."""
-    m = await mount(guard, dev_path, f".probe-{Path(dev_path).name}", mount_root, read_only=True)
+    m = await mount(
+        guard,
+        dev_path,
+        f".probe-{Path(dev_path).name}",
+        mount_root,
+        read_only=True,
+        registered=registered,
+    )
     try:
         return await asyncio.to_thread(read, m.path)
     finally:

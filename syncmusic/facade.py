@@ -345,6 +345,31 @@ def _public_settings(settings: AppSettings) -> dict[str, Any]:
     return out
 
 
+def sibling_settings(
+    old_type: str, new_type: str, settings: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Settings of a device switching to a firmware sibling type: keys the new type does not know are dropped,
+    values left at the old type's default (or unset) take the new type's default, the user's own choices stay.
+    Returns (settings, dropped keys)."""
+    old_model = registry.device_class(old_type).Settings
+    new_model = registry.device_class(new_type).Settings
+    old_defaults = old_model().model_dump(mode="json")
+    known = set(new_model.model_fields)
+    out: dict[str, Any] = {}
+    dropped: list[str] = []
+    for key, value in settings.items():
+        if key not in known:
+            dropped.append(key)
+        elif value is not None and value != old_defaults.get(key):
+            out[key] = value
+    try:
+        new_model.model_validate(out)
+    except ValueError:  # a carried value the new type rejects: its defaults instead
+        dropped.extend(out)
+        out = {}
+    return out, sorted(dropped)
+
+
 class AppFacade:
     def __init__(self, app: Application) -> None:
         self.app = app
@@ -2586,9 +2611,21 @@ class AppFacade:
                 **changes,
                 "library_accounts": {k: v for k, v in changes["library_accounts"].items() if v},
             }
+        dropped: list[str] = []
+        new_type = changes.get("type", cfg.type)
+        if (
+            new_type != cfg.type
+            and "settings" not in changes
+            and new_type in registry.device_class(cfg.type).firmware_siblings
+        ):  # the same player with the other firmware: carry over what the new type understands
+            settings, dropped = sibling_settings(cfg.type, new_type, cfg.settings)
+            changes = {**changes, "settings": settings}
         merged = {**cfg.model_dump(mode="json"), **changes}
         saved = await self.app.sync.update_device(DeviceConfig.model_validate(merged))
-        return _public_device(saved)
+        out = _public_device(saved)
+        if dropped:
+            out["dropped_settings"] = dropped
+        return out
 
     async def check_device(self, device_id: str, settings: dict[str, Any]) -> dict[str, Any]:
         """Test a server device's connection with changed settings before they are saved; a secret

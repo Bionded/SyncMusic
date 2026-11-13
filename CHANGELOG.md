@@ -5,6 +5,13 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- The SonixOS device type is now called *HiBy R1 - SonixOS*, like *HiBy R1 - Compás*.
+
+### Fixed
+- USB SSDs and USB hard-disk enclosures registered as a device (for example as a backup disk) were refused with "not removable and not an iPod"; registered fixed USB disks now mount, sync and can be formatted.
+- HiBy R1: *Switch to Compás* (and back to SonixOS) failed with "invalid settings"; the switch now keeps the settings the other firmware understands and uses its defaults for the rest.
+
 ## [0.2.4] - 2026-11-13
 
 ### Added

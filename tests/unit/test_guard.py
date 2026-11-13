@@ -388,3 +388,32 @@ def test_generic_serial_needs_the_entry_fs_uuid_too(tmp_path):
     assert not allow.allows(*[_usb_disk("OTHER", "AAAA-0001")] * 2)
     # unique serials keep matching alone (an iPod's data partition UUID changes on every format)
     assert allow.allows(*[_usb_disk("000A27000000F00D", "DDDD-0004")] * 2)
+
+
+def test_fixed_usb_disk_passes_when_registered(disks):
+    """USB SSDs / hard-disk enclosures report RM=0: accepted only when the user registered them."""
+    sda = next(d for d in disks if d.name == "sda")
+    sda.rm = False
+    check_target("/dev/sda", disks, registered=["F00DFEED0123456789ABCDEF"], operation="mount")
+    check_target("/dev/sda", disks, registered=["F00DFEED0123456789ABCDEF"], operation="mkfs")
+    with pytest.raises(GuardError, match="registered"):
+        check_target("/dev/sda", disks, registered=["nope"], operation="mount")
+    with pytest.raises(GuardError, match="not removable"):
+        check_target("/dev/sda", disks, operation="mount")
+
+
+def test_fixed_usb_disk_helper_non_destructive_only(disks):
+    sda = next(d for d in disks if d.name == "sda")
+    sda.rm = False
+    for op in ("mount", "read", "eject"):
+        check_target("/dev/sda", disks, operation=op, fixed_usb=True)
+    for op in ("mkfs", "format", "partition", "label", "write", "repair"):
+        with pytest.raises(GuardError, match="not removable"):
+            check_target("/dev/sda", disks, operation=op, fixed_usb=True)
+
+
+def test_fixed_usb_never_lifts_transport_or_system_checks(disks):
+    sda = next(d for d in disks if d.name == "sda")
+    sda.rm, sda.tran = False, "sata"
+    with pytest.raises(GuardError, match="transport"):
+        check_target("/dev/sda", disks, registered=["F00DFEED0123456789ABCDEF"], operation="mount")
