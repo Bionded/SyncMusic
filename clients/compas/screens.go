@@ -890,7 +890,39 @@ func runApp() error {
 			}
 		}()
 	}
+	if c.st.Token != "" {
+		go a.listen()
+	}
 	return a.loop()
+}
+
+// listen: while the app is open, a long poll on the server's status; "Sync now" pressed on the server starts the
+// sync here at once (unless one runs or the user is pairing).
+func (a *App) listen() {
+	lp := &Client{st: State{Server: a.c.st.Server, Token: a.c.st.Token}, http: &http.Client{Timeout: 40 * time.Second}}
+	for {
+		var st struct {
+			Requested bool `json:"requested"`
+		}
+		if err := lp.call("GET", "status?wait=25", nil, &st); err != nil {
+			time.Sleep(15 * time.Second) // offline or the server restarts: try again later
+			continue
+		}
+		if st.Requested {
+			started := make(chan bool, 1)
+			a.later <- func() {
+				ok := !a.syncing && a.build().title == T("home.title")
+				if ok {
+					a.runSync(true)
+				}
+				started <- ok
+			}
+			if !<-started {
+				time.Sleep(5 * time.Second) // busy now: the request waits on the server
+			}
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 // screenDemo draws one page and exits (test hook: `screen <title> <status> <detail>`).

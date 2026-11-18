@@ -54,6 +54,7 @@ from syncmusic.core import positions as book_positions
 from syncmusic.core.activity import report_activity
 from syncmusic.core.applier import (
     Applier,
+    DeviceIOError,
     DeviceLostError,
     describe,
     gentle_pacer,
@@ -455,6 +456,12 @@ class SyncService:
         # device id -> the I/O error that showed its file system is damaged: no automatic syncs until a
         # re-plug, a repair, a format or a wipe clears it
         self._damaged: dict[str, str] = {}
+        # device id -> time.monotonic() of the last automatic repair after a sync hit an I/O error
+        self._healed: dict[str, float] = {}
+        # device id -> (item key, description) the repeated I/O error stopped at: the device page offers to skip it
+        self._skip_offer: dict[str, tuple[str, str]] = {}
+        # device id -> item keys the next syncs leave out (Skip that file and continue), with when it was asked
+        self._skipped: dict[str, dict[str, float]] = {}
         # devices whose manifest and its backup are both unreadable: why (the UI offers to rebuild from the files)
         self._manifest_bad: dict[str, str] = {}
         # network devices whose server did not answer the last scheduled start, and since when
@@ -471,6 +478,7 @@ class SyncService:
         # device id -> {reason, plan_id} of a connect-time sync that waits for the user
         self._waiting: dict[str, dict[str, Any]] = {}
         self._client_sync_wanted: set[str] = set()  # Wi-Fi clients told to sync on their next poll
+        self._client_wakeups: dict[str, asyncio.Event] = {}  # long polls waiting for 'Sync now'
         self._scheduled_on: dict[
             str, dt.date
         ] = {}  # device id -> the day its daily sync last started
@@ -960,6 +968,10 @@ class SyncService:
                     if connected
                     else None,
                     "fs_damaged": self._damaged.get(cfg.id) if connected else None,
+                    # the file a repeated I/O error stopped at: "Skip that file and continue"
+                    "skip_offer": (self._skip_offer[cfg.id][1] or self._skip_offer[cfg.id][0])
+                    if connected and cfg.id in self._skip_offer
+                    else None,
                     "manifest_damaged": self._manifest_bad.get(cfg.id) if connected else None,
                     # nothing to plan without a template or rule pulling from a library: not
                     # "waiting", the UI links to its Rules tab
@@ -1831,10 +1843,11 @@ class SyncService:
         """Another mount of the device appeared next to the one SyncMusic writes through (a host automounter
         that mounted it after us): two writers damage a FAT volume, so writing stops and the device shows
         the error until that mount is gone."""
+        entries = await asyncio.to_thread(mnt.mounts_of, m.dev_path)
         others = [
             e.path
-            for e in await asyncio.to_thread(mnt.mounts_of, m.dev_path)
-            if e.path != str(m.path)
+            for e in entries
+            if e.path != str(m.path) and not mnt.is_view_of(e.path, str(m.path), entries)
         ]
         if not others:
             if "mounted a second time" in self._errors.get(cfg.id, ""):
@@ -1955,7 +1968,9 @@ class SyncService:
         return [
             m.path
             for m in mnt.disk_mounts(disk, self.ctx.config.mount_root)
-            if not m.ours and m.path not in ours
+            if not m.ours
+            and m.path not in ours
+            and not any(mnt.is_view_of(m.path, o) for o in ours)
         ]
 
     async def unmount_everywhere(
@@ -2316,6 +2331,7 @@ class SyncService:
             cfg, device, snaps, manifest, cfg.processors, force=force, auto=auto, attached=attached
         )
         planprogress.step("checks")
+        self._drop_skipped(cfg.id, plan)
         if relinked:
             plan.warnings.insert(
                 0,
@@ -4305,8 +4321,30 @@ class SyncService:
         )
 
     def request_client_sync(self, device_id: str) -> None:
-        """'Sync now' for a Wi-Fi client: its next status poll is told to sync."""
+        """'Sync now' for a Wi-Fi client: its next status poll is told to sync (a waiting poll at once)."""
         self._client_sync_wanted.add(device_id)
+        self._client_wakeup(device_id).set()
+        self.ctx.bus.publish("client.sync_requested", device_id=device_id)
+
+    def cancel_client_sync_request(self, device_id: str) -> bool:
+        if device_id not in self._client_sync_wanted:
+            return False
+        self._client_sync_wanted.discard(device_id)
+        self.ctx.bus.publish("client.sync_requested", device_id=device_id, cancelled=True)
+        return True
+
+    def _client_wakeup(self, device_id: str) -> asyncio.Event:
+        return self._client_wakeups.setdefault(device_id, asyncio.Event())
+
+    async def wait_client_sync_request(self, device_id: str, timeout: float) -> bool:
+        """Wait up to `timeout` s for 'Sync now' (a client's long poll); True when one is pending."""
+        if device_id in self._client_sync_wanted or timeout <= 0:
+            return device_id in self._client_sync_wanted
+        ev = self._client_wakeup(device_id)
+        ev.clear()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(ev.wait(), timeout)
+        return device_id in self._client_sync_wanted
 
     def sync_requested(self, device_id: str) -> bool:
         return device_id in self._client_sync_wanted
@@ -4431,9 +4469,88 @@ class SyncService:
         return {"moved": moved}
 
     def job_failed(self, info: JobInfo, e: BaseException) -> None:
-        """Every failed job (JobRunner.on_failed): a device job that hit a damaged file system marks it."""
-        if not self.mark_damaged(info.device_id, e) and isinstance(e, manifest_io.ManifestError):
+        """Every failed job (JobRunner.on_failed): a device job that hit a damaged file system marks it; a sync
+        that did repairs the file system and continues once by itself."""
+        if self.mark_damaged(info.device_id, e):
+            if info.kind == "sync" and info.device_id is not None:
+                task = asyncio.get_running_loop().create_task(
+                    self._heal_and_resume(info.device_id, e)
+                )
+                self._update_tasks.add(task)
+                task.add_done_callback(self._update_tasks.discard)
+        elif isinstance(e, manifest_io.ManifestError):
             self.mark_manifest_damaged(info.device_id, e)
+
+    # a second I/O error within this time: the storage itself may be failing
+    HEAL_AGAIN_S = 6 * 3600.0
+
+    async def _heal_and_resume(self, device_id: str, e: BaseException) -> None:
+        """A sync stopped on an I/O error (the kernel then often remounts the volume read-only): check and
+        repair the file system and sync again, which continues from the last checkpoint. Once: the same
+        error again soon after means the storage itself may be failing, which the device page then says."""
+        last = self._healed.get(device_id)
+        if last is not None and time.monotonic() - last < self.HEAL_AGAIN_S:
+            err = fs_damage(e)
+            where = f" ({err.filename})" if err is not None and err.filename else ""
+            msg = (
+                f"the storage may be failing: writing stopped again with an I/O error{where} after a repair. "
+                "Check the system log for disk errors, try another card or cable, or turn on gentle writing"
+            )
+            log.error("%s: %s", device_id, msg)
+            self._errors[device_id] = msg
+            if isinstance(err, DeviceIOError) and err.ref:
+                self._skip_offer[device_id] = (err.ref, err.item)
+            self.ctx.bus.publish(
+                "device.error", device_id=device_id, code="storage_failing", error=msg
+            )
+            return
+        self._healed[device_id] = time.monotonic()
+        log.warning(
+            "%s: the sync hit an I/O error; repairing the file system and continuing", device_id
+        )
+        try:
+            await self.repair(device_id, resume=True)
+        except Exception as err:  # noqa: BLE001 - the device page shows the damaged state
+            log.warning("%s: automatic repair and resume failed: %s", device_id, err)
+
+    # how long a skipped file stays out of the syncs (then it is tried again)
+    SKIP_FOR_S = 24 * 3600.0
+
+    async def skip_failed_file(self, device_id: str) -> JobInfo:
+        """Skip that file and continue: the item the repeated I/O error stopped at is left out of the syncs for
+        a day, the file system is repaired and the sync continues from its last checkpoint."""
+        cfg = await self.config(device_id)
+        offer = self._skip_offer.get(cfg.id)
+        if offer is None:
+            raise SyncError(f"{cfg.name}: no file to skip", "invalid")
+        self._skipped.setdefault(cfg.id, {})[offer[0]] = time.monotonic()
+        log.warning("%s: skipping %s after repeated I/O errors", cfg.id, offer[1] or offer[0])
+        info = await self.repair(cfg.id, resume=True)
+        self._skip_offer.pop(cfg.id, None)
+        self._errors.pop(cfg.id, None)
+        self.ctx.bus.publish("device.updated", device_id=cfg.id)
+        return info
+
+    def _drop_skipped(self, device_id: str, plan: SyncPlan) -> None:
+        """Leave the files the user skipped after an I/O error out of `plan` (adds and replaces)."""
+        skipped = self._skipped.get(device_id)
+        if not skipped:
+            return
+        now = time.monotonic()
+        for key, at in list(skipped.items()):
+            if now - at > self.SKIP_FOR_S:
+                del skipped[key]
+        left = [
+            a
+            for a in plan.actions
+            if a.kind in (ActionKind.ADD, ActionKind.REPLACE) and a.ref.key() in skipped
+        ]
+        if left:
+            plan.actions = [a for a in plan.actions if a not in left]
+            plan.warnings.append(
+                f"{len(left)} file(s) skipped after an I/O error: "
+                + ", ".join(a.title or a.ref.key() for a in left)
+            )
 
     def _refuse_damaged(self, cfg: DeviceConfig) -> None:
         if cfg.id in self._damaged:
@@ -4442,9 +4559,10 @@ class SyncService:
                 "fs_damaged",
             )
 
-    async def repair(self, device_id: str) -> JobInfo:
+    async def repair(self, device_id: str, *, resume: bool = False) -> JobInfo:
         """Check and repair the data partition's file system (fsck), as a job: unmount, fsck (the guard
-        allows the data partition only), mount again. Clears the damaged state when the tool succeeds."""
+        allows the data partition only), mount again. Clears the damaged state when the tool succeeds;
+        `resume` then syncs again (a stopped sync continues from its last checkpoint)."""
         cfg = await self.config(device_id)
         if cfg.mount_path or self._network(cfg):
             raise SyncError(f"{cfg.name} is not a disk: nothing to repair", "invalid")
@@ -4478,7 +4596,21 @@ class SyncService:
             self.ctx.bus.publish("device.repaired", device_id=cfg.id, fixed=result.fixed)
             return {"fixed": result.fixed, "output": result.output}
 
-        return self.ctx.jobs.submit("repair", f"repair {cfg.name}", job, device_id=cfg.id)
+        info = self.ctx.jobs.submit("repair", f"repair {cfg.name}", job, device_id=cfg.id)
+        if resume:
+            task = asyncio.get_running_loop().create_task(self._sync_after(info, cfg.id))
+            self._update_tasks.add(task)
+            task.add_done_callback(self._update_tasks.discard)
+        return info
+
+    async def _sync_after(self, repair: JobInfo, device_id: str) -> None:
+        done = await self.ctx.jobs.wait(repair.id)
+        if done.status is not JobStatus.SUCCEEDED:
+            return
+        try:
+            await self.auto_sync(await self.config(device_id), "continue after a repair")
+        except Exception as e:  # noqa: BLE001 - the device page shows why
+            log.warning("%s: sync after the repair did not start: %s", device_id, e)
 
     async def on_disk_removed(self, name: str) -> None:
         cd = self.detector.connected.get(name)

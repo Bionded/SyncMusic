@@ -17,13 +17,22 @@ import logging
 import mimetypes
 import re
 import secrets
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, Field
 
-from syncmusic.core.models import ActionKind, Manifest, MediaKind, Track
+from syncmusic.core.models import (
+    ActionKind,
+    ItemRef,
+    Manifest,
+    MediaKind,
+    PlanAction,
+    SyncPlan,
+    Track,
+)
 from syncmusic.infra.clients import ClientError, Clients
 from syncmusic.infra.jobs import JobStatus
 
@@ -153,6 +162,7 @@ class ClientSession(BaseModel):
     bytes_done: int = 0
     cancel: bool = False
     may_confirm: bool = False  # needs_review that the client itself may confirm (device setting)
+    more: int = 0  # files of the plan held back for the next window (the outbox budget)
 
     def totals(self) -> dict[str, int]:
         return {
@@ -161,12 +171,31 @@ class ClientSession(BaseModel):
             "delete_count": len(self.delete),
         }
 
-    def progress(self) -> dict[str, int]:
+    # (time.monotonic(), bytes_done) at each ack: the transfer rate to the client over the last RATE_WINDOW_S
+    acks: list[tuple[float, int]] = []
+
+    def acked(self, now: float) -> None:
+        self.acks.append((now, self.bytes_done))
+        self.acks = [a for a in self.acks if a[0] >= now - RATE_WINDOW_S] or self.acks[-1:]
+
+    def progress(self, now: float | None = None) -> dict[str, Any]:
+        """Files and bytes the client took (acked), and the rate of that transfer to the client in bytes/s over
+        the last seconds with the time left at that rate (None until two acks are some time apart)."""
+        total = self.totals()["fetch_bytes"]
+        rate: float | None = None
+        if len(self.acks) >= 2:
+            (t0, b0), (t1, b1) = self.acks[0], self.acks[-1]
+            if now is not None and now - t1 > RATE_WINDOW_S:
+                rate = 0.0  # nothing acked for a while
+            elif t1 - t0 >= 1.0:
+                rate = (b1 - b0) / (t1 - t0)
         return {
             "done": len(self.done) + len(self.deleted),
             "total": len(self.fetch) + len(self.delete),
             "bytes_done": self.bytes_done,
-            "bytes_total": self.totals()["fetch_bytes"],
+            "bytes_total": total,
+            "rate_bps": round(rate) if rate is not None else None,
+            "eta_s": round((total - self.bytes_done) / rate) if rate else None,
         }
 
 
@@ -195,16 +224,53 @@ def listening_state(key: str | None, t: Track) -> dict[str, Any]:
     podcasts and audiobooks, the resume position and whether it is finished."""
     out: dict[str, Any] = {"key": key} if key is not None else {}
     out |= {"rating": t.rating, "favourite": t.starred, "play_count": t.play_count}
+    if t.kind is MediaKind.MUSIC and t.album_id and t.album:
+        # the album's own rating; `album_ref` is what an `album_rating` event names
+        out |= {
+            "album_ref": ItemRef(library_id=t.ref.library_id, item_id=t.album_id).key(),
+            "album_artist": t.album_artist or t.artist or "",
+            "album": t.album,
+            "album_rating": t.album_rating,
+        }
     if t.kind in (MediaKind.PODCAST, MediaKind.AUDIOBOOK):
         out["position_s"] = t.position_s
         out["finished"] = t.finished
     return out
 
 
+MB = 1024 * 1024
+RATE_WINDOW_S = 15.0  # the transfer rate to a client is measured over this many seconds of acks
+
+
+def window(plan: SyncPlan, dev: ClientDevice) -> int:
+    """Hold back the plan's adds and replaces beyond the outbox budget (they stay missing on the client and
+    are planned again by the next sync), so the server never prepares the whole library at once. Returns how many
+    were held back; the first file always goes."""
+    budget = dev.settings.outbox_budget_mb * MB
+    if budget <= 0:
+        return 0
+    used = sum(dev.outbox().values())
+    keep: list[PlanAction] = []
+    held = 0
+    for a in plan.actions:
+        if a.kind in (ActionKind.ADD, ActionKind.REPLACE) and not a.tags_only:
+            size = a.item.file.size if a.item is not None and a.item.file.size else 0
+            if held or (used + size > budget and used > 0):
+                held += 1
+                continue
+            used += size
+        keep.append(a)
+    if held:
+        plan.actions = keep
+        log.info("%s: %d files wait for the next window of the outbox", dev.config.name, held)
+    return held
+
+
 class ClientSessions:
     def __init__(self, sync: SyncService, clients: Clients) -> None:
         self.sync = sync
         self.clients = clients
+        self._more: dict[str, int] = {}  # device id -> files its last session held back
         self.sessions: dict[str, ClientSession] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._deliver: dict[str, asyncio.Task[None]] = {}  # device id -> debounced event delivery
@@ -269,6 +335,18 @@ class ClientSessions:
             None,
         )
 
+    def shown_for(self, device_id: str) -> ClientSession | None:
+        """The session the device page shows: the open one, else the newest that waits for the user or failed."""
+        open_ = self.open_for(device_id)
+        if open_ is not None:
+            return open_
+        waiting = [
+            s
+            for s in self.sessions.values()
+            if s.device_id == device_id and s.status in ("needs_review", "failed")
+        ]
+        return max(waiting, key=lambda s: s.created_at, default=None)
+
     # --- start ------------------------------------------------------------------------------------
 
     async def start(self, device_id: str, req: SyncRequest) -> ClientSession:
@@ -279,27 +357,28 @@ class ClientSessions:
             raise ClientError(
                 "inventory_required", "send the full inventory (the server's state differs)", 409
             )
-        old = self.open_for(device_id)
-        if old is not None and old.status == "planning":
-            return old  # still planning: the same session
-        if old is not None:
-            del self.sessions[old.id]
         items = {i.path: i.size for i in inv.items}
+        # one check-and-create per device: two starts at the same moment (a retry, a double tap) share a session
         async with self._lock(device_id):
+            old = self.open_for(device_id)
+            if old is not None and old.status == "planning":
+                return old  # still planning: the same session
+            if old is not None:
+                del self.sessions[old.id]
             dev = await self.device(device_id)
             await asyncio.to_thread(
                 dev.report, req.capabilities, items, inv.removed, full=inv.kind == "full"
             )
+            s = ClientSession(
+                id=uuid.uuid4().hex[:16],
+                device_id=device_id,
+                mode=req.mode,
+                expires_at=_now() + dt.timedelta(hours=SESSION_HOURS),
+            )
+            self.sessions[s.id] = s
         if req.capabilities is not None:
             await self.clients.update_capabilities(device_id, req.capabilities)
         self.sync.client_sync_started(device_id)
-        s = ClientSession(
-            id=uuid.uuid4().hex[:16],
-            device_id=device_id,
-            mode=req.mode,
-            expires_at=_now() + dt.timedelta(hours=SESSION_HOURS),
-        )
-        self.sessions[s.id] = s
         self._tasks[s.id] = asyncio.create_task(self._plan(s, first_inventory=not items))
         return s
 
@@ -311,6 +390,7 @@ class ClientSessions:
             if s.status == "planning":
                 await self._fill(s)
                 s.status = "ready"
+                s.acked(time.monotonic())  # the transfer starts now
         except ClientError as e:
             s.status, s.message, s.code = "failed", str(e), e.code
         except SyncError as e:  # a precondition (no templates, library down): no traceback
@@ -349,6 +429,8 @@ class ClientSessions:
                 dev = await self.device(s.device_id)
                 s.may_confirm = dev.settings.client_may_confirm
                 return self._review(s, reasons)
+            dev = await self.device(s.device_id)
+            s.more = await asyncio.to_thread(window, plan, dev)
             job = await sync.apply(plan.id, first_sync=first)
         s.job_id = job.id
         info = await sync.ctx.jobs.wait(job.id)
@@ -394,6 +476,7 @@ class ClientSessions:
                 )
             await self._fill(s)
             s.status = "ready"
+            s.acked(time.monotonic())
         except ClientError as e:
             s.status, s.message, s.code = "failed", str(e), e.code
         except Exception as e:  # noqa: BLE001 - the client sees the reason, the server logs it
@@ -547,6 +630,7 @@ class ClientSessions:
                 "playlists": s.playlists,
                 "generated": s.generated,
                 "after_sync": s.after_sync,
+                "more": s.more,
                 "expires_at": s.expires_at.isoformat(),
                 "next": {},
             }
@@ -583,9 +667,13 @@ class ClientSessions:
             wanted, reason = "full", "requested on the server"
         elif dev.state.deletes or dev.outbox():
             wanted, reason = "full", "files are waiting for the client"
+        elif self._more.get(device_id):
+            wanted, reason = "full", "more files are ready to be prepared for the client"
         return {
             "sync_wanted": wanted,
             "reason": reason,
+            # the user pressed Sync now on the server: an open app starts the sync right away
+            "requested": self.sync.sync_requested(device_id),
             "plan_ready": open_ is not None and open_.status == "ready",
             "poll_s": poll_s,
             "server_time": _now().isoformat(),
@@ -690,6 +778,7 @@ class ClientSessions:
                 dev.save_state()
 
             await asyncio.to_thread(work)
+        s.acked(time.monotonic())
         for fail in body.failed:
             s.failed[fail.path] = f"{fail.error}: {fail.message}".rstrip(": ")
             log.warning("client %s could not take %s: %s", device_id, fail.path, fail.error)
@@ -707,6 +796,7 @@ class ClientSessions:
             await asyncio.to_thread(dev.save_state)
         s.status = "finished"
         self.sessions.pop(s.id, None)
+        self._more[device_id] = s.more
         progress = s.progress()
         log.info(
             "client %s finished its sync (%s): %d of %d done, %d failed",
@@ -727,6 +817,8 @@ class ClientSessions:
             "inventory_cursor": str(dev.state.inventory_cursor),
             "progress": progress,
             "failed": s.failed,
+            # the plan held files back for a later window: sync again (at once) for the next one
+            "more": s.more > 0 and status == "complete",
         }
 
     def cancel(self, device_id: str) -> bool:

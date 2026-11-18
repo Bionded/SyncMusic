@@ -120,16 +120,16 @@ func TestHeartsDownPatchesOnlyOurRows(t *testing.T) {
 	}}
 	c.collect() // the baseline, as Sync does before planning
 	c.st.Events = nil
-	want := []Wanted{{"k1", true, 5, nil, false}, {"k2", false, 3, nil, false}, {"k3", false, 0, nil, false}, {"k4", true, 1, nil, false}, {"own", true, 9, nil, false}}
+	want := []Wanted{{"k1", true, 5, 0, nil, false, AlbumWant{}}, {"k2", false, 3, 0, nil, false, AlbumWant{}}, {"k3", false, 0, 0, nil, false, AlbumWant{}}, {"k4", true, 1, 0, nil, false, AlbumWant{}}, {"own", true, 9, 0, nil, false, AlbumWant{}}}
 	d, err := c.heartsDown(want, map[string]bool{"k3": true})
 	if err != nil || len(d.patches) != 1 || d.patches[0].card != "Music/A/01.flac" {
-		t.Fatalf("patches %v %v", d.patches, err) // 02: first look never clears a heart
+		t.Fatalf("patches %v %v", d.patches, err) // only 01's plays: library hearts are not stars
 	}
 	if err := c.apply(d); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := readTagcache(root)
-	if got["Music/A/01.flac"].Plays != 5 || !got["Music/A/01.flac"].Fav ||
+	if got["Music/A/01.flac"].Plays != 5 || got["Music/A/01.flac"].Stars != 0 ||
 		got["Music/A/02.flac"].Plays != 9 || !got["Music/A/02.flac"].Fav ||
 		!got["Music/A/03.flac"].Fav || got["Music/Mine/own.mp3"] != (Listen{}) {
 		t.Fatalf("tagcache after: %v", got)
@@ -143,8 +143,95 @@ func TestHeartsDownPatchesOnlyOurRows(t *testing.T) {
 		t.Fatalf("second look: %v", again.patches)
 	}
 	c.apply(again)
-	want[0].Favourite = false // the heart is taken away in the library: now it goes down
-	if d, _ := c.heartsDown(want, nil); len(d.patches) != 1 || d.patches[0].card != "Music/A/01.flac" || d.patches[0].to.Fav {
-		t.Fatalf("un-heart: %v", d.patches)
+	want[1].Favourite = true // a heart in the library never becomes stars; a rating does
+	want[0].Rating = 2
+	if d, _ := c.heartsDown(want, nil); len(d.patches) != 1 || d.patches[0].card != "Music/A/01.flac" || d.patches[0].to.Stars != 2 {
+		t.Fatalf("rating down: %v", d.patches)
+	}
+}
+
+func TestStarsAreRatingsNotHearts(t *testing.T) {
+	root := t.TempDir()
+	writeTC(t, root, []tcRowSpec{{"Music/A/01.flac", 1, true}, {"Music/A/02.flac", 1, false}})
+	c := &Client{root: root, data: t.TempDir(), st: State{
+		Keys: map[string]string{"Music/A/01.flac": "k1", "Music/A/02.flac": "k2"},
+	}}
+	c.collect()
+	c.st.Events = nil
+	// the user re-rates the heart to 4 stars and gives 02 two stars (Compás 1.6.0: stored 2 and 4)
+	master := filepath.Join(root, ".compas", "database_idx.tcd")
+	b, _ := os.ReadFile(master)
+	binary.LittleEndian.PutUint32(b[24+tagRating*4:], 2)
+	binary.LittleEndian.PutUint32(b[24+entrySize+tagRating*4:], 4)
+	os.WriteFile(master, b, 0o644)
+	if n, _ := c.collect(); n != 2 || c.st.Events[0]["type"] != "rating" || c.st.Events[1]["type"] != "rating" {
+		t.Fatalf("stars not sent as ratings: %v", c.st.Events)
+	}
+	vals := map[any]any{c.st.Events[0]["key"]: c.st.Events[0]["value"], c.st.Events[1]["key"]: c.st.Events[1]["value"]}
+	if vals["k1"] != 4 || vals["k2"] != 2 {
+		t.Fatalf("ratings: %v", vals)
+	}
+	// the library (which has not taken the new stars yet) hearts 02 and adds plays: plays go down, the user's
+	// stars just sent up stay
+	sent := map[string]bool{"k1": true, "k2": true}
+	d, err := c.heartsDown([]Wanted{{"k1", false, 3, 0, nil, false, AlbumWant{}}, {"k2", true, 3, 0, nil, false, AlbumWant{}}}, sent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.apply(d); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(master)
+	if r1, r2 := binary.LittleEndian.Uint32(b[24+tagRating*4:]), binary.LittleEndian.Uint32(b[24+entrySize+tagRating*4:]); r1 != 2 || r2 != 4 {
+		t.Fatalf("ratings overwritten: %d %d", r1, r2)
+	}
+	if got, _ := readTagcache(root); got["Music/A/02.flac"].Plays != 1 {
+		t.Fatalf("a skipped row was patched: %v", got)
+	}
+}
+
+func TestLibraryRatingsGoDownButNeverOverNewStars(t *testing.T) {
+	root := t.TempDir()
+	writeTC(t, root, []tcRowSpec{{"Music/A/01.flac", 0, false}, {"Music/A/02.flac", 0, false}})
+	c := &Client{root: root, data: t.TempDir(), st: State{
+		Keys: map[string]string{"Music/A/01.flac": "k1", "Music/A/02.flac": "k2"},
+	}}
+	c.collect()
+	want := []Wanted{{"k1", false, 0, 3, nil, false, AlbumWant{}}, {"k2", true, 0, 0, nil, false, AlbumWant{}}}
+	d, _ := c.heartsDown(want, nil)
+	if err := c.apply(d); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := readTagcache(root)
+	if got["Music/A/01.flac"].Stars != 3 || got["Music/A/02.flac"].Stars != 0 {
+		t.Fatalf("library ratings not shown (or a heart shown as stars): %v", got)
+	}
+	// the user gives 02 5 stars then clears them: ratings both times, never a heart
+	master0 := filepath.Join(root, ".compas", "database_idx.tcd")
+	b0, _ := os.ReadFile(master0)
+	binary.LittleEndian.PutUint32(b0[24+entrySize+tagRating*4:], 1)
+	os.WriteFile(master0, b0, 0o644)
+	c.st.Events = nil
+	if n, _ := c.collect(); n != 1 || c.st.Events[0]["type"] != "rating" || c.st.Events[0]["value"] != 5 {
+		t.Fatalf("5 stars: %v", c.st.Events)
+	}
+	master := filepath.Join(root, ".compas", "database_idx.tcd")
+	b, _ := os.ReadFile(master)
+	binary.LittleEndian.PutUint32(b[24+entrySize+tagRating*4:], 0)
+	os.WriteFile(master, b, 0o644)
+	c.st.Events = nil
+	if n, _ := c.collect(); n != 1 || c.st.Events[0]["type"] != "rating" || c.st.Events[0]["value"] != 0 {
+		t.Fatalf("cleared stars: %v", c.st.Events)
+	}
+	// the user sets 01 to 1 star; the library changes 01 to 4 before it took that: the user's star stays
+	b, _ = os.ReadFile(master)
+	binary.LittleEndian.PutUint32(b[24+tagRating*4:], uint32(codeOf(1)))
+	os.WriteFile(master, b, 0o644)
+	want[0].Rating = 4
+	d, _ = c.heartsDown(want, nil)
+	for _, p := range d.patches {
+		if p.card == "Music/A/01.flac" && p.to.Stars != 1 {
+			t.Fatalf("the user's new star overwritten: %v", d.patches)
+		}
 	}
 }

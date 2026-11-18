@@ -222,7 +222,8 @@ a:hover { color: var(--tx); }
 .problem.error > .icon { color: var(--er); }
 .problem.warn > .icon { color: var(--wn); }
 .problem .msg, .suggestion .msg { flex: 1; min-width: 180px; overflow-wrap: anywhere; }
-.problem-action { flex: none; margin-left: auto; }
+.problem-action { flex: none; margin-left: auto; max-width: 100%; }
+.problem-action > span { display: inline-flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 /* suggestion box: outlined, no fill - a suggestion, not a warning (round 2: Turn on gentle write mode) */
 .suggestion { border: 1px solid var(--ln2); border-radius: 9px; padding: 10px 12px; display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; font-size: 13px; line-height: 1.5; color: var(--tx); }
 .suggestion > .icon { color: var(--ac-tx); }
@@ -254,6 +255,7 @@ a:hover { color: var(--tx); }
 .status.info { background: var(--in-bg); color: var(--in); }
 .status.warn { background: var(--amberbg); color: var(--amber); }
 .hint.warn { color: var(--amber); }
+.hint.error { color: var(--er); }
 .status.error { background: var(--redbg); color: var(--red); }
 .status.neutral { background: var(--nu-bg); color: var(--tx2); }
 

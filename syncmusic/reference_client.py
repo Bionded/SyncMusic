@@ -269,7 +269,16 @@ class ReferenceClient:
         return True
 
     async def sync(self) -> dict[str, int]:
-        """One full sync: plan, deletes, downloads (each acked), finish. Returns counts."""
+        """A full sync, in as many windows as the server needs (each a session: `more` in the finish answer asks
+        for the next one). Returns the summed counts."""
+        total, more = await self.sync_once()
+        while more and not total["failed"]:
+            counts, more = await self.sync_once()
+            total = {k: total[k] + counts[k] for k in total}
+        return total
+
+    async def sync_once(self) -> tuple[dict[str, int], bool]:
+        """One session: plan, deletes, downloads (each acked), finish. Returns counts and whether more waits."""
         await self.send_events()
         view = await self.start()
         sid = view["session_id"]
@@ -284,28 +293,39 @@ class ReferenceClient:
         if gone:
             await self._call("POST", f"sync/{sid}/ack", json={"deleted": gone})
         got = failed = 0
+        stopped = False  # the server stopped the sync: its ack answer says so
         for item in fetch:
+            if stopped:
+                failed += 1
+                continue
             if await self.download(item):
-                await self._call(
+                _, ack = await self._call(
                     "POST",
                     f"sync/{sid}/ack",
                     json={"done": [{"path": item["path"], "fid": item["fid"]}]},
                 )
+                stopped = bool(ack.get("cancel"))
                 if item.get("key"):
                     keys[item["path"]] = item["key"]  # what events about this file refer to
                 got += 1
             else:
                 failed += 1
         installed = False
-        if view["plan"].get("generated") and not failed:
+        if view["plan"].get("generated") and not failed and not view["plan"].get("more"):
             installed = await self.install_generated(view["plan"]["generated"])
         if got or gone or installed:  # a player would now refresh or restart as the plan says
             self.state["after_sync"] = view["plan"].get("after_sync", "none")
-        status = "complete" if not failed else "partial"
-        await self._call("POST", f"sync/{sid}/finish", json={"status": status})
+        status = "cancelled" if stopped else "complete" if not failed else "partial"
+        _, fin = await self._call("POST", f"sync/{sid}/finish", json={"status": status})
         self.state["inventory"] = self._files()
         self.save()
-        return {"fetched": got, "deleted": len(gone), "failed": failed, "generated": int(installed)}
+        counts = {
+            "fetched": got,
+            "deleted": len(gone),
+            "failed": failed,
+            "generated": int(installed),
+        }
+        return counts, bool(fin.get("more"))
 
     # --- events -------------------------------------------------------------------------------------
 

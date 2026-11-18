@@ -935,6 +935,7 @@ class Hiby(FileDeviceMixin, Device):
         supports_audiobooks=True,
         supports_playlists=True,
         supports_playcounts_read=True,
+        supports_favourites_read=True,
         supports_positions_read=True,
         has_rtc=True,
         cover=CoverSpec(max_size=600, embed=True, sidecar_name="cover.jpg"),

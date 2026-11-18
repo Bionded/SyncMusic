@@ -551,7 +551,7 @@ class FileDeviceMixin:
         def work() -> None:
             manifest_io.add_inflight(self.mount, written)
             for src, d in targets:
-                copy_atomic(src, d)
+                self._place(src, d)
 
         s.inflight += written
         await asyncio.to_thread(work)
@@ -570,9 +570,16 @@ class FileDeviceMixin:
         return DeviceTrackRef(
             device_ref=rel,
             path=rel,
-            size=dest.stat().st_size,
+            size=self._placed_size(dest),
             sidecars=written if adopt else written[1:],
         )
+
+    def _place(self, src: Path, dest: Path) -> None:
+        """Write a track (or sidecar) file onto the device (in a thread)."""
+        copy_atomic(src, dest)
+
+    def _placed_size(self, dest: Path) -> int:
+        return dest.stat().st_size
 
     def _ours(self, s: DeviceSession, rules: PathRules) -> set[str]:
         """Path keys of the session's own tracks (manifest + written so far), built once per session: rebuilding it

@@ -34,22 +34,24 @@ var version = "dev"
 const api = "api/client/v1"
 
 type State struct {
-	UID         string              `json:"uid"`
-	Server      string              `json:"server,omitempty"`
-	Token       string              `json:"token,omitempty"`
-	DeviceID    string              `json:"device_id,omitempty"`
-	Seq         int                 `json:"seq"`
-	Events      []map[string]any    `json:"events"`
-	Files       map[string]int64    `json:"files"`                    // what this app put on the card: path -> size
-	Keys        map[string]string   `json:"keys"`                     // path -> item key (events refer to keys)
-	Seen        map[string]Listen   `json:"seen"`                     // path -> listening data on the card at the last look
-	Library     map[string]bool     `json:"library_hearts,omitempty"` // key -> the library's heart at the last look
-	Lists       map[string][]string `json:"lists,omitempty"`          // card playlist -> item keys at the last look
-	Episodes    map[string]Meta     `json:"episodes,omitempty"`       // our podcast files -> what the plugin lists
-	LastSync    string              `json:"last_sync,omitempty"`      // local time of the last finished sync
-	LastSummary string              `json:"last_summary,omitempty"`   // what it did
-	LastGrid    []string            `json:"last_grid,omitempty"`      // the same as short counts for the home page
-	History     []HistoryEntry      `json:"history,omitempty"`        // the last syncs, newest first
+	UID         string               `json:"uid"`
+	Server      string               `json:"server,omitempty"`
+	Token       string               `json:"token,omitempty"`
+	DeviceID    string               `json:"device_id,omitempty"`
+	Seq         int                  `json:"seq"`
+	Events      []map[string]any     `json:"events"`
+	Files       map[string]int64     `json:"files"`                     // what this app put on the card: path -> size
+	Keys        map[string]string    `json:"keys"`                      // path -> item key (events refer to keys)
+	Seen        map[string]Listen    `json:"seen"`                      // path -> listening data on the card at the last look
+	Library     map[string]bool      `json:"library_hearts,omitempty"`  // key -> the library's heart at the last look
+	LibRating   map[string]int       `json:"library_ratings,omitempty"` // key -> the library's rating at the last look
+	Albums      map[string]AlbumBase `json:"albums,omitempty"`          // player album key -> agreed album rating
+	Lists       map[string][]string  `json:"lists,omitempty"`           // card playlist -> item keys at the last look
+	Episodes    map[string]Meta      `json:"episodes,omitempty"`        // our podcast files -> what the plugin lists
+	LastSync    string               `json:"last_sync,omitempty"`       // local time of the last finished sync
+	LastSummary string               `json:"last_summary,omitempty"`    // what it did
+	LastGrid    []string             `json:"last_grid,omitempty"`       // the same as short counts for the home page
+	History     []HistoryEntry       `json:"history,omitempty"`         // the last syncs, newest first
 }
 
 type Client struct {
@@ -271,6 +273,7 @@ type view struct {
 		// Generated: server-built files installed as one set (here: the card's tagcache), nil = none.
 		Generated *genSet `json:"generated"`
 		AfterSync string  `json:"after_sync"` // none | refresh | restart (after a sync that changed something)
+		More      int     `json:"more"`       // files the server holds back for the next window
 	} `json:"plan"`
 }
 
@@ -441,13 +444,44 @@ type Result struct {
 	Cancelled                bool
 	Sent                     map[string]int  // events the server took, by type (play, favourite, position)
 	State                    []Wanted        // the library's hearts and play counts of the items on the card
-	SentHearts               map[string]bool // keys whose heart the player just sent up
+	SentHearts               map[string]bool // keys whose heart or stars the player just sent up
 	SentPositions            map[string]bool // keys whose position the player just sent up
 	Generation               int             // tagcache generation installed from the server's set (0 = none)
 	AfterSync                string          // what the server asks for after a sync that changed something
 }
 
+// Sync syncs until the server has nothing more to send: a large sync comes in windows (the server prepares only
+// part of it at a time), each one a session of its own.
 func (c *Client) Sync() (Result, error) {
+	res, more, err := c.syncOnce()
+	for err == nil && more && !res.Cancelled && res.Failed == 0 {
+		var next Result
+		next, more, err = c.syncOnce()
+		res.Fetched += next.Fetched
+		res.Deleted += next.Deleted
+		res.Failed += next.Failed
+		res.Cancelled = next.Cancelled
+		res.State = next.State
+		for k, v := range next.Sent {
+			res.Sent[k] += v
+		}
+		for k := range next.SentHearts {
+			res.SentHearts[k] = true
+		}
+		for k := range next.SentPositions {
+			res.SentPositions[k] = true
+		}
+		if next.Generation > 0 {
+			res.Generation = next.Generation
+		}
+		if next.AfterSync != "" {
+			res.AfterSync = next.AfterSync
+		}
+	}
+	return res, err
+}
+
+func (c *Client) syncOnce() (Result, bool, error) {
 	res := Result{Sent: map[string]int{}, SentHearts: map[string]bool{}, SentPositions: map[string]bool{}}
 	if _, err := c.collect(); err != nil {
 		fmt.Fprintln(os.Stderr, "listening data not read:", err)
@@ -455,7 +489,7 @@ func (c *Client) Sync() (Result, error) {
 	c.pr.update(func(p *Progress) { *p = Progress{Phase: phaseSend, Sent: map[string]int{}} })
 	c.collectPlaylists()
 	for _, e := range c.st.Events {
-		if e["type"] == "favourite" {
+		if e["type"] == "favourite" || e["type"] == "rating" {
 			k, _ := e["key"].(string)
 			res.SentHearts[k] = true
 		}
@@ -465,7 +499,7 @@ func (c *Client) Sync() (Result, error) {
 		}
 	}
 	if err := c.SendEvents(res.Sent); err != nil {
-		return res, err
+		return res, false, err
 	}
 	c.pr.update(func(p *Progress) {
 		p.Phase = phasePlan
@@ -476,18 +510,18 @@ func (c *Client) Sync() (Result, error) {
 	c.progress(0, 0, "Asking the server what to sync")
 	v, err := c.start()
 	if err != nil {
-		return res, err
+		return res, false, err
 	}
 	dels, err := section(c, v, "delete", v.Plan.Delete)
 	if err != nil {
-		return res, err
+		return res, false, err
 	}
 	fetch, err := section(c, v, "fetch", v.Plan.Fetch)
 	if err != nil {
-		return res, err
+		return res, false, err
 	}
 	if res.State, err = section(c, v, "state", v.Plan.State); err != nil {
-		return res, err
+		return res, false, err
 	}
 	var total int64
 	for _, it := range fetch {
@@ -511,14 +545,15 @@ func (c *Client) Sync() (Result, error) {
 	}
 	if len(gone) > 0 {
 		if err := c.call("POST", "sync/"+v.SessionID+"/ack", map[string]any{"deleted": gone}, nil); err != nil {
-			return res, err
+			return res, false, err
 		}
 	}
 	res.Deleted = len(gone)
 	c.pr.update(func(p *Progress) { p.Phase, p.Removed, p.Started = phaseDownload, len(gone), time.Now() })
 	lists := []string{}
+	stopped := false // the server stopped the sync (Cancel on its device page): its ack answer says so
 	for i, it := range fetch {
-		if c.cancel != nil && c.cancel() {
+		if stopped || (c.cancel != nil && c.cancel()) {
 			res.Failed += len(fetch) - i
 			res.Cancelled = true
 			break
@@ -530,15 +565,19 @@ func (c *Client) Sync() (Result, error) {
 		}
 		ok, err := c.download(it)
 		if err != nil {
-			return res, err
+			return res, false, err
 		}
 		if !ok {
 			res.Failed++
 			continue
 		}
-		if err := c.call("POST", "sync/"+v.SessionID+"/ack", map[string]any{"done": []map[string]string{{"path": it.Path, "fid": it.Fid}}}, nil); err != nil {
-			return res, err
+		var ack struct {
+			Cancel bool `json:"cancel"`
 		}
+		if err := c.call("POST", "sync/"+v.SessionID+"/ack", map[string]any{"done": []map[string]string{{"path": it.Path, "fid": it.Fid}}}, &ack); err != nil {
+			return res, false, err
+		}
+		stopped = ack.Cancel
 		c.st.Files[it.Path] = it.Size
 		if it.Key != "" {
 			c.st.Keys[it.Path] = it.Key
@@ -572,21 +611,26 @@ func (c *Client) Sync() (Result, error) {
 	}
 	res.AfterSync = v.Plan.AfterSync
 	status := "complete"
-	if res.Failed > 0 {
+	if res.Cancelled {
+		status = "cancelled"
+	} else if res.Failed > 0 {
 		status = "partial"
-	} else if v.Plan.Generated != nil {
-		// only over a complete card: the set describes every file of the plan
+	} else if v.Plan.Generated != nil && v.Plan.More == 0 {
+		// only over a complete card (after the last window): the set describes every file of the plan
 		c.pr.update(func(p *Progress) { p.Phase = phaseDatabase })
 		c.progress(len(fetch), len(fetch), "Updating the player's library")
 		if res.Generation, err = c.installGenerated(*v.Plan.Generated); err != nil {
-			return res, err
+			return res, false, err
 		}
 	}
-	if err := c.call("POST", "sync/"+v.SessionID+"/finish", map[string]any{"status": status}, nil); err != nil {
-		return res, err
+	var fin struct {
+		More bool `json:"more"`
+	}
+	if err := c.call("POST", "sync/"+v.SessionID+"/finish", map[string]any{"status": status}, &fin); err != nil {
+		return res, false, err
 	}
 	c.progress(len(fetch), len(fetch), "Done")
-	return res, c.save()
+	return res, fin.More, c.save()
 }
 
 func (c *Client) Record(typ, key string, fields map[string]any) error {

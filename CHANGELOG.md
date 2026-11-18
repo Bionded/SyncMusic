@@ -6,11 +6,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- Ratings and favourites pass back exactly as each player has them (stars to ratings, hearts to favourites, never converted), and a device's reverse sync settings show only what that player records.
 - Players that ask to connect without a code are now approved on the Devices page (with a count on the Devices menu item) instead of in Settings → Wi-Fi clients.
 - Every Wi-Fi client app may now confirm a sync that needs a confirmation (many removals, not enough space) on the player by default; the device setting *The player may confirm a sync* only turns this off.
 - Pairing codes for Wi-Fi clients are 8 digits (easy to type on a player), valid for 1 minute by default, and a client address gets at most 2 pairing attempts per second.
 
 ### Added
+- When a sync stops twice on an I/O error, the device page offers **Skip that file and continue**: the file it stopped at is left out for a day, the file system is repaired and the sync continues.
+- Wi-Fi clients: the device page shows the real transfer speed to the player and the time left while the app downloads.
+- HiBy R1 with Compás (USB and the Wi-Fi app): album ratings sync both ways with Navidrome and other Subsonic servers.
+- Wi-Fi clients: the device page shows how much waits for the player on the server's disk, with **Clear** to drop it.
+- Wi-Fi clients: **Sync now** on the server starts the sync in the player's app at once while the app is open (the app listens for it); until then the device page shows that it waits for the player.
 - Settings can download the newest HiBy R1 Compás app from SyncMusic's release, so paired players update themselves without copying the zip by hand.
 - Wi-Fi clients can ask to connect without a pairing code: the request shows up in Settings → Wi-Fi clients with a short code that the player shows too, and you approve or reject it there ("Allow pairing requests", on by default). The reference client does this with `pair --request`.
 - SyncMusic app for HiBy players with the Compás firmware (HiBy R1), released as `syncmusic-compas-<version>.zip`: it pairs and syncs over Wi-Fi like the USB connection (music, audiobooks, podcasts, playlists, plays, hearts, positions), shows progress and a preview before a sync, keeps a sync history, guards the battery and updates itself from the server; the server builds the player's library for it so new music shows right after the sync. New user guide page: SyncMusic app for Compás players.
@@ -22,6 +28,15 @@ versions follow [Semantic Versioning](https://semver.org/).
 - If both copies of SyncMusic's sync record on a player are damaged, the device page offers **Rebuild from files**: the damaged copies are moved aside and the next sync starts as a first sync that can adopt the files already on the player, instead of wiping it.
 
 ### Fixed
+- A Wi-Fi client's sync that waits for your confirmation (too many removals, does not fit) or failed now says so on its device page, with a Review plan button, instead of showing that the plan is being made.
+- The buttons under a sync error on the device page now wrap on phones instead of scrolling sideways.
+- Wi-Fi clients: **Cancel** on the device page now stops a sync the player's app is running (before, it only withdrew a pending *Sync now*).
+- Wi-Fi clients: two sync starts at the same moment (a retry or a double tap) no longer open two sessions.
+- When writing to a player stops with an I/O error mid-sync, SyncMusic now checks and repairs its file system and continues the sync from where it stopped, once; if the error comes back soon after, the device page says the storage may be failing.
+- The damaged-file-system banner's button is now *Repair and continue*: after the repair it syncs again from where the stopped sync left off.
+- A device mounted by SyncMusic inside a container that also shows the host's file system (for example under `/mnt/root`) is no longer reported as "mounted a second time", which stopped syncs and repairs.
+- Wi-Fi clients: a large sync no longer copies the whole library into the server's outbox first. The server prepares up to 2 GB at a time (device setting *Outbox budget*), the player's app fetches it and syncs again for the next part; prepared files share the processing cache's copy instead of being copied a second time.
+- Compás (USB and the SyncMusic app): star ratings now sync both ways: stars you give on the player become the song's rating in your library and your library's ratings show on the player. Hearts and stars pass as they are: players with star ratings (Compás 1.6.0 and newer) sync ratings only, older ones favourites only; a favourite is never turned into 5 stars or back.
 - Devices: requests from players that want to connect show the name and code the same way on every row and are separated from each other.
 - A playlist edited on a Wi-Fi client whose file name differs from the library name (for example `Rock - 80s` for `Rock: 80s`) now updates the library playlist instead of creating a new one.
 - A podcast episode or audiobook marked finished in the library without a new position now shows as finished on file-based players too.
@@ -47,6 +62,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 - The SonixOS device type is now called *HiBy R1 - SonixOS*, like *HiBy R1 - Compás*.
 
 ### Fixed
+- When writing to a player stops with an I/O error mid-sync, SyncMusic now checks and repairs its file system and continues the sync from where it stopped, once; if the error comes back soon after, the device page says the storage may be failing.
+- The damaged-file-system banner's button is now *Repair and continue*: after the repair it syncs again from where the stopped sync left off.
 - USB SSDs and USB hard-disk enclosures registered as a device (for example as a backup disk) were refused with "not removable and not an iPod"; registered fixed USB disks now mount, sync and can be formatted.
 - HiBy R1: *Switch to Compás* (and back to SonixOS) failed with "invalid settings"; the switch now keeps the settings the other firmware understands and uses its defaults for the rest.
 
@@ -86,6 +103,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 - A newly registered USB flash drive or disk has no format limit by default: files are copied in the format the library has unless you choose formats. Disks registered before keep their formats.
 
 ### Fixed
+- When writing to a player stops with an I/O error mid-sync, SyncMusic now checks and repairs its file system and continues the sync from where it stopped, once; if the error comes back soon after, the device page says the storage may be failing.
+- The damaged-file-system banner's button is now *Repair and continue*: after the repair it syncs again from where the stopped sync left off.
 - Android: playlists a player app saved with absolute paths (`/storage/emulated/0/…`, `/storage/self/primary/…`, `/sdcard/…`) now go back to the library, and a device playlist whose entries match no synced song no longer empties the library playlist.
 - Taking over a player that another SyncMusic synced no longer copies everything again as `(2)` files when the library's item ids changed in between (server reinstalled or library re-created): the files are recognised and kept.
 - *Make this instance home* now also works for a player that was synced by another registration of it, so Wipe and Format are available after registering it again instead of being refused.
@@ -111,6 +130,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 - HiBy R1: a "Tips for this player" card on the device page with the recommended habits and player settings (eject, Detect changes, split settings, file system).
 
 ### Fixed
+- When writing to a player stops with an I/O error mid-sync, SyncMusic now checks and repairs its file system and continues the sync from where it stopped, once; if the error comes back soon after, the device page says the storage may be failing.
+- The damaged-file-system banner's button is now *Repair and continue*: after the repair it syncs again from where the stopped sync left off.
 - A player whose database lost its favourites (reset, repaired or rewritten) no longer removes them from the library: when ten or more and over half of the hearts vanish at once, SyncMusic sends no unfavourite, warns on the sync report and writes the hearts back to the player. The same goes for ratings cleared at once on an iPod or Rockbox player whose database was reset: the library keeps them and the next sync puts them back on the player. If the favourites were removed on purpose, *Remove them from the library* in the report's History entry sends the removals.
 - HiBy R1: the player's file system could be damaged on the next connect after a sync. Its library databases are now built on the computer and replaced on the player in one safe step, and only when something in them changed; updates with nothing new no longer write to the player.
 - A player whose file system is damaged (mounted read-only by the system, or the player's databases unreadable) is flagged with "file system damaged" and the Repair action as soon as it is connected, not only after a sync failed, and no automatic sync starts on it.
@@ -147,6 +168,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 - The state file SyncMusic keeps on a player now names its libraries by a stable id and records which installation owns the player and which wrote it last, so another SyncMusic installation can recognise the same library and leaves items of libraries it does not have alone. Players synced by an older version are upgraded at their next sync.
 
 ### Fixed
+- When writing to a player stops with an I/O error mid-sync, SyncMusic now checks and repairs its file system and continues the sync from where it stopped, once; if the error comes back soon after, the device page says the storage may be failing.
+- The damaged-file-system banner's button is now *Repair and continue*: after the repair it syncs again from where the stopped sync left off.
 - A player whose database lost its favourites (reset, repaired or rewritten) no longer removes them from the library: when ten or more and over half of the hearts vanish at once, SyncMusic sends no unfavourite, warns on the sync report and writes the hearts back to the player. The same goes for ratings cleared at once on an iPod or Rockbox player whose database was reset: the library keeps them and the next sync puts them back on the player.
 - Opening a notification from the bell drawer no longer bounces back to the previous screen when the page is slow.
 - Device settings: the orphans card now updates by itself when the device becomes free again after a sync, instead of staying on the old state until a reload.
@@ -180,6 +203,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   without a service. Mounting players still needs root or passwordless `sudo` for the block-device tools.
 
 ### Fixed
+- When writing to a player stops with an I/O error mid-sync, SyncMusic now checks and repairs its file system and continues the sync from where it stopped, once; if the error comes back soon after, the device page says the storage may be failing.
+- The damaged-file-system banner's button is now *Repair and continue*: after the repair it syncs again from where the stopped sync left off.
 - First syncs of large libraries onto USB flash drives, Rockbox and HiBy players no longer slow down with every track written.
 - Opening a device, planning and Player contents no longer read and parse the whole device manifest again each time: it is read once and reused until it changes.
 - **Library Refresh button stayed disabled.** Before: on a small library (or a busy host) the refresh could finish

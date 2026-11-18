@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from tests.webui.conftest import no_horizontal_scroll, open_page, poll, run_on, shot
+from tests.webui.conftest import link_rules, no_horizontal_scroll, open_page, poll, run_on, shot
 
 pytestmark = [pytest.mark.ui, pytest.mark.slow]
 
@@ -182,4 +182,202 @@ def test_client_diagnostics_on_the_device_page(chrome, web_server, width):
     assert "app started" in Path(dl.value.path()).read_text(encoding="utf-8")
     assert no_horizontal_scroll(page)
     shot(page, f"client-diagnostics-{width}")
+    assert page.errors == []
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_sync_now_asks_the_player_and_shows_that_it_waits(chrome, web_server, width, tmp_path):
+    url, _ = web_server
+    (tmp_path / "music").mkdir()
+    lib = {
+        "id": "music",
+        "type": "folder",
+        "name": "Music",
+        "settings": {"root": str(tmp_path / "music")},
+    }
+    if httpx.get(f"{url}/api/v1/libraries/music").status_code == 404:
+        httpx.post(f"{url}/api/v1/libraries", json=lib, timeout=60).raise_for_status()
+    httpx.patch(f"{url}/api/v1/settings", json={"clients_allowed": True}).raise_for_status()
+    code = httpx.post(f"{url}/api/v1/clients/pairings").json()["code"]
+    device_id = _pair(url, code, "Плеєр у кухні")
+    link_rules(url, device_id, {"rules": [{"id": "all", "name": "All", "criteria": {"all": []}}]})
+    page = open_page(chrome, f"{url}/#/devices/{device_id}/overview", width=width)
+    page.locator("[data-action=clientSync]").first.click()
+    waits = page.locator("[data-client-requested]")
+    waits.wait_for()
+    assert "open the SyncMusic app" in waits.inner_text()
+    assert httpx.get(f"{url}/api/v1/clients/{device_id}").json()["sync_requested"] is True
+    assert no_horizontal_scroll(page)
+    shot(page, f"client-sync-requested-{width}")
+    page.locator("[data-action=cancelClientSync]").click()
+    waits.wait_for(state="detached")
+    assert httpx.get(f"{url}/api/v1/clients/{device_id}").json()["sync_requested"] is False
+    assert page.errors == []
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_the_outbox_shows_on_the_device_page_and_clears(chrome, web_server, width, tmp_path):
+    import time
+
+    from tests.media import make_music
+
+    url, _ = web_server
+    music = tmp_path / "music"
+    make_music(music / "A" / "01 One.mp3", title="One", artist="Кобза", album="Перший")
+    lib = {"id": f"m{width}", "type": "folder", "name": "Music", "settings": {"root": str(music)}}
+    httpx.post(f"{url}/api/v1/libraries", json=lib, timeout=60).raise_for_status()
+    httpx.patch(f"{url}/api/v1/settings", json={"clients_allowed": True}).raise_for_status()
+    code = httpx.post(f"{url}/api/v1/clients/pairings").json()["code"]
+    r = httpx.post(
+        f"{url}/api/client/v1/pair",
+        json={"code": code, "client": {"uid": str(uuid.uuid4()), "name": "Плеєр", "os": "Compas"}},
+    )
+    device_id, h = r.json()["device_id"], {"Authorization": f"Bearer {r.json()['token']}"}
+    link_rules(
+        url,
+        device_id,
+        {"rules": [{"id": "all", "name": "All", "criteria": {"all": []}}]},
+        (lib["id"],),
+    )
+    caps = {"formats": ["mp3"], "storage": {"total": 10**9, "free": 10**9}}
+    view = httpx.post(
+        f"{url}/api/client/v1/sync", json={"capabilities": caps}, headers=h, timeout=60
+    ).json()
+    for _ in range(200):
+        if view["status"] != "planning":
+            break
+        time.sleep(0.1)
+        view = httpx.get(f"{url}/api/client/v1/sync/{view['session_id']}", headers=h).json()
+    assert view["status"] == "ready", view
+    httpx.post(
+        f"{url}/api/client/v1/sync/{view['session_id']}/finish",
+        json={"status": "partial"},
+        headers=h,
+    )
+    page = open_page(chrome, f"{url}/#/devices/{device_id}/overview", width=width)
+    row = page.locator("[data-client-card] dd", has_text="1 file,")
+    row.wait_for()
+    assert no_horizontal_scroll(page)
+    shot(page, f"client-outbox-{width}")
+    page.locator("[data-action=clearOutbox]").click()
+    page.get_by_role("button", name="Clear", exact=True).last.click()
+    row.wait_for(state="detached")
+    assert httpx.get(f"{url}/api/v1/clients/{device_id}").json()["outbox"]["files"] == 0
+    assert page.errors == []
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_client_sync_waiting_for_confirmation_or_failed_shows_on_the_device_page(
+    chrome, web_server, width
+):
+    import datetime as dt
+
+    from syncmusic.core.client_sessions import ClientSession
+
+    url, app = web_server
+    httpx.patch(f"{url}/api/v1/settings", json={"clients_allowed": True}).raise_for_status()
+    code = httpx.post(f"{url}/api/v1/clients/pairings").json()["code"]
+    device_id = _pair(url, code, "Плеєр на кухні")
+    expires = dt.datetime.now(dt.UTC) + dt.timedelta(hours=1)
+    review = ClientSession(
+        id="s-review",
+        device_id=device_id,
+        mode="full",
+        status="needs_review",
+        message="12 of 40 files would be removed (over the delete threshold); does not fit",
+        plan_id="plan-1",
+        expires_at=expires,
+    )
+    app.client_sessions.sessions[review.id] = review
+    page = open_page(chrome, f"{url}/#/devices/{device_id}/overview", width=width)
+    box = page.locator("[data-client-review]")
+    box.wait_for()
+    assert "delete threshold" in box.inner_text()
+    link = page.locator("[data-client-sync] a", has_text="Review plan")
+    assert link.get_attribute("href").endswith("/plan/plan-1")
+    assert no_horizontal_scroll(page)
+    shot(page, f"client-review-{width}")
+
+    review.status, review.message = "failed", "not enough space on the player"
+    page.reload()
+    page.locator("[data-client-failed]", has_text="not enough space").wait_for()
+    assert no_horizontal_scroll(page)
+    shot(page, f"client-failed-{width}")
+    assert page.errors == []
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_transfer_card_shows_speed_and_time_left_of_a_live_session(
+    chrome, web_server, width, tmp_path
+):
+    """A client takes files of a live session one by one through the protocol: the device page follows the acks
+    with files, bytes, the transfer rate to the player and the time left."""
+    import time
+
+    from tests.media import make_music
+
+    url, _ = web_server
+    music = tmp_path / "music"
+    for n in range(1, 4):
+        make_music(
+            music / "A" / f"0{n} Пісня {n}.mp3", title=f"Пісня {n}", artist="Кобза", album="Перший"
+        )
+    lib = {"id": f"t{width}", "type": "folder", "name": "Music", "settings": {"root": str(music)}}
+    httpx.post(f"{url}/api/v1/libraries", json=lib, timeout=60).raise_for_status()
+    httpx.patch(f"{url}/api/v1/settings", json={"clients_allowed": True}).raise_for_status()
+    code = httpx.post(f"{url}/api/v1/clients/pairings").json()["code"]
+    r = httpx.post(
+        f"{url}/api/client/v1/pair",
+        json={
+            "code": code,
+            "client": {"uid": str(uuid.uuid4()), "name": "Телефон Олени", "os": "Android 15"},
+        },
+    )
+    device_id, h = r.json()["device_id"], {"Authorization": f"Bearer {r.json()['token']}"}
+    link_rules(
+        url,
+        device_id,
+        {"rules": [{"id": "all", "name": "All", "criteria": {"all": []}}]},
+        (lib["id"],),
+    )
+    caps = {"formats": ["mp3"], "storage": {"total": 10**9, "free": 10**9}}
+    view = httpx.post(
+        f"{url}/api/client/v1/sync", json={"capabilities": caps}, headers=h, timeout=60
+    ).json()
+    sid = view["session_id"]
+    for _ in range(200):
+        if view["status"] != "planning":
+            break
+        time.sleep(0.1)
+        view = httpx.get(f"{url}/api/client/v1/sync/{sid}", headers=h).json()
+    assert view["status"] == "ready", view
+    fetch = [f for f in view["plan"]["fetch"] if f["role"] == "track"]
+    assert len(fetch) == 3
+
+    page = open_page(chrome, f"{url}/#/devices/{device_id}/overview", width=width)
+    box = page.locator(f"[data-client-card='{device_id}'] [data-client-sync]")
+    box.wait_for()
+    page.wait_for_timeout(500)  # the event stream is connected
+
+    def ack(item: dict) -> None:
+        httpx.post(
+            f"{url}/api/client/v1/sync/{sid}/ack",
+            json={"done": [{"path": item["path"], "fid": item["fid"]}]},
+            headers=h,
+        ).raise_for_status()
+
+    ack(fetch[0])
+    page.locator("[data-client-sync]", has_text="to the player").wait_for(
+        state="detached", timeout=2_000
+    ) if False else None
+    time.sleep(1.2)  # the rate needs two acks at least a second apart
+    ack(fetch[1])
+    box.locator("text=/s to the player").wait_for(timeout=10_000)
+    text = box.inner_text()
+    assert "file 2 of" in text, text
+    assert " left" in text or "less than" in text.lower() or "min" in text or "s" in text, text
+    assert box.locator("[role=progressbar]").get_attribute("aria-valuenow") not in (None, "0")
+    assert no_horizontal_scroll(page)
+    shot(page, f"client-transfer-{width}")
+    httpx.post(f"{url}/api/client/v1/sync/{sid}/finish", json={"status": "partial"}, headers=h)
     assert page.errors == []

@@ -56,7 +56,7 @@ func TestInstallTagcacheReplacesTheWholeDatabase(t *testing.T) {
 		}
 	}
 	got, err := readTagcache(card)
-	if err != nil || len(got) != 2 || got["Music/A/01.flac"] != (Listen{Plays: 4, Fav: true}) {
+	if err != nil || len(got) != 2 || got["Music/A/01.flac"] != (Listen{Plays: 4, Fav: true, Stars: 5}) {
 		t.Fatalf("read back %v %v", got, err)
 	}
 	if m, _ := filepath.Glob(filepath.Join(db, "*.tmp")); len(m) != 0 {

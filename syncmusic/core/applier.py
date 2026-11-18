@@ -100,7 +100,11 @@ class DeviceLostError(Exception):
 
 class DeviceIOError(OSError):
     """The device's storage failed a read or write (EIO, or the kernel remounted it read-only after errors): the
-    sync stops at once instead of trying every other file (each failing write can hang for minutes)."""
+    sync stops at once instead of trying every other file (each failing write can hang for minutes). `ref` /
+    `item`: the library item (key) and its description being written, when known."""
+
+    ref: str | None = None
+    item: str = ""
 
 
 def _device_io_error(
@@ -756,6 +760,7 @@ class Applier:
                     self._forget_lost(a, manifest)
                     if (io := _device_io_error(self.device.id, e, describe(a), True)) is not None:
                         self._fail(report, a, "put", e, str(e))
+                        io.ref, io.item = a.ref.key(), describe(a)
                         raise io from e
                     self._fail(report, a, "put", e, str(e))
                 finally:
@@ -949,6 +954,7 @@ class Applier:
                 except Exception as e:  # noqa: BLE001
                     if (io := _device_io_error(self.device.id, e, describe(a))) is not None:
                         self._fail(report, a, "metadata", e, f"metadata: {e}", entry.path)
+                        io.ref, io.item = a.ref.key(), describe(a)
                         raise io from e
                     self._fail(report, a, "metadata", e, f"metadata: {e}", entry.path)
                     continue

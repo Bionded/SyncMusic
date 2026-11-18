@@ -33,7 +33,24 @@ type Listen struct {
 	Fav      bool    `json:"fav,omitempty"`
 	Pos      float64 `json:"pos,omitempty"`
 	Finished bool    `json:"finished,omitempty"`
-	Last     int64   `json:"last,omitempty"` // last played (unix seconds, the player's clock)
+	Last     int64   `json:"last,omitempty"`  // last played (unix seconds, the player's clock)
+	Stars    int     `json:"stars,omitempty"` // 0..5 (Compás 1.6.0; older players: 5 = the heart)
+	rated    bool    // 1-4 stars (stored 2..5): no heart, but not a removed one either
+}
+
+// starsOf / codeOf: the tagcache rating tag holds 0 = unrated, 1 = 5 stars ... 5 = 1 star.
+func starsOf(code int) int {
+	if code >= 1 && code <= 5 {
+		return 6 - code
+	}
+	return 0
+}
+
+func codeOf(stars int) int32 {
+	if stars >= 1 && stars <= 5 {
+		return int32(6 - stars)
+	}
+	return 0
 }
 
 func suffix(gen int) string {
@@ -136,7 +153,7 @@ func loadTagcache(root string) (*tagcache, error) {
 		}
 		if p, ok := strings.CutPrefix(string(raw), playerRoot); ok {
 			out[p] = tcRow{Listen{Plays: max(i32(e, tagPlays*4), 0), Fav: i32(e, tagRating*4) == 1,
-				Last: int64(max(i32(e, tagLast*4), 0))}, slot}
+				Stars: starsOf(i32(e, tagRating*4)), rated: i32(e, tagRating*4) > 1, Last: int64(max(i32(e, tagLast*4), 0))}, slot}
 		}
 	}
 	return &tagcache{masterPath, out}, nil
@@ -147,8 +164,18 @@ type Wanted struct {
 	Key       string   `json:"key"`
 	Favourite bool     `json:"favourite"`
 	PlayCount int      `json:"play_count"`
+	Rating    int      `json:"rating"`               // 0..5, 0 = unrated (null arrives as 0)
 	PositionS *float64 `json:"position_s,omitempty"` // podcasts and audiobooks
 	Finished  bool     `json:"finished,omitempty"`
+	AlbumWant
+}
+
+// AlbumWant: for music with an album id, the album's rating and what an album_rating event names.
+type AlbumWant struct {
+	AlbumRef    string `json:"album_ref,omitempty"`
+	AlbumArtist string `json:"album_artist,omitempty"`
+	Album       string `json:"album,omitempty"`
+	AlbumRating int    `json:"album_rating,omitempty"`
 }
 
 type patch struct {
@@ -169,11 +196,12 @@ func (c *Client) heartsDown(want []Wanted, skip map[string]bool) (*downPlan, err
 // just sent up by the player).
 func (c *Client) down(want []Wanted, skip, skipPos map[string]bool) (*downPlan, error) {
 	pos := c.positionsDown(want, skipPos)
+	albums := c.albumsDown(want)
 	tc, err := loadTagcache(c.root)
 	if tc == nil || err != nil {
-		return &downPlan{positions: pos}, err
+		return &downPlan{positions: pos, albums: albums}, err
 	}
-	d := &downPlan{tc: tc, positions: pos}
+	d := &downPlan{tc: tc, positions: pos, albums: albums}
 	byKey := map[string]Wanted{}
 	for _, w := range want {
 		byKey[w.Key] = w
@@ -186,14 +214,17 @@ func (c *Client) down(want []Wanted, skip, skipPos map[string]bool) (*downPlan, 
 		}
 		d.decided = append(d.decided, w)
 		to := r.Listen
-		// a heart goes down when the library's changed since the last look; on the first look only an added
-		// one (a library without hearts must not clear the player's)
-		before, known := c.st.Library[key]
-		if (known && before != w.Favourite) || (!known && w.Favourite) {
-			to.Fav = w.Favourite
+		// the stars go down when the library's rating changed since the last look (on the first look only when
+		// it has one: a library without ratings must not clear the player's), and only while the row still
+		// shows what the last look saw (else the user changed them since: theirs go up first). Hearts are not
+		// stars: the library's favourite never changes them.
+		rating, knownRating := c.st.LibRating[key]
+		changed := (knownRating && rating != w.Rating) || (!knownRating && w.Rating > 0)
+		if changed && r.Stars == c.st.Seen[card].Stars {
+			to.Stars = w.Rating
 		}
 		to.Plays = max(to.Plays, w.PlayCount)
-		if to.Fav != r.Fav || to.Plays != r.Plays {
+		if to.Stars != r.Stars || to.Plays != r.Plays {
 			d.patches = append(d.patches, patch{card, r.slot, to})
 		}
 	}
@@ -207,6 +238,7 @@ type downPlan struct {
 	patches   []patch
 	decided   []Wanted
 	positions map[string]Listen // card path -> library position (Audiobooks/, Podcasts/)
+	albums    map[string]int    // album key -> the library's stars to write
 }
 
 // apply writes the patches and makes the library's hearts the baseline for the next look.
@@ -221,6 +253,11 @@ func (c *Client) apply(d *downPlan) error {
 	} else if len(dropped) > 0 {
 		fmt.Fprintf(os.Stderr, "%d audiobook position(s) left out: the plugin's state file is full\n", len(dropped))
 	}
+	if len(d.albums) > 0 {
+		if err := writeAlbumStars(c.root, d.albums); err != nil {
+			return err
+		}
+	}
 	if d.tc == nil {
 		return c.save()
 	}
@@ -230,8 +267,12 @@ func (c *Client) apply(d *downPlan) error {
 	if c.st.Library == nil {
 		c.st.Library = map[string]bool{}
 	}
+	if c.st.LibRating == nil {
+		c.st.LibRating = map[string]int{}
+	}
 	for _, w := range d.decided {
 		c.st.Library[w.Key] = w.Favourite
+		c.st.LibRating[w.Key] = w.Rating
 	}
 	return c.save()
 }
@@ -265,18 +306,14 @@ func (c *Client) applyPatches(tc *tagcache, ps []patch) error {
 	}
 	for _, p := range ps {
 		base := int64(24 + p.slot*entrySize)
-		rating := int32(0)
-		if p.to.Fav {
-			rating = 1
-		}
-		if err := put(base+tagRating*4, rating); err != nil {
+		if err := put(base+tagRating*4, codeOf(p.to.Stars)); err != nil {
 			return err
 		}
 		if err := put(base+tagPlays*4, int32(p.to.Plays)); err != nil {
 			return err
 		}
 		seen := c.st.Seen[p.card]
-		seen.Fav, seen.Plays = p.to.Fav, p.to.Plays
+		seen.Stars, seen.Plays = p.to.Stars, p.to.Plays
 		c.st.Seen[p.card] = seen
 	}
 	if err := f.Sync(); err != nil {
@@ -357,23 +394,29 @@ func (c *Client) collect() (int, error) {
 		} else {
 			now.Pos, now.Finished = before.Pos, before.Finished
 		}
-		if tc == nil { // the player has not indexed the card yet
-			now.Plays, now.Fav, now.Last = before.Plays, before.Fav, before.Last
+		if before.Fav && before.Stars == 0 {
+			before.Stars = 5 // a look saved by an older version: its heart was 5 stars
+		}
+		_, indexed := tc[path]
+		if tc == nil || !indexed { // the player has not indexed it (yet): nothing to compare
+			now.Plays, now.Stars, now.Last = before.Plays, before.Stars, before.Last
 		}
 		for _, at := range playTimes(before.Last, now.Last, now.Plays-before.Plays, time.Now()) {
 			c.queueAt("play", key, at, map[string]any{"completed": true})
 			n++
 		}
-		if now.Fav != before.Fav {
-			c.queue("favourite", key, map[string]any{"on": now.Fav})
+		if now.Stars != before.Stars {
+			c.queue("rating", key, map[string]any{"value": now.Stars}) // stars are the rating, never a heart
 			n++
 		}
+		now.Fav = false // hearts are not read from the stars any more
 		if now.Pos != before.Pos || now.Finished != before.Finished {
 			c.queue("position", key, map[string]any{"position_s": now.Pos, "finished": now.Finished})
 			n++
 		}
 		c.st.Seen[card] = now
 	}
+	n += c.collectAlbums()
 	return n, c.save()
 }
 

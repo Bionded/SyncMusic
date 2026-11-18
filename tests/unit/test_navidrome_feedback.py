@@ -84,3 +84,17 @@ async def test_rating_values(lib):
 async def test_positions_are_a_noop(lib):
     await lib.set_position(ItemRef(library_id="nd1", item_id="s1"), 30.0, True)
     assert "scrobble" not in lib.transport.calls and not lib.capabilities.supports_positions
+
+
+async def test_album_ratings_read_with_the_snapshot_and_set_by_album_id(lib):
+    server = lib.transport
+    album = server.songs["s1"]["albumId"]
+    server.album_ratings[album] = 4
+    snap = await lib.snapshot()
+    rated = {t.album_id: t.album_rating for t in snap.tracks.values()}
+    assert rated[album] == 4
+    assert all(r is None for a, r in rated.items() if a != album)
+    await lib.set_rating(ItemRef(library_id=lib.id, item_id=album), 2)
+    assert server.album_ratings[album] == 2
+    await lib.set_rating(ItemRef(library_id=lib.id, item_id=album), 0)
+    assert album not in server.album_ratings

@@ -107,7 +107,7 @@ def _manifest(paths: list[str]):
     return Manifest(header=ManifestHeader(device_id="c"), items=items)
 
 
-def test_reverse_sync_hearts_once_and_never_on_unindexed_files(tmp_path):
+def test_reverse_sync_reads_stars_as_ratings_and_never_on_unindexed_files(tmp_path):
     from syncmusic.core.models import DeviceConfig
     from syncmusic.devices.HibyR1.compas import HibyCompas
     from tests.contracts.harness import compas_tree
@@ -115,19 +115,82 @@ def test_reverse_sync_hearts_once_and_never_on_unindexed_files(tmp_path):
     compas_tree(tmp_path)
     dev = HibyCompas(DeviceConfig(id="c", type="hiby_compas", name="C"), tmp_path, None)
     m = _manifest(["Music/a.mp3", "Music/b.mp3"])
-    write_tagcache(tmp_path, [("Music/a.mp3", 2, 1, 1_700_000_000), ("Music/b.mp3", 0, 1, 0)])
+    a, b = (m.items[k] for k in sorted(m.items, key=lambda k: m.items[k].path))
+    # 5 stars on the player (code 1): a rating, not a heart
+    write_tagcache(tmp_path, [("Music/a.mp3", 2, 1, 1_700_000_000), ("Music/b.mp3", 0, 0, 0)])
     fb = asyncio.run(dev.read_feedback(m))
-    assert len(fb.plays) == 2
-    assert sorted(p.played_at_estimated for p in fb.plays) == [False, True]
-    assert sorted(fb.stars.values()) == [True, True] and len(fb.stars) == 2
+    assert len(fb.plays) == 2  # two plays of a
+    assert fb.ratings == {a.ref.key(): 5} and fb.stars == {}
     asyncio.run(dev.reset_feedback(None, fb))  # type: ignore[arg-type]
-    # the player rebuilt its database and has not indexed b yet: no unstar for b, a still a favourite
-    write_tagcache(tmp_path, [("Music/a.mp3", 2, 1, 1_700_000_000)], gen=2)
-    assert asyncio.run(dev.read_feedback(m)).stars == {}
-    # a heart removed on the player on an indexed file
-    write_tagcache(tmp_path, [("Music/a.mp3", 2, 0, 1_700_000_000)], gen=3)
+    a.last_rating = 5  # what the reverse sync mirrored
+    b.last_starred = True  # a library favourite: the star player shows no stars for it
+    write_tagcache(
+        tmp_path, [("Music/a.mp3", 2, 1, 1_700_000_000), ("Music/b.mp3", 0, 0, 0)], gen=2
+    )
     fb = asyncio.run(dev.read_feedback(m))
-    assert list(fb.stars.values()) == [False]
+    assert fb.ratings == {} and fb.stars == {}
+    # the player rebuilt its database and has not indexed b yet: nothing about b
+    write_tagcache(tmp_path, [("Music/a.mp3", 2, 1, 1_700_000_000)], gen=3)
+    fb = asyncio.run(dev.read_feedback(m))
+    assert fb.ratings == {} and fb.stars == {}
+    # b rated 5 stars, a re-rated to 3 stars: ratings only, the hearts are not touched
+    write_tagcache(
+        tmp_path, [("Music/a.mp3", 2, 3, 1_700_000_000), ("Music/b.mp3", 0, 1, 0)], gen=4
+    )
+    fb = asyncio.run(dev.read_feedback(m))
+    assert fb.stars == {} and fb.ratings == {a.ref.key(): 3, b.ref.key(): 5}
+    # b's stars cleared: the rating goes, the heart stays
+    write_tagcache(
+        tmp_path, [("Music/a.mp3", 2, 3, 1_700_000_000), ("Music/b.mp3", 0, 0, 0)], gen=5
+    )
+    a.last_rating, b.last_rating = 3, 5
+    fb = asyncio.run(dev.read_feedback(m))
+    assert fb.stars == {} and fb.ratings == {b.ref.key(): None}
+
+
+def test_a_heart_player_syncs_hearts_only(tmp_path):
+    import json
+
+    from syncmusic.core.models import DeviceConfig
+    from syncmusic.devices.HibyR1.compas import HibyCompas
+    from tests.contracts.harness import compas_tree
+
+    compas_tree(tmp_path)
+    info = tmp_path / ".compas" / "device.json"
+    info.write_text(json.dumps({**json.loads(info.read_text()), "player_version": "v1.5.0"}))
+    dev = HibyCompas(DeviceConfig(id="c", type="hiby_compas", name="C"), tmp_path, None)
+    m = _manifest(["Music/a.mp3", "Music/b.mp3"])
+    a, b = (m.items[k] for k in sorted(m.items, key=lambda k: m.items[k].path))
+    write_tagcache(tmp_path, [("Music/a.mp3", 0, 1, 0), ("Music/b.mp3", 0, 0, 0)])
+    fb = asyncio.run(dev.read_feedback(m))
+    assert fb.stars == {a.ref.key(): True} and fb.ratings == {}
+    asyncio.run(dev.reset_feedback(None, fb))  # type: ignore[arg-type]
+    # an odd value (stars from a newer build) never takes the heart away; 0 does
+    write_tagcache(tmp_path, [("Music/a.mp3", 0, 3, 0), ("Music/b.mp3", 0, 0, 0)], gen=2)
+    fb = asyncio.run(dev.read_feedback(m))
+    assert fb.stars == {} and fb.ratings == {}
+    write_tagcache(tmp_path, [("Music/a.mp3", 0, 0, 0), ("Music/b.mp3", 0, 0, 0)], gen=3)
+    fb = asyncio.run(dev.read_feedback(m))
+    assert fb.stars == {a.ref.key(): False} and fb.ratings == {}
+
+
+@pytest.mark.parametrize("stored", [2, 3, 4, 5])
+def test_a_heart_re_rated_to_fewer_stars_is_a_rating_not_a_removed_favourite(tmp_path, stored):
+    from syncmusic.core.models import DeviceConfig
+    from syncmusic.devices.HibyR1.compas import HibyCompas
+    from tests.contracts.harness import compas_tree
+
+    compas_tree(tmp_path)
+    dev = HibyCompas(DeviceConfig(id="c", type="hiby_compas", name="C"), tmp_path, None)
+    m = _manifest(["Music/a.mp3"])
+    (a,) = m.items.values()
+    a.last_starred = True
+    # Compás 1.6.0 stars: 1 = 5 stars, 2..5 = 4..1 stars
+    write_tagcache(tmp_path, [("Music/a.mp3", 0, stored, 0)])
+    data = cf.read_card(tmp_path)
+    assert data.favourites == set() and data.rated == {"Music/a.mp3"}
+    fb = asyncio.run(dev.read_feedback(m))
+    assert fb.stars == {} and fb.ratings == {a.ref.key(): 6 - stored}
 
 
 # --- positions to the player ---

@@ -11,7 +11,8 @@ Tagcache (database format 8, a Rockbox tagcache descendant) in `.compas/`:
   `database_4.tcd.gM`, where it starts with `length, slot` (int32) and the NUL-terminated UTF-8 path, absolute
   on the player (`/data/mnt/sd_0/...`). M is N unless `tagcache.refs.gN` (magic 0x54435231, version 1,
   generation, 10 source generations, FNV-1a checksum) names an older generation for the file name tag.
-- numeric tags used: 15 playcount, 16 rating (1 = favourite), 18 last played (unix seconds, player clock).
+- numeric tags used: 15 playcount, 16 rating (0 = unrated, 1 = 5 stars =
+  the favourite, 2..5 = 4..1 stars since Compás 1.6.0), 18 last played (unix seconds, player clock).
 
 Audiobooks plugin: `.plugins/.audiobooks_state_v3`, tab-separated, percent-encoded fields; `P` lines are
 `P, book key, file, position s, duration s, finished, last played, ...` (key = folder under Audiobooks/,
@@ -44,7 +45,19 @@ TAG_FILENAME, TAG_PLAYCOUNT, TAG_RATING, TAG_LASTPLAYED = 4, 15, 16, 18
 FLAG_DELETED = 0x1
 MASTER_HEADER, TAG_HEADER = 24, 12
 ENTRY_SIZE = (TAG_COUNT + 1) * 4
-FAVOURITE = 1
+FAVOURITE = 1  # the rating code of 5 stars
+
+
+def stars_of(code: int) -> int:
+    """Stars 0..5 of a tagcache rating code (0 = unrated, 1 = 5 stars ... 5 = 1 star)."""
+    return 6 - code if 1 <= code <= 5 else 0
+
+
+def code_of(stars: int) -> int:
+    """The tagcache rating code of 0..5 stars."""
+    return 6 - stars if 1 <= stars <= 5 else 0
+
+
 AUDIOBOOK_STATE = ".plugins/.audiobooks_state_v3"
 PODCAST_PROGRESS = "Podcasts/.progress.tsv"
 # the plugins' readers stop at these (Audiobooks.lua writes 8 KiB / 10 lines below them, so do we)
@@ -63,6 +76,9 @@ class CompasData:
     favourites: set[str] = field(default_factory=set)
     positions: dict[str, tuple[float, bool, int | None]] = field(default_factory=dict)
     indexed: set[str] = field(default_factory=set)
+    # rated 1-4 stars (stored 2..5): no favourite, but no removed heart either
+    rated: set[str] = field(default_factory=set)
+    stars: dict[str, int] = field(default_factory=dict)  # every indexed file: its stars 0..5
 
 
 def card_rel(path: str) -> str | None:
@@ -229,10 +245,13 @@ def read_card(mount: Path) -> CompasData:
         entries = []
     for t in entries:
         data.indexed.add(t.path)
+        data.stars[t.path] = stars_of(t.rating)
         if t.playcount:
             data.play_counts[t.path] = (t.playcount, t.last_played or None)
         if t.rating == FAVOURITE:
             data.favourites.add(t.path)
+        elif t.rating > FAVOURITE:
+            data.rated.add(t.path)
     data.positions = {**podcast_positions(mount), **audiobook_positions(mount)}
     return data
 
@@ -470,3 +489,63 @@ def write_podcast_episodes(mount: Path, episodes: list[Episode]) -> int:
         path.parent.mkdir(exist_ok=True)
         _replace(path, new)
     return dropped
+
+
+REMOTE_STATE = (
+    f"{COMPAS_DIR}/remote_state.tsv"  # the player's ratings of streamed songs and of albums
+)
+ALBUM_PREFIX = "album://"
+
+
+def album_key(album_artist: str, album: str) -> str | None:
+    """The player's row key of an album rating: `album://<album artist>\\t<album>`, tabs and line breaks in the
+    names as spaces, trailing spaces of the album dropped; None without both names."""
+    if not album_artist or not album:
+        return None
+
+    def clean(s: str) -> str:
+        return "".join(" " if c in "\t\r\n" else c for c in s)
+
+    return f"{ALBUM_PREFIX}{clean(album_artist)}\t{clean(album).rstrip(' ')}"
+
+
+def read_remote_state(mount: Path) -> list[tuple[int, int, int, str]]:
+    """The rows of the player's remote_state.tsv: rating code, play count, last played, key (path or album)."""
+    try:
+        text = (mount / REMOTE_STATE).read_text(encoding="utf-8", errors="surrogateescape")
+    except OSError:
+        return []
+    rows = []
+    for line in text.splitlines():
+        parts = line.lstrip(" \t").split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            rows.append((int(parts[0]), int(parts[1]), int(parts[2]), parts[3]))
+        except ValueError:
+            continue
+    return rows
+
+
+def album_stars(mount: Path) -> dict[str, int]:
+    """Album key -> stars (0–5) the player shows."""
+    return {
+        key: stars_of(code)
+        for code, _, _, key in read_remote_state(mount)
+        if key.startswith(ALBUM_PREFIX)
+    }
+
+
+def write_album_stars(mount: Path, stars: dict[str, int]) -> None:
+    """Set the albums' stars in remote_state.tsv (0 clears), keeping every other row as it is."""
+    rows = read_remote_state(mount)
+    left = dict(stars)
+    out = []
+    for code, plays, last, key in rows:
+        if key in left:
+            code = code_of(left.pop(key))
+        out.append((code, plays, last, key))
+    out += [(code_of(n), 0, 0, key) for key, n in left.items()]
+    path = mount / REMOTE_STATE
+    path.parent.mkdir(exist_ok=True)
+    _replace(path, "".join(f"{c} {p} {la} {k}\n" for c, p, la, k in out))

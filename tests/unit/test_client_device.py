@@ -192,3 +192,43 @@ async def test_unchanged_playlist_is_not_sent_again(tmp_path):
     assert rel in dev.outbox()
     dev.deleted(rel)
     assert rel not in dev.state.playlist_hashes
+
+
+async def test_album_rating_events_name_the_album(tmp_path):
+    from syncmusic.core.client_sessions import listening_state
+
+    dev = _client(tmp_path)
+    item, _, m = await _put(dev, tmp_path, "One")
+    lib = item.track.ref.library_id
+    t = item.track.model_copy(update={"album": "Альбом", "album_id": "al1", "album_rating": 3})
+    state = listening_state("k", t)
+    assert state["album_ref"] == f"{lib}/al1" and state["album_rating"] == 3
+    dev.add_events(
+        [
+            _ev("e1", "album_rating", f"{lib}/al1", value=4),
+            _ev("e2", "album_rating", "otherlib/al9", value=2),  # not a library of this client
+        ]
+    )
+    fb = await dev.read_feedback(m)
+    assert fb.ratings == {f"{lib}/al1": 4} and fb.unmapped == 1
+
+
+def test_session_progress_is_the_transfer_rate_to_the_client():
+    import datetime as dt
+
+    from syncmusic.core.client_sessions import ClientSession
+
+    s = ClientSession(
+        id="s",
+        device_id="d",
+        mode="full",
+        expires_at=dt.datetime.now(dt.UTC),
+        fetch=[{"path": "a", "size": 3_000_000}, {"path": "b", "size": 3_000_000}],
+    )
+    s.acked(100.0)
+    assert s.progress(100.0)["rate_bps"] is None  # nothing taken yet
+    s.bytes_done = 3_000_000
+    s.acked(103.0)
+    p = s.progress(103.0)
+    assert p["rate_bps"] == 1_000_000 and p["eta_s"] == 3
+    assert s.progress(130.0)["rate_bps"] == 0  # stalled

@@ -26,6 +26,10 @@ class StatsUpdate:
     playcount: int | None = None  # raises the player's count, never lowers it
     last_played: int | None = None  # unix seconds; moves it later, never earlier
     favourite: bool | None = None  # True: heart; False: a heart is taken away
+    # stars 0..5 to show, written only while the row still shows `expect` (else the user changed them on the
+    # player since: theirs stay, the reverse sync takes them)
+    stars: int | None = None
+    expect: int | None = None
 
 
 @dataclass(frozen=True)
@@ -41,7 +45,10 @@ def _merge(e: cf.CompasEntry, u: StatsUpdate) -> tuple[int, int, int]:
     plays = max(e.playcount, u.playcount or 0)
     last = max(e.last_played, u.last_played or 0)
     rating = e.rating
-    if u.favourite is True:
+    if u.stars is not None:
+        if u.expect is None or cf.stars_of(rating) == u.expect:
+            rating = cf.code_of(u.stars)
+    elif u.favourite is True and rating == 0:  # never overwrite the user's own 1-4 stars
         rating = cf.FAVOURITE
     elif u.favourite is False and rating == cf.FAVOURITE:
         rating = 0

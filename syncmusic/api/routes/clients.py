@@ -67,6 +67,7 @@ class PairAsk(BaseModel):
 
 
 REQUEST_POLL_S = 3  # how often a client in registration mode asks whether the user answered
+STATUS_WAIT_MAX = 30  # s: the longest a status long poll waits for a sync request
 
 
 class TemplatesRequest(BaseModel):
@@ -254,7 +255,10 @@ def client_router(facade: AppFacade) -> APIRouter:
         return await me_view(device_id)
 
     @r.get("/status")
-    async def status(device_id: str = Depends(device)) -> dict[str, Any]:
+    async def status(wait: float = 0, device_id: str = Depends(device)) -> dict[str, Any]:
+        """`wait` (s, at most 30): a long poll that answers as soon as the server asks for a sync."""
+        if wait > 0:
+            await app.sync.wait_client_sync_request(device_id, min(wait, STATUS_WAIT_MAX))
         dev = await sessions.device(device_id)
         return sessions.status(device_id, dev, app.client_settings.client_poll_s)
 
@@ -506,14 +510,58 @@ def admin_router(facade: AppFacade) -> APIRouter:
             return JSONResponse(
                 {"error": "not_found", "message": "no such client"}, status_code=404
             )
-        s = app.client_sessions.open_for(device_id)
+        s = app.client_sessions.shown_for(device_id)
         session = (
-            {"id": s.id, "status": s.status, "message": s.message, "progress": s.progress()}
+            {
+                "id": s.id,
+                "status": s.status,
+                "message": s.message,
+                "plan_id": s.plan_id,
+                "progress": s.progress(),
+            }
             if s
             else None
         )
         diag = await asyncio.to_thread(app.client_sessions.diagnostics_info, device_id)
-        return p.model_dump(mode="json") | {"session": session, "diagnostics": diag}
+        dev = await app.client_sessions.device(device_id)
+        outbox = await asyncio.to_thread(dev.outbox)
+        return p.model_dump(mode="json") | {
+            "outbox": {"files": len(outbox), "bytes": sum(outbox.values())},
+            "session": session,
+            "diagnostics": diag,
+            "sync_requested": app.sync.sync_requested(device_id),
+        }
+
+    @r.post("/{device_id}/sync", response_model=None)
+    async def request_sync(device_id: str) -> JSONResponse | dict[str, Any]:
+        """'Sync now' from the web UI: the client's app starts the sync (at once while it is open and
+        listening, else when it next asks); nothing is prepared on the server before that."""
+        if await app.clients.get(device_id) is None:
+            return JSONResponse(
+                {"error": "not_found", "message": "no such client"}, status_code=404
+            )
+        app.sync.request_client_sync(device_id)
+        return {"requested": True}
+
+    @r.delete("/{device_id}/outbox", response_model=None)
+    async def clear_outbox(device_id: str) -> JSONResponse | dict[str, Any]:
+        """Drop what waits for the client on the server's disk (not while it syncs)."""
+        if app.client_sessions.open_for(device_id) is not None or app.sync.ctx.jobs.device_busy(
+            device_id
+        ):
+            return JSONResponse(
+                {"error": "busy", "message": "the client is syncing"}, status_code=409
+            )
+        dev = await app.client_sessions.device(device_id)
+        freed = await asyncio.to_thread(dev.clear_outbox)
+        app.bus.publish("client.changed", device_id=device_id)
+        return {"freed": freed}
+
+    @r.delete("/{device_id}/sync", response_model=None)
+    async def cancel_request(device_id: str) -> dict[str, Any]:
+        """Withdraw a 'Sync now' request and stop the client's running sync (its next ack answers `cancel`)."""
+        asked = app.sync.cancel_client_sync_request(device_id)
+        return {"cancelled": app.client_sessions.cancel(device_id) or asked}
 
     @r.get("/{device_id}/diagnostics", response_model=None)
     async def client_diagnostics(device_id: str) -> JSONResponse:

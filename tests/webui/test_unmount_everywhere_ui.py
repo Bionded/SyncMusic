@@ -23,7 +23,7 @@ def test_repair_offers_unmount_everywhere(device, chrome, monkeypatch):  # noqa:
     app.sync._damaged["stick"] = "Input/output error"
     calls: list[str] = []
 
-    async def repair(device_id):
+    async def repair(device_id, *, resume=False):
         calls.append("repair")
         if calls.count("repair") == 1:
             raise SyncError(
@@ -46,7 +46,7 @@ def test_repair_offers_unmount_everywhere(device, chrome, monkeypatch):  # noqa:
     monkeypatch.setattr(app.sync, "mounts", mounts)
     monkeypatch.setattr(app.sync, "unmount_everywhere", unmount_everywhere)
     page = open_page(chrome, url + "/#/devices/stick", 1280)
-    page.locator("[data-fs-damaged]").get_by_role("button", name="Check and repair").click()
+    page.locator("[data-fs-damaged]").get_by_role("button", name="Repair and continue").click()
     dlg = page.get_by_role("dialog")
     dlg.get_by_text("/media/someone/PLAYER").first.wait_for()
     shot(page, "repair-blocked-1280")

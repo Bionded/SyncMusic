@@ -552,9 +552,16 @@ def router(facade: AppFacade) -> APIRouter:
         return {"unmounted": await facade.unmount_everywhere(device_id, lazy)}
 
     @r.post("/devices/{device_id}/repair", status_code=202)
-    async def repair_device(device_id: str) -> dict[str, Any]:
-        """Check and repair the data partition's file system (fsck); clears 'file system damaged'."""
-        return await facade.repair_device(device_id)
+    async def repair_device(device_id: str, resume: bool = False) -> dict[str, Any]:
+        """Check and repair the data partition's file system (fsck); clears 'file system damaged'.
+        `?resume=true` syncs again afterwards: a stopped sync continues from its last checkpoint."""
+        return await facade.repair_device(device_id, resume)
+
+    @r.post("/devices/{device_id}/skip-failed-file", status_code=202)
+    async def skip_failed_file(device_id: str) -> dict[str, Any]:
+        """After a repeated I/O error: leave the file it stopped at out of the syncs for a day, repair the file
+        system and continue the sync (the device's `skip_offer` names the file)."""
+        return await facade.skip_failed_file(device_id)
 
     @r.post("/devices/{device_id}/manifest/rebuild")
     async def rebuild_manifest(device_id: str) -> dict[str, Any]:

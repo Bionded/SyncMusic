@@ -28,7 +28,7 @@ from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict
 
-from syncmusic.base.capabilities import CoverSpec, DeviceCapabilities
+from syncmusic.base.capabilities import CoverSpec, DeviceCapabilities, PathRules
 from syncmusic.base.device import Device, DeviceSession, ProbeResult
 from syncmusic.base.progress import report_progress
 from syncmusic.core.manifest import STATE_DIR
@@ -36,6 +36,7 @@ from syncmusic.core.models import (
     DeviceFeedback,
     DeviceIdentity,
     DeviceTrackRef,
+    ItemRef,
     Manifest,
     ManifestEntry,
     MediaKind,
@@ -54,7 +55,7 @@ from syncmusic.devices.HibyR1.sonixos import (
     HibyData,
     hiby_feedback,
 )
-from syncmusic.devices.paths import PathLayout
+from syncmusic.devices.paths import PathLayout, path_key
 from syncmusic.infra.blockdev.identify import BlockDeviceInfo
 
 log = logging.getLogger(__name__)
@@ -75,6 +76,8 @@ FAVOURITES_STATE = (
 # in our state dir: the positions SyncMusic last wrote into the plugins' files (a plugin that was not reloaded
 # overwrites them with its old ones at its next save; the next sync writes ours again)
 POSITIONS_STATE = "compas-positions.json"
+# in our state dir: album key -> {"ref": the library's album, "stars": what player and library agreed on last}
+ALBUM_RATINGS_STATE = "compas-album-ratings.json"
 # the player's files at the card root, kept by Wipe (every hidden entry is kept too, see wipe_keeps)
 TAGCACHE_FORMAT = 8  # the `database_format` of .compas/device.json whose rows compas_stats patches
 PLAYER_FILES = (COMPAS_DIR, ".plugins", PLUGIN_ASSETS, IGNORE_FILE, "database.unignore")
@@ -159,6 +162,36 @@ class CompasSettings(BaseModel):
     playlists: bool = True
 
 
+def star_ratings(info: dict[str, Any]) -> bool:
+    """True for players with 0-5 star ratings (Compás 1.6.0+): tag 16 holds stars and the card syncs ratings
+    only; older players (heart, no or an older `player_version`) sync favourites only. Hearts and stars are
+    never converted into each other."""
+    v = str(info.get("player_version") or "")
+    if not v:
+        return False  # players before device.json had the heart
+    try:
+        parts = tuple(int(x) for x in v.lstrip("v").split("-")[0].split(".")[:2])
+    except ValueError:
+        return True  # a version we cannot read is a newer one
+    return parts >= (1, 6)
+
+
+def star_changes(
+    fb: DeviceFeedback, stars: dict[str, int], manifest: Manifest, rules: PathRules
+) -> None:
+    """The stars the user changed on the player since the last sync, into `fb`: a new rating for the library
+    (0 = cleared). Stars never touch the library's favourites."""
+    by_path = {path_key(p, rules): n for p, n in stars.items()}
+    for key, e in manifest.items.items():
+        if e.kind is not MediaKind.MUSIC or e.orphan:
+            continue
+        now = by_path.get(path_key(e.path, rules))
+        if now is None:  # not indexed (yet): nothing to compare
+            continue
+        if now != (e.last_rating or 0):
+            fb.ratings[key] = now or None
+
+
 class HibyCompas(FileDeviceMixin, Device):
     type_name = "hiby_compas"
     display_name = "HiBy R1 - Compás"
@@ -176,6 +209,9 @@ class HibyCompas(FileDeviceMixin, Device):
         supports_audiobooks=True,
         supports_playlists=True,
         supports_playcounts_read=True,
+        # by firmware (model_capabilities): stars on Compás 1.6.0+, the heart before
+        supports_ratings_read=True,
+        supports_favourites_read=True,
         supports_positions_read=True,
         has_rtc=True,
         cover=CoverSpec(max_size=600, embed=True, sidecar_name="cover.jpg"),
@@ -262,8 +298,21 @@ class HibyCompas(FileDeviceMixin, Device):
         return (
             super()
             .model_capabilities()
-            .model_copy(update={"path_rules": self.path_rules(), "lyrics": self.s.lyrics})
+            .model_copy(
+                update={
+                    "path_rules": self.path_rules(),
+                    "lyrics": self.s.lyrics,
+                    **self._listening_caps(),
+                }
+            )
         )
+
+    def _listening_caps(self) -> dict[str, bool]:
+        """Stars or the heart, by the firmware on the card; both while it is not mounted (unknown)."""
+        if not (self.mount / ".compas").is_dir():
+            return {}
+        stars = star_ratings(read_device_info(self.mount))
+        return {"supports_ratings_read": stars, "supports_favourites_read": not stars}
 
     def _playlist_format(self) -> tuple[str, str]:
         """`.m3u` like the player's own playlists: its remote control and editor address `Playlists/<name>.m3u`."""
@@ -335,6 +384,50 @@ class HibyCompas(FileDeviceMixin, Device):
     def _state_file(self) -> Path:
         return self.mount / STATE_DIR / FAVOURITES_STATE
 
+    def _album_baseline(self) -> dict[str, dict[str, Any]]:
+        try:
+            data = json.loads((self.mount / STATE_DIR / ALBUM_RATINGS_STATE).read_text("utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _patch_album_ratings(self, tracks: dict[str, Track], manifest: Manifest) -> None:
+        """Album ratings of the library onto the player (`album://` rows of remote_state.tsv). A library change
+        is written only while the player still shows what both agreed on last; a change on the player goes
+        to the library through the reverse sync and is agreed on once the library has it."""
+        albums: dict[str, tuple[str, int]] = {}
+        for key, e in manifest.items.items():
+            t = tracks.get(key)
+            if e.orphan or e.kind is not MediaKind.MUSIC or t is None or not t.album_id:
+                continue
+            akey = cf.album_key(t.album_artist or t.artist or "", t.album or "")
+            if akey is not None:
+                ref = ItemRef(library_id=t.ref.library_id, item_id=t.album_id).key()
+                albums[akey] = (ref, t.album_rating or 0)
+        base = self._album_baseline()
+        if not albums and not base:
+            return
+        now = cf.album_stars(self.mount)
+        writes: dict[str, int] = {}
+        for akey, (ref, lib) in albums.items():
+            player = now.get(akey, 0)
+            was = base.get(akey, {}).get("stars")
+            if player == lib:
+                base[akey] = {"ref": ref, "stars": lib}
+            elif was is None and player == 0 or was is not None and player == was:
+                writes[akey] = lib
+                base[akey] = {"ref": ref, "stars": lib}
+            elif was is None:
+                # rated on the player before SyncMusic knew the album: the reverse sync sends it
+                base[akey] = {"ref": ref, "stars": lib}
+        if writes:
+            cf.write_album_stars(self.mount, writes)
+        f = self.mount / STATE_DIR / ALBUM_RATINGS_STATE
+        f.parent.mkdir(exist_ok=True)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(base, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        tmp.replace(f)
+
     def _written_positions(self) -> dict[str, tuple[float, bool]]:
         try:
             raw = json.loads((self.mount / STATE_DIR / POSITIONS_STATE).read_text(encoding="utf-8"))
@@ -369,7 +462,11 @@ class HibyCompas(FileDeviceMixin, Device):
         def work() -> DeviceFeedback:
             card = cf.read_card(self.mount)
             seen = self._seen_favourites()
-            self._favourites = card.favourites | (seen - card.indexed)
+            rates = star_ratings(read_device_info(self.mount))
+            # a star player: no heart moves (stars are read below as ratings); a heart player: tag 16 = 1 is
+            # the heart, any other value never takes one away
+            hearts = seen if rates else card.favourites | (seen & card.rated)
+            self._favourites = hearts
             self._rewrite = {}
             for path, (pos, done) in self._written_positions().items():
                 there = card.positions.get(path)
@@ -389,14 +486,23 @@ class HibyCompas(FileDeviceMixin, Device):
                     # back; a rewind of REWIND_S or more is the listener's and wins
                     card.positions.pop(path, None)
                     self._rewrite[path] = (pos, done)
-            return hiby_feedback(
-                HibyData(card.play_counts, card.favourites, card.positions),
+            fb = hiby_feedback(
+                HibyData(card.play_counts, hearts, card.positions),
                 manifest,
                 rules,
-                seen & card.indexed,
+                seen,
                 now=dt.datetime.now(dt.UTC),
                 device_id=self.id,
             )
+            if not rates:
+                return fb
+            star_changes(fb, card.stars, manifest, rules)
+            now = cf.album_stars(self.mount)
+            for key, was in self._album_baseline().items():
+                stars = now.get(key, 0)
+                if stars != was["stars"]:
+                    fb.ratings[was["ref"]] = stars or None
+            return fb
 
         return await asyncio.to_thread(work)
 
@@ -483,37 +589,56 @@ class HibyCompas(FileDeviceMixin, Device):
         starred: dict[str, bool] = s.data.get("library_starred") or {}
         pushed = bool(s.data.get("reverse_ok", True))
 
+        rates = star_ratings(read_device_info(self.mount))
+
         def work() -> str | None:
             seen = self._seen_favourites()
             updates: dict[str, StatsUpdate] = {}
-            hearts: dict[str, tuple[ManifestEntry, bool]] = {}
+            # path -> (entry, the library's value now): a rating on a star player, a heart on an older one
+            moved: dict[str, tuple[ManifestEntry, int | bool | None]] = {}
             for key, e in manifest.items.items():
                 if e.orphan or e.kind is not MediaKind.MUSIC:
                     continue
                 t, star = tracks.get(key), starred.get(key)
+                stars: int | None = None
                 fav: bool | None = None
-                if star is not None and star != e.last_starred and (star or e.last_starred):
-                    fav = star if star or e.path in seen else None
-                    if fav is not None:
-                        hearts[e.path] = (e, star)
+                if rates and t is not None and t.rating != e.last_rating:
+                    stars = t.rating or 0  # the library's rating changed since the player got it
+                    moved[e.path] = (e, t.rating)
+                elif not rates and star is not None and star != e.last_starred:
+                    fav = star  # the library's heart changed since we last mirrored it
+                    if star or e.path in seen:  # taken away only when the reverse sync has seen it
+                        moved[e.path] = (e, star)
+                    else:
+                        fav = None
                 plays = t.play_count if (t is not None and pushed) else None
                 last = int(t.last_played.timestamp()) if (pushed and t and t.last_played) else None
-                if fav is not None or plays or last:
-                    updates[e.path] = StatsUpdate(plays or None, last, fav)
-            if not updates and not hearts:
+                if stars is not None or fav is not None or plays or last:
+                    expect = (e.last_rating or 0) if stars is not None else None
+                    updates[e.path] = StatsUpdate(
+                        plays or None, last, favourite=fav, stars=stars, expect=expect
+                    )
+            if not updates:
                 return None
             try:
-                done = patch_stats(self.mount, updates) if updates else {}
+                done = patch_stats(self.mount, updates)
             except (cf.CompasDbError, OSError) as err:
-                return f"hearts and play counts not written to the player: {err}"
+                return f"ratings and play counts not written to the player: {err}"
             by_path = {e.path: e for e in manifest.items.values()}
             for path, row in done.items():
                 if pushed:
                     by_path[path].last_playcount = row.playcount
-            for path, (e, star) in hearts.items():
-                if path in done:  # indexed: mirrored now; else at a later sync
-                    e.last_starred = star
-                    seen = seen | {path} if star else seen - {path}
+            for path, (e, value) in moved.items():
+                row = done.get(path)
+                if row is None:
+                    continue  # not indexed yet: at a later sync
+                if rates:
+                    if cf.stars_of(row.rating) == (value or 0):
+                        # not changed on the player meanwhile: mirrored now; else the reverse sync takes theirs
+                        e.last_rating = value  # type: ignore[assignment]
+                elif (row.rating == cf.FAVOURITE) == value:
+                    e.last_starred = bool(value)
+                    seen = seen | {path} if value else seen - {path}
             f = self._state_file()
             f.parent.mkdir(exist_ok=True)
             tmp = f.with_suffix(".tmp")
@@ -581,6 +706,16 @@ class HibyCompas(FileDeviceMixin, Device):
         await self._index(s)
         if manifest is not None:
             await self._patch_stats(s, manifest)
+            try:
+                # a heart player has no album ratings
+                if star_ratings(read_device_info(self.mount)):
+                    await asyncio.to_thread(
+                        self._patch_album_ratings, s.data.get("library_tracks") or {}, manifest
+                    )
+            except OSError as err:
+                s.data.setdefault("commit_warnings", []).append(
+                    f"album ratings not written to the player: {err}"
+                )
         if s.data.pop("compas_spoken", False):
             # the plugins read their state only when they load: until then they play from the old positions and
             # their next save overwrites ours

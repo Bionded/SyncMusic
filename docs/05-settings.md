@@ -151,9 +151,13 @@ browser only; the sun/moon/monitor button in the top bar switches between the th
 |---|---|---|
 | `enabled` | on | Read listening data back before every sync. |
 | `plays` | on | Play counts and last played. |
-| `ratings` | on | Ratings and favourites. |
+| `ratings` | on | Ratings and favourites, as the player has them: star ratings go to the library rating, hearts to favourites; a heart never becomes stars or the other way round. |
 | `positions` | on | Audiobook and podcast positions. |
 | `playlists` | on | Playlists changed on the player go back to the library. |
+
+The page shows only the switches for what the player records: a USB stick has no reverse sync at all, a
+Rockbox player no positions, an iPod or Rockbox player stars but no hearts, the HiBy R1 with SonixOS hearts but
+no stars, a Compás player stars (1.6.0 and newer) or hearts (older), a Wi-Fi client what its app sends.
 
 ### Library accounts
 A family member's player can use **their own** profile on a shared Navidrome, Jellyfin or Audiobookshelf.

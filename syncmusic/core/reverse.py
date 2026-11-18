@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from syncmusic.base.capabilities import LibraryCapabilities
+from syncmusic.base.capabilities import DeviceCapabilities, LibraryCapabilities
 from syncmusic.base.device import Device
 from syncmusic.base.feedback import FeedbackRejected, FeedbackSink
 from syncmusic.base.library import Library
@@ -248,6 +248,18 @@ def _kept_plays(manifest: Manifest | None) -> list[PlayEvent]:
     return out
 
 
+def as_the_device_has(fb: DeviceFeedback, caps: DeviceCapabilities) -> DeviceFeedback:
+    """Ratings and hearts pass only as the device has them: a heart never turns into stars or back."""
+    if caps.supports_ratings_read and caps.supports_favourites_read:
+        return fb
+    update: dict[str, Any] = {}
+    if not caps.supports_ratings_read:
+        update["ratings"] = {}
+    if not caps.supports_favourites_read:
+        update["stars"] = {}
+    return fb.model_copy(update=update)
+
+
 def _new_feedback(
     fb: DeviceFeedback,
     plays: list[PlayEvent],
@@ -389,6 +401,7 @@ class ReverseSync:
             return ReverseReport()
         manifest = await device.read_manifest()
         fb = await device.read_feedback(manifest) if manifest is not None else DeviceFeedback()
+        fb = as_the_device_has(fb, device.effective_capabilities())
         journal = await self.store.feedback_journal(cfg.id)
         plays = _uncaptured_plays(fb, journal) if journal else fb.plays
         # another installation's items: their plays are kept on the manifest entry for it (see _commit), the

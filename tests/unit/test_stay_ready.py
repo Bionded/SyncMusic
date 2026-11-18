@@ -342,3 +342,33 @@ async def test_our_read_only_mount_is_replaced_for_a_writer(monkeypatch, tmp_pat
     assert done[:2] == [f"flush {own}", f"umount {own}"]
     assert any(c.startswith("mount ") and ",rw" in c or "rw," in c for c in done[2:])
     assert m.path == Path(own) and m.owned
+
+
+def test_mountinfo_views_of_the_same_mount_are_not_second_mounts():
+    own = "/srv/app/mnt/player"
+    table = [
+        mnt.MountEntry("8:1", own, "/dev/sdz1", "vfat", peers=frozenset({"41"})),
+        mnt.MountEntry(
+            "8:1", "/mnt/root" + own, "/dev/sdz1", "vfat"
+        ),  # host root inside a container
+        mnt.MountEntry("8:1", "/hostview/player", "/dev/sdz1", "vfat", peers=frozenset({"41"})),
+        mnt.MountEntry("8:1", "/media/auto/PLAYER", "/dev/sdz1", "vfat", peers=frozenset({"52"})),
+    ]
+    views = [e.path for e in table[1:] if mnt.is_view_of(e.path, own, table)]
+    assert views == ["/mnt/root" + own, "/hostview/player"]
+    assert not mnt.is_view_of("/media/auto/PLAYER", own, table)
+
+
+async def test_a_host_root_view_of_our_mount_does_not_stop_writing(env, tmp_path, monkeypatch):
+    app, c = env
+    await _ready_device(app, c, tmp_path, monkeypatch)
+    cfg = await app.store.device("flash")
+    own = app.sync._mounts["flash"]
+    monkeypatch.setattr(mnt, "is_live", lambda m: True)
+    table = [
+        mnt.MountEntry("8:1", str(own.path), "/dev/sdz1", "exfat"),
+        mnt.MountEntry("8:1", "/mnt/root" + str(own.path), "/dev/sdz1", "exfat"),
+    ]
+    monkeypatch.setattr(mnt, "mounts_of", lambda dev: list(table))
+    await app.sync._mount_check(cfg)()
+    assert "flash" not in app.sync._errors

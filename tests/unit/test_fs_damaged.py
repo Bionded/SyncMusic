@@ -153,3 +153,86 @@ async def test_a_damaged_file_system_is_flagged_on_connect(env, tmp_path, monkey
     await app.sync._check_fs(cfg, cd)
     assert (await _device(c))["fs_damaged"] == "Input/output error"
     assert await app.sync.periodic_updates(now=10**9) == []
+
+
+async def test_a_sync_stopped_by_an_io_error_repairs_and_continues_once(env, tmp_path, monkeypatch):
+    import asyncio
+
+    app, c = env
+    await _register(c, tmp_path / "flash", name="Flash")
+    calls: list[str] = []
+
+    async def repair(device_id, *, resume=False):
+        calls.append("repair")
+        assert resume
+        app.sync._damaged.pop(device_id, None)
+        await auto_sync(None, "after")
+
+    async def auto_sync(cfg, why):
+        calls.append("sync")
+
+    monkeypatch.setattr(app.sync, "repair", repair)
+    monkeypatch.setattr(app.sync, "auto_sync", auto_sync)
+
+    async def job(ctx):
+        raise OSError(errno.EIO, "Input/output error", "/player/Music/a.flac")
+
+    for _ in range(2):
+        info = app.jobs.submit("sync", "sync Flash", job, device_id="flash")
+        await app.jobs.wait(info.id)
+        for _ in range(50):
+            if not app.sync._update_tasks:
+                break
+            await asyncio.sleep(0.02)
+    assert calls == ["repair", "sync"]  # the second error does not loop
+    assert "storage may be failing" in app.sync._errors["flash"]
+    assert "a.flac" in app.sync._errors["flash"]
+
+
+async def test_skip_that_file_and_continue_after_a_repeated_io_error(env, tmp_path, monkeypatch):
+    import asyncio
+
+    from syncmusic.core.applier import DeviceIOError
+    from syncmusic.core.models import ActionKind, ItemRef, PlanAction, SyncPlan
+
+    app, c = env
+    await _register(c, tmp_path / "flash", name="Flash")
+    resumed: list[bool] = []
+
+    async def repair(device_id, *, resume=False):
+        resumed.append(resume)
+        app.sync._damaged.pop(device_id, None)
+        return app.jobs.submit("repair", "repair", _noop, device_id=device_id)
+
+    async def _noop(ctx):
+        return {}
+
+    monkeypatch.setattr(app.sync, "repair", repair)
+    monkeypatch.setattr(app.sync, "auto_sync", lambda cfg, why: asyncio.sleep(0))
+    assert (await c.post("/api/v1/devices/flash/skip-failed-file")).status_code == 400
+
+    async def job(ctx):
+        err = DeviceIOError(errno.EIO, "flash: the device's storage reports an I/O error")
+        err.ref, err.item = "lib/7", "Гурт - Пісня"
+        raise err
+
+    for _ in range(2):
+        info = app.jobs.submit("sync", "sync Flash", job, device_id="flash")
+        await app.jobs.wait(info.id)
+        for _ in range(50):
+            if not app.sync._update_tasks:
+                break
+            await asyncio.sleep(0.02)
+    devices = (await c.get("/api/v1/devices")).json()["registered"]
+    assert next(d for d in devices if d["id"] == "flash")["skip_offer"] == "Гурт - Пісня"
+    assert (await c.post("/api/v1/devices/flash/skip-failed-file")).status_code == 202
+    assert resumed[-1] is True and "flash" not in app.sync._errors
+    plan = SyncPlan(id="p", device_id="flash")
+    keep = ItemRef(library_id="lib", item_id="8")
+    plan.actions = [
+        PlanAction(kind=ActionKind.ADD, ref=ItemRef(library_id="lib", item_id="7"), title="Пісня"),
+        PlanAction(kind=ActionKind.ADD, ref=keep),
+    ]
+    app.sync._drop_skipped("flash", plan)
+    assert [a.ref for a in plan.actions] == [keep]
+    assert "Пісня" in plan.warnings[-1]

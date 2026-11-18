@@ -194,3 +194,38 @@ async def test_pairing_request_approved_on_the_server(server, tmp_path):
     await task
     assert (await app.clients.get(device_id)).name == "Asked"
     assert ReferenceClient(tmp_path / "phone", http=http).state["token"].startswith("smc_")
+
+
+async def test_windowed_delivery_keeps_the_outbox_small_and_resumes(server, tmp_path, monkeypatch):
+    """Delivery under a tiny outbox budget, end to end: one file per window, the outbox never holds more than
+    the window, plain files are linked from the library (no copy), acked files leave the outbox, a download
+    dropped in the middle of a window continues in the next session and the outbox ends empty."""
+    from syncmusic.core import client_sessions
+
+    app, paired, music = server
+    rc = await paired(tmp_path / "phone")
+    device_id = rc.state["device_id"]
+    cfg = await app.store.device(device_id)
+    cfg.settings = {**cfg.settings, "outbox_budget_mb": 1}
+    await app.store.put_device(cfg)
+    monkeypatch.setattr(client_sessions, "MB", 1)  # one byte: one file per window
+    dev = await app.client_sessions.device(device_id)
+
+    view = await rc.start()
+    item = next(f for f in view["plan"]["fetch"] if f["role"] == "track")
+    assert view["plan"]["more"] == 1
+    held = dev.outbox()
+    assert [p for p in held if p.endswith(".mp3")] == [item["path"]]
+    assert (dev.mount / item["path"]).stat().st_nlink >= 2  # linked, not a second copy
+    assert not await rc.download(item, stop_after=1)  # the Wi-Fi dropped mid-window
+    await rc.http.post(
+        rc._url(f"sync/{view['session_id']}/finish"),
+        json={"status": "partial"},
+        headers=rc._headers(),
+    )
+    assert item["path"] in dev.outbox()  # still waiting for the client
+
+    out = await rc.sync()  # resumes the .part, then fetches the next window
+    assert out["failed"] == 0 and len(tracks(rc.folder)) == 2
+    assert not list(rc.folder.rglob("*.part"))
+    assert not [p for p in dev.outbox() if p.endswith(".mp3")]

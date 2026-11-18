@@ -26,8 +26,13 @@ cannot be switched off.
 
 ## The file system is damaged
 When reading or writing fails with a file system error, the device page shows a banner and automatic syncs stop.
-**Check and repair** runs `fsck` on the data partition only (never on an iPod's firmware) and mounts it again; the
-next sync rewrites any file that was cut off. If the errors come back, the player's storage is failing.
+If a sync stopped that way, SyncMusic repairs the file system and continues the sync by itself, once. **Repair and
+continue** does the same on demand: it runs `fsck` on the data partition only (never on an iPod's firmware), mounts
+it again and syncs again, continuing from the last checkpoint (files written before it are kept, a file that was cut
+off is written again). If the error comes back soon after a repair, the device page says the storage may be
+failing: check the system log for disk errors, try another card or cable, or turn on gentle writing. When the error
+stopped at the same file, **Skip that file and continue** leaves that file out of the syncs for a day, repairs the
+file system and continues with the rest.
 
 An **NTFS** drive unplugged without *Eject* may not mount ("volume is dirty"): repair it in Windows (`chkdsk /f`) or
 format it.

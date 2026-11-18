@@ -88,6 +88,14 @@ class ScriptedDevice(FakeDevice):
     """read_feedback returns `self.feedback` once (like a device whose data was consumed); records the order."""
 
     type_name: ClassVar[str] = "fake"
+    capabilities = FakeDevice.capabilities.model_copy(
+        update={
+            "supports_playcounts_read": True,
+            "supports_ratings_read": True,
+            "supports_favourites_read": True,
+            "supports_positions_read": True,
+        }
+    )
 
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)

@@ -225,6 +225,19 @@ class MountEntry:
     source: str
     fstype: str = ""
     ro: bool = False
+    peers: frozenset[str] = frozenset()  # propagation groups (shared:N / master:N) of this mount
+
+
+def is_view_of(path: str, own: str, entries: list[MountEntry] | None = None) -> bool:
+    """`path` shows the same mount as `own` rather than being a second mount: the host's root seen again
+    inside a container (`/mnt/root` + our path) or a propagated copy (same shared/master peer group)."""
+    own = own.rstrip("/")
+    if path != own and path.endswith(own):
+        return True
+    if not entries:
+        return False
+    mine = {g for e in entries if e.path == own for g in e.peers}
+    return any(e.path == path and e.peers & mine for e in entries)
 
 
 _OCTAL_ESCAPE = re.compile(r"\\([0-7]{3})")
@@ -243,6 +256,9 @@ def mount_table() -> list[MountEntry]:
         if "-" not in parts:
             continue
         sep = parts.index("-")
+        peers = frozenset(
+            f.split(":", 1)[1] for f in parts[6:sep] if f.startswith(("shared:", "master:"))
+        )
         out.append(
             MountEntry(
                 parts[2],
@@ -250,6 +266,7 @@ def mount_table() -> list[MountEntry]:
                 unescape_mount_field(parts[sep + 2]),
                 parts[sep + 1],
                 "ro" in parts[5].split(","),
+                peers,
             )
         )
     return out
@@ -688,6 +705,11 @@ async def unmount_everywhere(
         with contextlib.suppress(OSError, BlockdevError):
             await _flush(m.path)
     for m in mounts:
+        done = [o.path for o in mounts[: mounts.index(m)]]
+        if any(is_view_of(m.path, o) for o in done) and not any(
+            e.path == m.path for e in await asyncio.to_thread(mount_table)
+        ):
+            continue  # a view of a mount unmounted just before (propagated away with it)
         try:
             await _umount_retrying(Path(m.path))
         except BlockdevError as e:

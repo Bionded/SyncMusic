@@ -178,7 +178,7 @@ the connection may drop between any two requests.
           "state":  [{"key": "nd/123", "rating": 4, "favourite": true, "play_count": 12},
                      {"key": "abs/ep-9", "rating": null, "favourite": false, "play_count": 0, "position_s": 1834.2,
                       "finished": false}],
-          "generated": null, "after_sync": "none",
+          "generated": null, "after_sync": "none", "more": 0,
           "next": {"fetch": "500"},
           "totals": {"fetch_bytes": 912345678, "fetch_count": 812, "delete_count": 3}}}
 ```
@@ -189,7 +189,8 @@ the connection may drop between any two requests.
   episodes also carry `series` (the show; `album` when empty) and `published` (ISO 8601 or `null`).
 - `state` lists the libraries' listening data of every item on the client: `rating` 0–5 (`null` = unrated),
   `favourite`, `play_count` and, for podcasts and audiobooks, `position_s` (where to resume) and `finished`. Show these in the
-  app; what the user changes goes back up as events.
+  app; what the user changes goes back up as events. Music whose library rates albums (Subsonic servers) also carries
+  `album_ref` (the album's key), `album_artist`, `album` and `album_rating` (0–5, `null` = unrated).
 - `mtime` (Unix seconds) is the file's modification time on the server; set it on the file after moving it in
   place (a player's own database may compare file times with the ones it was built from).
 - `generated` (or `null`): files the server built for this client — e.g. a player database over the files the
@@ -200,6 +201,9 @@ the connection may drop between any two requests.
 - `after_sync`: `none`, `refresh` (reload the library view) or `restart` (restart the player): what to do after a
   sync that changed something on the client (files fetched or deleted, or a new generated set installed). A sync
   that changed nothing does nothing. Set per device on the server.
+- `more`: how many files the server held back for a later **window**. The server prepares (converts, retags)
+  only as much as fits its outbox budget at a time, so a large first sync comes in several sessions. Install
+  `generated` only from the last window (`more` = 0).
 - A tags-only change arrives as a fetch with a new `fid` that replaces the file at the same `path`.
 - Work order: **deletes first** (frees space), then fetches in list order (rule priority: the most important come
   first when space runs out).
@@ -233,15 +237,37 @@ with `cancelled`. The server's web UI shows the progress live.
 ### 5. Finish
 `POST sync/{session_id}/finish {"status": "complete" | "partial" | "cancelled"}` → `{"inventory_cursor": "…", …}`.
 Keep the cursor for the next delta inventory. Files not acknowledged stay in the outbox for the next session.
+`"more": true` in the answer (after a `complete` finish of a plan with `more` > 0): start the next sync right away
+for the next window, until it is `false`. A client that does not stays correct: its next sync gets the rest.
 
 ### When to sync
 Call `GET status` every `poll_s` seconds (from `pair`/`me`; default 300) while on a suitable network →
 ```json
-{"sync_wanted": "none" | "full", "reason": "files are waiting for the client", "plan_ready": false,
+{"sync_wanted": "none" | "full", "reason": "files are waiting for the client", "requested": false, "plan_ready": false,
  "poll_s": 300, "server_time": "2026-11-13T08:00:00+00:00"}
 ```
 `full` means start a sync (the user pressed *Sync* on the server, or prepared files are waiting). The client may
-also sync whenever the user asks.
+also sync whenever the user asks. `"requested": true` means the user pressed *Sync now* on the server: an app that is
+open starts the sync at once. To learn that without delay, an open app keeps a **long poll** running:
+`GET status?wait=25` answers as soon as *Sync now* is pressed, or after `wait` seconds (at most 30). The request
+ends when the client starts its sync; nothing is prepared on the server before that.
+
+**One sync per client at a time.** The server holds at most one session per client:
+
+| Situation | Result |
+|---|---|
+| *Sync now* on the server | the app is asked (status / long poll); the server starts nothing itself |
+| The app starts while a session is still planning (a retry, a second tap, both at once) | the same session comes back |
+| The app starts while a session is ready (it started over) | the old session ends; its file ids and acks answer `410 session_expired`; what it acked stays done |
+| *Sync now* while the app is syncing | the running session stays the only one; the request ends when the app next starts |
+| The user stops the sync on the server (`DELETE /api/v1/clients/{id}/sync`) | a pending *Sync now* is withdrawn and the next ack answers `"cancel": true`: the client stops, finishes with `cancelled`; acked files stay done, the rest waits |
+| The user stops the sync in the app | `finish {"status": "cancelled"}`; acked files stay done, `status` says `full` until the rest is fetched |
+| *Sync now*, but the app is closed | the request waits (the device page says so) until the app starts, or the user withdraws it |
+| Two clients of one server at once | each has its own session and outbox; both finish |
+| The library is larger than the outbox budget | the server prepares one window (plain files hard-linked, converted ones from the cache), `plan.more` and `finish → more` ask the client to sync again; acked files leave the outbox at once |
+| The connection drops in the middle of a window | the un-acked file stays in the outbox; the next session plans it again and the client continues its `.part` with a `Range` request |
+
+Each row is covered by a test in `tests/unit/test_client_sync.py` (the reference client follows the same rules).
 
 ## Listening data: events
 Record what the user did as events and upload them; never send a table of current values.
@@ -256,6 +282,7 @@ Record what the user did as events and upload them; never send a table of curren
 | `play` | `completed`, `played_s` | play count +1 (scrobbled with time `at`) when `completed` or long enough |
 | `rating` | `value` 0–5 (0 = cleared) | rating |
 | `favourite` | `on` | favourite / star on or off |
+| `album_rating` | `value` 0–5 (0 = cleared); `key` is the `album_ref` from `state` | the album's rating |
 | `position` | `position_s`, `finished` | audiobook or podcast position; the newest wins |
 | `playlist_edit` | `name`, `ops`: `[{"op": "add" \| "remove" \| "move", "key", "index"}]` | the playlist as last synced plus these edits goes back to the library playlist it came from; a new `name` creates a playlist there (libraries that can save playlists, e.g. Navidrome) |
 | `deleted_by_user` | — | the user deleted the file on the client: it stays off this client (an exclusion in the device's own template, as *Player contents → Remove* does); applied when the event arrives |

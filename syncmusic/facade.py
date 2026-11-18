@@ -259,10 +259,17 @@ def _edits_playlists(device_type: str) -> bool:
 
 
 def _reverse_sync_schema(device_type: str) -> dict[str, Any]:
+    """Only the switches for what the device type records: no ratings switch on a player without stars or
+    hearts, no positions switch on one without positions."""
     full = ReverseSyncSettings.model_json_schema()
-    if _edits_playlists(device_type):
-        return full
-    props = {k: v for k, v in full["properties"].items() if k != "playlists"}
+    caps = registry.device_class(device_type).capabilities
+    has = {
+        "plays": caps.supports_playcounts_read,
+        "ratings": caps.supports_ratings_read or caps.supports_favourites_read,
+        "positions": caps.supports_positions_read,
+        "playlists": _edits_playlists(device_type),
+    }
+    props = {k: v for k, v in full["properties"].items() if has.get(k, True)}
     return {**full, "properties": props}
 
 
@@ -3066,8 +3073,11 @@ class AppFacade:
     async def unmount_everywhere(self, device_id: str, lazy: bool = False) -> list[dict[str, Any]]:
         return await self.app.sync.unmount_everywhere(device_id, lazy=lazy)
 
-    async def repair_device(self, device_id: str) -> dict[str, Any]:
-        return (await self.app.sync.repair(device_id)).model_dump(mode="json")
+    async def repair_device(self, device_id: str, resume: bool = False) -> dict[str, Any]:
+        return (await self.app.sync.repair(device_id, resume=resume)).model_dump(mode="json")
+
+    async def skip_failed_file(self, device_id: str) -> dict[str, Any]:
+        return (await self.app.sync.skip_failed_file(device_id)).model_dump(mode="json")
 
     async def rebuild_manifest(self, device_id: str) -> dict[str, Any]:
         return await self.app.sync.rebuild_manifest(device_id)

@@ -36,7 +36,21 @@ addStrings({
   "dev.cl_space_val": "{free} free of {total}",
   "dev.cl_revoked": "Revoked: this client can no longer sync until it is paired again (Settings → Wi-Fi clients).",
   "dev.cl_sync": "The client is syncing: file {done} of {total}, {bytes}",
+  "dev.cl_rate": "{rate}/s to the player",
   "dev.cl_planning": "The client asked to sync: the plan is being made.",
+  "dev.cl_review": "The sync waits for your confirmation: {reason}. The player syncs once you apply the plan.",
+  "dev.cl_failed": "The last sync request failed: {reason}",
+  "dev.cl_requested": "Waiting for the player: open the SyncMusic app on it and the sync starts there.",
+  "dev.cl_request_cancel": "Cancel",
+  "dev.cl_sync_now": "Sync now",
+  "dev.cl_outbox": "Waiting on the server",
+  "dev.cl_outbox_val": "{n} files, {size}",
+  "dev.cl_outbox_val_one": "{n} file, {size}",
+  "dev.cl_outbox_clear": "Clear",
+  "dev.cl_outbox_cleared": "Cleared: {size} freed",
+  "dev.cl_outbox_confirm_title": "Clear what waits for {name}?",
+  "dev.cl_outbox_confirm_text": "The prepared files on the server are deleted. The player keeps what it has; the next sync prepares again what it still needs.",
+  "dev.cl_sync_now_title": "The sync starts in the app on the player (at once while the app is open)",
   "dev.cl_manage": "Rename or revoke",
   "dev.cl_diag": "Diagnostics",
   "dev.cl_diag_val": "sent {when}",
@@ -125,7 +139,9 @@ addStrings({
   "dev.manifest_rebuild": "Rebuild from files",
   "dev.manifest_rebuilt": "Moved aside: the next sync starts as a first sync.",
   "dev.fs_damaged_text": "Reading or writing the device failed ({error}). Automatic syncs are paused until the file system is repaired, the device is wiped or reconnected.",
-  "dev.repair": "Check and repair",
+  "dev.repair": "Repair and continue",
+  "dev.skip_file": "Skip that file and continue",
+  "dev.skipping": "Skipping the file and repairing {name}",
   "dev.repair_wipe": "Wipe…",
   "dev.repairing": "Checking and repairing {name}…",
   "dev.dz_unmount": "Unmount everywhere",
@@ -139,7 +155,7 @@ addStrings({
   "dev.lease_title": "Being synced by {name}",
   "dev.lease_text": "Another SyncMusic installation has been writing to this player since {since}. A sync started here is refused until it is done.",
   "dev.foreign_text": "Another program mounted it at {paths}. Two programs writing to it at once can damage the file system; see Troubleshooting to turn the system's automount off, or unmount it everywhere.",
-  "dev.unmount_text": "Unmount the player's partitions everywhere, also where another program (the system's automount) mounted it, so Check and repair, Format or Wipe can run.",
+  "dev.unmount_text": "Unmount the player's partitions everywhere, also where another program (the system's automount) mounted it, so Repair and continue, Format or Wipe can run.",
   "dev.unmount": "Unmount everywhere",
   "dev.unmount_none": "{name} is not mounted anywhere.",
   "dev.unmount_title": "Unmount {name} everywhere?",
@@ -150,7 +166,7 @@ addStrings({
   "dev.unmount_busy_text": "{error}. Close it, or detach the mount anyway: it disappears now and the file system is released once that program lets go.",
   "dev.unmount_lazy": "Detach anyway",
   "dev.repair_blocked_title": "{name} is also mounted by another program",
-  "dev.repair_blocked_text": "Another program (usually the system's automount) mounted it at {paths}. Check and repair needs it unmounted everywhere; pending writes are flushed first.",
+  "dev.repair_blocked_text": "Another program (usually the system's automount) mounted it at {paths}. Repair and continue needs it unmounted everywhere; pending writes are flushed first.",
   "dev.repair_blocked_ok": "Unmount everywhere and continue",
   "dev.gentle": "Gentle",
   "dev.gentle_title": "Gentle write mode is on - open Settings",
@@ -527,7 +543,7 @@ function deviceRow(d, report, job, space) {
     : d.waiting && d.connected ? [t("devs.review"), `#/devices/${id}/plan${d.waiting.plan_id ? `/${encodeURIComponent(d.waiting.plan_id)}` : ""}`, ""]
     : d.error ? [t("devs.fix"), `#/devices/${id}`, d.error]
     : d.no_libraries && d.connected ? [t("devs.choose_templates"), `#/devices/${id}/rules`, ""]
-    : d.connected ? [t("devs.sync"), `#/devices/${id}/plan`, d.setting_clock ? t("devs.clock_title") : ""] : [t("devs.open"), `#/devices/${id}`, ""];
+    : d.connected ? [t("devs.sync"), d.type === "client" ? `#/devices/${id}` : `#/devices/${id}/plan`, d.setting_clock ? t("devs.clock_title") : ""] : [t("devs.open"), `#/devices/${id}`, ""];
   const disabled = d.connected && (d.setting_clock || d.ejecting || d.ejected || d.no_medium) && !syncing;
   const upd = !syncing && !d.error ? listUpdateLine(d) : "";
   return html`<div class="dev-row linkrow" data-device-row="${d.id}" data-state="${state}">
@@ -644,20 +660,26 @@ async function renderDevice(ctx) {
     : live?.manifest_damaged ? problemBox({ title: t("dev.manifest_damaged"), message: t("dev.manifest_damaged_text", { error: live.manifest_damaged }),
       action: html`<span data-manifest-damaged><button type="button" class="btn small" data-action="rebuildManifest" ${live.busy ? "disabled" : ""}>${t("dev.manifest_rebuild")}</button>
         <a class="btn small" href="#/devices/${id}/settings">${t("dev.repair_wipe")}</a></span>` })
-    : live?.error ? problemBox({ message: live.error, action: tab === "settings" ? "" : html`<a class="btn small" href="#/devices/${id}/settings">${t("dev.open_settings")}</a>` }) : ""}
+    : live?.error ? problemBox({ message: live.error, action: html`<span>${live.skip_offer ? html`<button type="button" class="btn small" data-action="skipFailedFile" title="${live.skip_offer}" ${live.busy ? "disabled" : ""}>${t("dev.skip_file")}</button>` : ""}
+        ${tab === "settings" ? "" : html`<a class="btn small" href="#/devices/${id}/settings">${t("dev.open_settings")}</a>`}</span>` }) : ""}
     <div class="tabs dev-tabs" role="tablist" aria-label="${t("dev.tabs")}">${TABS.map((x) => (clock && x === "contents"
       ? html`<span class="tab" role="tab" aria-selected="false" aria-disabled="true" title="${t("devs.clock_title")}">${t(`dev.tab.${x}`)}</span>`
       : html`<a class="tab" role="tab" href="#/devices/${id}/${x}" aria-selected="${x === tab}">${t(`dev.tab.${x}`)}</a>`))}</div>
     <div role="tabpanel">${body}</div>`;
 }
 
-function clientSession(s) {
+function clientSession(s, id) {
   if (!s) return "";
   const p = s.progress || {};
   const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
   return s.status === "ready"
-    ? html`<span>${t("dev.cl_sync", { done: p.done, total: p.total, bytes: `${bytes(p.bytes_done || 0)} / ${bytes(p.bytes_total || 0)}` })}</span>
+    ? html`<span>${t("dev.cl_sync", { done: p.done, total: p.total, bytes: `${bytes(p.bytes_done || 0)} / ${bytes(p.bytes_total || 0)}` })}${p.rate_bps != null ? ` · ${t("dev.cl_rate", { rate: bytes(p.rate_bps) })}${p.eta_s != null ? ` · ${etaText(p.eta_s)}` : ""}` : ""}</span>
       <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>`
+    : s.status === "needs_review"
+      ? html`<span class="hint warn" data-client-review>${t("dev.cl_review", { reason: s.message })}</span>
+        <a class="btn small" href="#/devices/${id}/plan${s.plan_id ? `/${encodeURIComponent(s.plan_id)}` : ""}">${t("dev.review_plan")}</a>`
+    : s.status === "failed"
+      ? html`<span class="hint error" data-client-failed>${t("dev.cl_failed", { reason: s.message })}</span>`
     : html`<span>${t("dev.cl_planning")}</span>`;
 }
 
@@ -671,13 +693,17 @@ function clientCard(c) {
     ["paired", when(c.created_at)],
     ["formats", (caps.formats || []).join(", ")],
     ["space", st.total ? t("dev.cl_space_val", { free: bytes(st.free || 0), total: bytes(st.total) }) : ""],
+    ["outbox", c.outbox?.files ? html`${t("dev.cl_outbox_val", { n: c.outbox.files, size: bytes(c.outbox.bytes) })}
+      ${c.session ? "" : html`<button type="button" class="btn small ghost" data-action="clearOutbox">${t("dev.cl_outbox_clear")}</button>`}` : ""],
   ].filter(([, v]) => v);
   return html`<section class="card ds-card dev-client" data-client-card="${c.device_id}" aria-label="${t("dev.cl_title")}">
     ${c.revoked ? html`<p class="hint warn" data-client-revoked>${t("dev.cl_revoked")}</p>` : ""}
     <dl class="dev-client-facts">${rows.map(([k, v]) => html`<div><dt>${t(`dev.cl_${k}`)}</dt><dd>${v}</dd></div>`)}</dl>
     ${c.diagnostics ? html`<p class="dev-client-diag" data-client-diag>${t("dev.cl_diag")}: ${t("dev.cl_diag_val", { when: when(c.diagnostics.received_at) })}
       <a class="btn small ghost" href="/api/v1/clients/${encodeURIComponent(c.device_id)}/diagnostics" download>${t("dev.cl_diag_get")}</a></p>` : ""}
-    <div class="dev-client-sync" data-client-sync aria-live="polite">${clientSession(c.session)}</div>
+    <div class="dev-client-sync" data-client-sync aria-live="polite">${c.session ? clientSession(c.session, encodeURIComponent(c.device_id))
+      : c.sync_requested ? html`<span data-client-requested>${t("dev.cl_requested")}</span>
+        <button type="button" class="btn small ghost" data-action="cancelClientSync">${t("dev.cl_request_cancel")}</button>` : ""}</div>
     <a class="btn small ghost" href="#/settings?q=${encodeURIComponent(t("dev.cl_title"))}">${t("dev.cl_manage")}</a></section>`;
 }
 
@@ -695,7 +721,9 @@ function deviceHeader(ctx, syncing) {
     : live?.waiting && connected ? [t("dev.review_plan"), `#/devices/${id}/plan${live.waiting.plan_id ? `/${encodeURIComponent(live.waiting.plan_id)}` : ""}`, ""]
     : [t("dev.sync"), idle && libs.length ? `#/devices/${id}/plan` : "",
       live?.setting_clock ? t("devs.clock_title") : live?.no_medium ? t("side.no_medium") : !connected ? t("dev.sync_offline") : !libs.length ? t("dev.no_libraries") : idle ? "" : t("dev.sync_busy")];
-  const primary = href ? html`<a class="btn primary" href="${href}" data-sync>${icon("sync", { size: 16, width: 2.2 })}${label}</a>`
+  const primary = cfg.type === "client" && !syncing && libs.length
+    ? html`<button type="button" class="btn primary" data-action="clientSync" title="${t("dev.cl_sync_now_title")}" data-sync>${icon("sync", { size: 16, width: 2.2 })}${t("dev.cl_sync_now")}</button>`
+    : href ? html`<a class="btn primary" href="${href}" data-sync>${icon("sync", { size: 16, width: 2.2 })}${label}</a>`
     : html`<span class="btn primary" aria-disabled="true" title="${why}" data-sync>${icon("sync", { size: 16, width: 2.2 })}${label}</span>`;
   return html`<div class="dev-head" data-device-head>
     <span class="dev-head-ico">${deviceIcon(cfg.type, 30)}</span>
@@ -770,7 +798,9 @@ async function renderOverview(ctx) {
   }
   const id = encodeURIComponent(cfg.id);
   const canSync = idle && libs.length;
-  const sync = canSync ? html`<a class="btn primary" href="#/devices/${id}/plan" data-cap-sync>${t("dev.sync")}</a>` : "";
+  const sync = !canSync ? "" : cfg.type === "client" // the app on the player starts a client's sync
+    ? html`<button type="button" class="btn primary" data-action="clientSync" data-cap-sync>${t("dev.sync")}</button>`
+    : html`<a class="btn primary" href="#/devices/${id}/plan" data-cap-sync>${t("dev.sync")}</a>`;
   return html`${libs.length ? "" : html`<div class="callout" data-no-libraries style="margin-bottom:16px">${t("dev.no_libraries")} <a href="#/devices/${id}/rules">${t("dev.attach")}</a></div>`}
     <section class="card dev-cap" aria-labelledby="hCap"><div class="dev-cap-head"><h2 id="hCap">${t("dev.capacity_head")}</h2>
       ${space && !space.unknown ? html`<span class="dev-cap-line" data-cap-line>${t("dev.capacity", { used: bytes(space.used), free: bytes(space.free), capacity: bytes(space.capacity) })}</span>` : ""}</div>
@@ -962,7 +992,7 @@ export function reportSummary(r) {
 // when the device and one of its libraries support it), and Format with the file system choice.
 function reverseSupport(type, libraries, libTypes, attachedIds) {
   const c = type.capabilities;
-  if (!(c.supports_playcounts_read || c.supports_ratings_read || c.supports_positions_read)) return "device";
+  if (!(c.supports_playcounts_read || c.supports_ratings_read || c.supports_favourites_read || c.supports_positions_read)) return "device";
   const caps = Object.fromEntries(libTypes.map((x) => [x.type, x.capabilities]));
   const ok = libraries.some((l) => attachedIds.includes(l.id) && l.type !== "folder"
     && (caps[l.type]?.supports_scrobble || caps[l.type]?.supports_ratings || caps[l.type]?.supports_positions));
@@ -1545,9 +1575,31 @@ export const actions = {
       ctx.rerender();
     } finally { el.disabled = false; }
   },
+  async clientSync(el, ctx) { // the app on the player starts it; nothing is prepared here before that
+    el.disabled = true;
+    try {
+      await post(`/clients/${encodeURIComponent(ctx.state.cfg.id)}/sync`);
+      ctx.rerender();
+    } catch (e) { toast(e.message, "error"); el.disabled = false; }
+  },
+  async clearOutbox(el, ctx) {
+    const { cfg } = ctx.state;
+    if (!await confirm({ title: t("dev.cl_outbox_confirm_title", { name: cfg.name }), message: t("dev.cl_outbox_confirm_text"),
+      ok: t("dev.cl_outbox_clear") })) return;
+    try {
+      const r = await del(`/clients/${encodeURIComponent(cfg.id)}/outbox`);
+      toast(t("dev.cl_outbox_cleared", { size: bytes(r.freed) }));
+      ctx.rerender();
+    } catch (e) { toast(e.message, "error"); }
+  },
+  async cancelClientSync(el, ctx) {
+    el.disabled = true;
+    await del(`/clients/${encodeURIComponent(ctx.state.cfg.id)}/sync`).catch((e) => toast(e.message, "error"));
+    ctx.rerender();
+  },
   async repairFs(el, ctx) { // fsck on the data partition; the job view shows what it fixed
     const { cfg } = ctx.state;
-    const start = () => post(`/devices/${encodeURIComponent(cfg.id)}/repair`);
+    const start = () => post(`/devices/${encodeURIComponent(cfg.id)}/repair?resume=true`);
     await openJob(el, ctx, cfg.id, async () => {
       try {
         return await start();
@@ -1562,6 +1614,11 @@ export const actions = {
         return await start();
       }
     }, t("dev.repairing", { name: cfg.name })).catch((e) => { if (!e.quiet) throw e; });
+  },
+  async skipFailedFile(el, ctx) { // the repeated I/O error's file stays out; repair, then the sync continues
+    const { cfg } = ctx.state;
+    await openJob(el, ctx, cfg.id, () => post(`/devices/${encodeURIComponent(cfg.id)}/skip-failed-file`),
+      t("dev.skipping", { name: cfg.name }));
   },
   async unmountAll(el, ctx) {
     el.disabled = true;
@@ -1747,7 +1804,7 @@ export function onEvent(ev, ctx, root) {
     if (box) setHtml(box, clientSession({ status: "ready", progress: ev.data }));
     return;
   }
-  if (/^client\.(changed|revoked|paired)$/.test(ev.type)) { ctx.rerender(); return; }
+  if (/^client\.(changed|revoked|paired|sync_requested|sync_finished)$/.test(ev.type)) { ctx.rerender(); return; }
   if (ev.type === "job.progress") {
     const strip = root?.querySelector("[data-progress-strip]");
     if (!strip || !strip.getAttribute("href").endsWith(`/${encodeURIComponent(ev.data.job_id)}`)) return;

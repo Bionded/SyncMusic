@@ -2,7 +2,12 @@
 
 The SyncMusic app runs on a HiBy R1 with the Compás firmware and syncs the player with your SyncMusic server
 over Wi-Fi. A sync does the same as a sync over USB: it brings music, audiobooks, podcasts and playlists onto the
-SD card, removes what you no longer picked, and sends plays, hearts, positions and playlist edits back.
+SD card, removes what you no longer picked, and sends plays, star ratings, positions and playlist edits back.
+Star ratings follow the same rules as over USB (see *Devices → HiBy R1 with Compás*): your stars become the song's rating
+in your library, your library's ratings show on the player, and a favourite without a rating shows as 5 stars.
+Album stars sync the same way with Navidrome and other Subsonic servers.
+A large first sync comes in parts: the server prepares a few GB at a time and the app goes on with the next part
+by itself until everything is on the card.
 
 ![Home screen](img/compas-app-home.png) ![Sync](img/compas-app-sync.png)
 
@@ -66,13 +71,20 @@ size, files to remove, playlists, what did not fit on the card by priority, and 
 free space than the download needs. **Start** goes ahead, **Cancel** leaves everything as it is. A sync that has
 nothing to fetch or remove starts without asking.
 
+**Sync now** on the player's page in the web UI starts the sync in the app: while the app is open on its home
+screen, the sync starts there within a second; otherwise the device page says *Waiting for the player* until you
+open the app (Compás runs apps only in the foreground, so nothing can start while the app is closed). Nothing is
+prepared on the server before the app asks.
+The player's page also shows what waits for it on the server (*Waiting on the server*); **Clear** deletes those
+prepared files, and the next sync prepares again what the player still needs.
+
 When the sync removes more than the device's delete threshold or does not fit, the server holds it for a
 confirmation. With the device setting **The player may confirm a sync** (on by default) the preview says why
 and **Confirm and start** confirms it on the player; otherwise confirm it in the web UI (the app waits). A first
 sync onto a card that already holds SyncMusic files is always confirmed in the web UI.
 
 The sync screen shows the step (sending listening data, asking the
-server, removing, downloading, updating the player's library, writing hearts and positions), the current file,
+server, removing, downloading, updating the player's library, writing ratings and positions), the current file,
 files and megabytes done, the speed and the time left, and what went up and down; the summary gives the average speed. **Stop after this file** ends the sync at a safe
 point; the next sync continues where it stopped.
 
@@ -82,7 +94,7 @@ with how much of it SyncMusic uses. **Settings** and **History** (the last 10 sy
 changed.
 
 ### After the sync
-Compás shows new and removed files, and the hearts and play counts from your library, only after a restart: it
+Compás shows new and removed files, and the ratings and play counts from your library, only after a restart: it
 reloads its library database and rescans the card when it starts. When a sync changed something, the app asks:
 
 - **Restart player** (recommended),

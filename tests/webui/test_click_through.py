@@ -117,6 +117,19 @@ CONTROLS: dict[str, tuple[str, str]] = {
         "elsewhere",
         "test_devices.py::test_format_needs_the_typed_name; disk devices only",
     ),
+    "devices:skipFailedFile": ("elsewhere", "test_fs_damaged_ui.py::test_skip_that_file_offer"),
+    "devices:clientSync": (
+        "elsewhere",
+        "test_clients_ui.py::test_sync_now_asks_the_player_and_shows_that_it_waits",
+    ),
+    "devices:cancelClientSync": (
+        "elsewhere",
+        "test_clients_ui.py::test_sync_now_asks_the_player_and_shows_that_it_waits",
+    ),
+    "devices:clearOutbox": (
+        "elsewhere",
+        "test_clients_ui.py::test_the_outbox_shows_on_the_device_page_and_clears",
+    ),
     "devices:bind": ("elsewhere", "test_click_through.py::test_bind_a_folder_device_to_its_disk"),
     "devices:remove": (CLICK, CANCEL),
     "devices:wipe": ("elsewhere", "test_devices.py::test_danger_zone_per_type"),

@@ -722,3 +722,159 @@ async def test_a_client_app_gets_the_newer_release_the_server_holds(phone, monke
     assert (await c.get(f"{C}/app-update", params=same, headers=h)).json() == {"available": False}
     other = {"app": "something-else", "version": "0.1"}
     assert (await c.get(f"{C}/app-update", params=other, headers=h)).json() == {"available": False}
+
+
+async def test_prepared_files_share_the_cache_entry_instead_of_a_copy(phone):
+    app, c, device_id, h = phone
+    view = await sync(c, h)
+    dev = await app.client_sessions.device(device_id)
+    tracks = [f for f in view["plan"]["fetch"] if f["role"] == "track"]
+    assert tracks and all((dev.mount / f["path"]).stat().st_nlink == 2 for f in tracks)
+    await deliver(c, h, view)
+
+
+async def test_a_large_sync_goes_in_windows_under_the_outbox_budget(phone, monkeypatch):
+    """With a budget smaller than the library the server prepares one window at a time; `more` tells the client
+    to sync again until everything arrived."""
+    from syncmusic.core import client_sessions
+
+    app, c, device_id, h = phone
+    cfg = await app.store.device(device_id)
+    cfg.settings = {**cfg.settings, "outbox_budget_mb": 1}
+    await app.store.put_device(cfg)
+    monkeypatch.setattr(client_sessions, "MB", 1)  # a budget of one byte: one file per window
+    got: list[str] = []
+    for _ in range(4):
+        items = [{"path": p, "size": 1} for p in got]
+        view = await sync(
+            c, h, {"capabilities": CAPS, "inventory": {"kind": "full", "items": items}}
+        )
+        assert view["status"] == "ready", view
+        tracks = [f["path"] for f in view["plan"]["fetch"] if f["role"] == "track"]
+        got += tracks
+        done = await deliver(c, h, view)
+        if not done["more"]:
+            break
+        assert view["plan"]["more"] == 1 and len(tracks) == 1
+        status = (await c.get(f"{C}/status", headers=h)).json()
+        assert status["sync_wanted"] == "full"
+    assert len(got) == 2 and not done["more"]
+
+
+async def test_sync_now_on_the_server_wakes_the_clients_long_poll(phone):
+    """'Sync now' prepares nothing on the server: it asks the client, whose waiting status poll answers at once;
+    the request ends when the client starts its sync."""
+    app, c, device_id, h = phone
+    poll = asyncio.create_task(c.get(f"{C}/status?wait=20", headers=h))
+    await asyncio.sleep(0.2)
+    assert not poll.done()
+    r = await c.post(f"/api/v1/clients/{device_id}/sync")
+    assert r.status_code == 200 and r.json() == {"requested": True}
+    status = (await asyncio.wait_for(poll, 5)).json()
+    assert status["sync_wanted"] == "full" and status["reason"] == "requested on the server"
+    assert (await c.get(f"/api/v1/clients/{device_id}")).json()["sync_requested"] is True
+    dev = await app.client_sessions.device(device_id)
+    assert dev.outbox() == {}  # nothing prepared before the client asks
+    await deliver(c, h, await sync(c, h))
+    assert (await c.get(f"/api/v1/clients/{device_id}")).json()["sync_requested"] is False
+
+
+async def test_a_sync_request_can_be_withdrawn(phone):
+    app, c, device_id, h = phone
+    await c.post(f"/api/v1/clients/{device_id}/sync")
+    assert (await c.delete(f"/api/v1/clients/{device_id}/sync")).json() == {"cancelled": True}
+    status = (await c.get(f"{C}/status?wait=0.2", headers=h)).json()
+    assert status["sync_wanted"] == "none"
+
+
+async def test_the_outbox_size_shows_and_it_can_be_cleared(phone):
+    app, c, device_id, h = phone
+    view = await sync(c, h)
+    info = (await c.get(f"/api/v1/clients/{device_id}")).json()
+    assert info["outbox"]["files"] == len(view["plan"]["fetch"]) and info["outbox"]["bytes"] > 0
+    r = await c.delete(f"/api/v1/clients/{device_id}/outbox")
+    assert r.status_code == 409  # its session is open
+    await c.post(f"{C}/sync/{view['session_id']}/finish", json={"status": "partial"}, headers=h)
+    r = await c.delete(f"/api/v1/clients/{device_id}/outbox")
+    assert r.status_code == 200, r.text
+    assert (await c.get(f"/api/v1/clients/{device_id}")).json()["outbox"] == {
+        "files": 0,
+        "bytes": 0,
+    }
+    # the next sync prepares them again
+    again = await sync(c, h)
+    assert {f["path"] for f in again["plan"]["fetch"]} == {f["path"] for f in view["plan"]["fetch"]}
+
+
+async def test_two_starts_at_once_share_one_session(phone):
+    """The player and a second tap (or a retry) start at the same moment: one session, never two writers."""
+    app, c, device_id, h = phone
+    r1, r2 = await asyncio.gather(
+        c.post(f"{C}/sync", json={"capabilities": CAPS}, headers=h),
+        c.post(f"{C}/sync", json={"capabilities": CAPS}, headers=h),
+    )
+    assert {r1.status_code, r2.status_code} <= {200, 202, 409}, (r1.text, r2.text)
+    ids = {r.json()["session_id"] for r in (r1, r2) if r.status_code in (200, 202)}
+    assert len(ids) == 1, (r1.text, r2.text)
+    view = await sync(c, h)
+    assert view["session_id"] in ids and view["status"] == "ready"
+    assert len([s for s in app.client_sessions.sessions.values() if s.device_id == device_id]) == 1
+
+
+async def test_sync_now_while_the_client_syncs_does_not_start_a_second_one(phone):
+    """'Sync now' on the server only asks the app; the session the app is working through stays the only one."""
+    app, c, device_id, h = phone
+    view = await sync(c, h)
+    r = await c.post(f"/api/v1/clients/{device_id}/sync")
+    assert r.status_code == 200, r.text
+    open_ = [s for s in app.client_sessions.sessions.values() if s.device_id == device_id]
+    assert [s.id for s in open_] == [view["session_id"]]
+
+
+async def test_cancel_on_the_app_keeps_what_it_took_and_the_rest_waits(phone):
+    app, c, device_id, h = phone
+    view = await sync(c, h)
+    sid, first = view["session_id"], view["plan"]["fetch"][0]
+    await download(c, h, first)
+    assert (
+        await c.post(f"{C}/sync/{sid}/ack", json={"done": [first]}, headers=h)
+    ).status_code == 200
+    r = await c.post(f"{C}/sync/{sid}/finish", json={"status": "cancelled"}, headers=h)
+    assert r.status_code == 200 and r.json()["progress"]["done"] == 1
+    status = (await c.get(f"{C}/status", headers=h)).json()
+    assert status["sync_wanted"] == "full"  # the rest waits for the next sync
+    again = await sync(
+        c, h, {"capabilities": CAPS, "inventory": {"kind": "full", "items": held([first])}}
+    )
+    assert first["path"] not in {f["path"] for f in again["plan"]["fetch"]}
+
+
+async def test_two_clients_sync_at_the_same_time(phone):
+    app, c, device_id, h = phone
+    other_id, other_token = await pair(
+        c, (await new_code(c))["code"], uid="22222222-aaaa-4bbb-8ccc-000000000003"
+    )
+    cfg = await app.store.device(other_id)
+    cfg.rule_set = (await app.store.device(device_id)).rule_set
+    await app.store.put_device(cfg)
+    a, b = await asyncio.gather(sync(c, h), sync(c, bearer(other_token)))
+    assert a["status"] == b["status"] == "ready", (a, b)
+    assert a["session_id"] != b["session_id"]
+    await asyncio.gather(deliver(c, h, a), deliver(c, bearer(other_token), b))
+
+
+async def test_cancel_on_the_server_stops_the_running_client_sync(phone):
+    """Cancel on the device page: the app's next ack answers `cancel`, it finishes as cancelled and keeps what it
+    took; the rest waits for the next sync."""
+    app, c, device_id, h = phone
+    view = await sync(c, h)
+    sid, first = view["session_id"], view["plan"]["fetch"][0]
+    await download(c, h, first)
+    r = await c.delete(f"/api/v1/clients/{device_id}/sync")
+    assert r.json() == {"cancelled": True}
+    ack = await c.post(f"{C}/sync/{sid}/ack", json={"done": [first]}, headers=h)
+    assert ack.json()["cancel"] is True
+    r = await c.post(f"{C}/sync/{sid}/finish", json={"status": "cancelled"}, headers=h)
+    assert r.status_code == 200 and r.json()["progress"]["done"] == 1
+    # nothing running and nothing asked: a second cancel has nothing to stop
+    assert (await c.delete(f"/api/v1/clients/{device_id}/sync")).json() == {"cancelled": False}

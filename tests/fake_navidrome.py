@@ -68,6 +68,7 @@ class FakeNavidrome(httpx.AsyncBaseTransport):
         self.lyrics: dict[str, list[dict[str, Any]]] = {}
         self.last_scan = "2026-01-01T10:00:00Z"
         self.calls: list[str] = []
+        self.album_ratings: dict[str, int] = {}  # album id -> 1–5
         self.logins = 0
         self.refuse_logins = 0  # answer this many logins with 429 (Navidrome's login rate limit)
         self.scrobbles: list[tuple[str, int]] = []  # (song id, time ms) of every submitted scrobble
@@ -187,7 +188,12 @@ class FakeNavidrome(httpx.AsyncBaseTransport):
             assert q.get("type") == "alphabeticalByName"
             albums = {s["albumId"]: s.get("album", "") for s in self.songs.values()}
             rows = sorted(
-                ({"id": k, "name": v} for k, v in albums.items()), key=lambda a: a["name"]
+                (
+                    {"id": k, "name": v}
+                    | ({"userRating": self.album_ratings[k]} if k in self.album_ratings else {})
+                    for k, v in albums.items()
+                ),
+                key=lambda a: a["name"],
             )
             off, n = int(q.get("offset", 0)), int(q.get("size", 10))
             return self._ok(albumList2={"album": rows[off : off + n]})
@@ -270,6 +276,12 @@ class FakeNavidrome(httpx.AsyncBaseTransport):
             return self._ok()
         if ep == "setRating":
             s = self.songs.get(q.get("id", ""))
+            if s is None and any(x.get("albumId") == q.get("id") for x in self.songs.values()):
+                if int(q["rating"]):
+                    self.album_ratings[q["id"]] = int(q["rating"])
+                else:
+                    self.album_ratings.pop(q["id"], None)
+                return self._ok()
             if s is None:
                 return self._fail(70, "data not found", q.get("f"))
             rating = int(q["rating"])

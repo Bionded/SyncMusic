@@ -259,6 +259,26 @@ class SubsonicLibrary(Library, FeedbackSink):
         raw = "|".join([str(ping.get("type") or ""), major, *ids])
         return "subsonic:" + hashlib.sha1(raw.encode()).hexdigest()[:20]
 
+    async def _album_ratings(self) -> dict[str, int]:
+        """The user's album ratings (album id -> 1–5), from the paged album list; {} if the server fails it."""
+        out: dict[str, int] = {}
+        offset = 0
+        try:
+            while True:
+                body = await self.call(
+                    "getAlbumList2", type="alphabeticalByName", size=self.s.page_size, offset=offset
+                )
+                page = body.get("albumList2", {}).get("album", [])
+                for a in page:
+                    if 1 <= int(a.get("userRating") or 0) <= 5:
+                        out[str(a["id"])] = int(a["userRating"])
+                if len(page) < self.s.page_size:
+                    return out
+                offset += len(page)
+        except (SubsonicError, httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+            log.info("%s: album ratings not read: %s", self.id, e)
+            return out
+
     async def state_token(self) -> str:
         scan = (await self.call("getScanStatus")).get("scanStatus", {})
         indexes = (await self.call("getIndexes")).get("indexes", {})
@@ -340,6 +360,9 @@ class SubsonicLibrary(Library, FeedbackSink):
             for i, s in ((str(s["id"]), s) for s in songs)
             if s.get("coverArt")
         }
+        album_ratings = await self._album_ratings()
+        for t in tracks.values():
+            t.album_rating = album_ratings.get(t.album_id or "")
         if await self._uses_native():
             await self._native_enrich(tracks)
         playlists = await self._playlists(set(tracks))

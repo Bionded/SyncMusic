@@ -85,6 +85,8 @@ class DeviceCapabilities(BaseModel):
     supports_playlists: bool = True
     supports_ratings_read: bool = False
     supports_ratings_write: bool = False
+    # hearts (favourite on/off) read back from the player; never converted to or from star ratings
+    supports_favourites_read: bool = False
     supports_playcounts_read: bool = False
     supports_positions_read: bool = False
     supports_time_sync: bool = False
@@ -176,6 +178,7 @@ NON_OUTPUT_FIELDS = frozenset(
         "supports_playlists",
         "supports_ratings_read",
         "supports_ratings_write",
+        "supports_favourites_read",
         "supports_playcounts_read",
         "supports_positions_read",
         "supports_time_sync",

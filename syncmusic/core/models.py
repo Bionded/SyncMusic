@@ -91,6 +91,7 @@ class Track(BaseModel):
     bit_depth: int | None = None
     channels: int | None = None
     rating: Rating | None = None  # 0–5 stars, None = unrated
+    album_rating: Rating | None = None  # the album's own rating (libraries that rate albums)
     starred: bool = False
     play_count: NonNegInt = 0
     last_played: UtcDatetime | None = None

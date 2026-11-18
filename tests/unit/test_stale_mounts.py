@@ -187,7 +187,9 @@ def test_mount_table_keeps_non_ascii_paths(monkeypatch):
 
     monkeypatch.setattr(mnt, "Path", lambda _: Mountinfo())
     [entry] = mnt.mount_table()
-    assert entry == mnt.MountEntry("8:18", "/mnt/домашній-mini два", "/dev/sdb2", "vfat")
+    assert entry == mnt.MountEntry(
+        "8:18", "/mnt/домашній-mini два", "/dev/sdb2", "vfat", peers=frozenset({"339"})
+    )
 
 
 def test_is_live_with_non_ascii_and_escaped_mount_point(monkeypatch, tmp_path):

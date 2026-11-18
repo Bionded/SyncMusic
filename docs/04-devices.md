@@ -109,13 +109,19 @@ The device page shows these as *Tips for this player* (Overview tab; close the c
   [Compás Tools](https://github.com/Starnished66/compas-tools) by the Compás authors, built from the
   [Compás player](https://github.com/Starnished66/compas-player) sources, free software under the GPL-3.0; SyncMusic
   runs it as a separate program. A compas-sdtool for another library format than the player's is not used.
-- **Hearts and play counts to the player:** favourites, play counts (the higher of player and library) and last
+- **Ratings and play counts to the player:** star ratings, play counts (the higher of player and library) and last
   played from your library are written into the player's library for songs it has already indexed (a song synced
-  today gets them at the next sync, after the player indexed it). Only the player's library format 8 is written.
-- **Reverse sync:** play counts, last played and favourites (hearts) from the player's library; audiobook positions
-  from the Audiobooks plugin and positions of the Podcasts plugin's episodes. A favourite counts as removed only for a
-  file the player's library still lists, so a rebuilt library never removes favourites. Favourites from your library
-  are not written to the player.
+  today gets them at the next sync, after the player indexed it). Hearts and stars pass as they are: Compás 1.6.0
+  and newer has star ratings and syncs ratings only (your library's favourites are not shown as stars); older
+  Compás versions have the heart and sync favourites only. Stars you changed on the player since the last sync are never overwritten:
+  they go to your library first. Only the player's library format 8 is written.
+- **Reverse sync:** play counts, last played and star ratings from the player's library; audiobook positions
+  from the Audiobooks plugin and positions of the Podcasts plugin's episodes. Stars you give on the player become
+  the song's rating in your library (clearing them clears the rating); they never star or unstar it. A song the player's library
+  does not list (a rebuilt library) changes nothing.
+- **Album ratings** (Navidrome and other Subsonic servers) go both ways too: an album's rating in your library shows
+  as the album's stars on the player, and stars you give an album on the player become its rating in your library.
+  As with songs, stars changed on the player are never overwritten by the library.
 - **Positions to the player:** an audiobook or podcast you listened further in your library (Audiobookshelf) opens
   there on the player too: the sync writes the position into the Audiobooks plugin's state (one position per book)
   and into the Podcasts plugin's list for the episodes it lists. A position moved on the player since the last sync
@@ -206,7 +212,8 @@ prepares the files (with the device's processors) and the app downloads them whe
    what is new the next time it checks in (every 5 minutes by default) or when you sync it in the app.
 
 The device page shows what the app reported (app, system, formats it plays, free space, last seen) and the
-progress while the app downloads. Plays, ratings, favourites and positions the app sends go back to your libraries
+progress while the app downloads. A large sync comes in parts: the server prepares at most the device's
+**Outbox budget** (2 GB by default, 0 = no limit) at a time and the app syncs again for the next part. Plays, ratings, favourites and positions the app sends go back to your libraries
 with its next sync. **Rename** or **Revoke** a client under Settings → Wi-Fi clients; a revoked client keeps its
 device and history but can no longer sync until it is paired again. The connection is plain HTTP: use it only on a
 network you trust.

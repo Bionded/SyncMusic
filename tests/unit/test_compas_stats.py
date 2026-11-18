@@ -50,6 +50,17 @@ def test_raises_counts_sets_hearts_and_keeps_other_rows(tmp_path):
     assert data.play_counts["Music/Ours/01.flac"] == (5, 200)
 
 
+@pytest.mark.parametrize(
+    ("stored", "favourite", "expected"),
+    [(0, True, 1), (0, False, 0), (1, True, 1), (1, False, 0)]
+    + [(n, f, n) for n in (2, 3, 4, 5) for f in (True, False)],
+)
+def test_the_users_star_ratings_are_never_overwritten(tmp_path, stored, favourite, expected):
+    write_tagcache(tmp_path, [("Music/Ours/01.flac", 0, stored, 0)])
+    got = patch_stats(tmp_path, {"Music/Ours/01.flac": StatsUpdate(favourite=favourite)})
+    assert got["Music/Ours/01.flac"].rating == expected
+
+
 def test_second_patch_writes_nothing(tmp_path):
     write_tagcache(tmp_path, ROWS)
     u = {"Music/Ours/01.flac": StatsUpdate(playcount=5, favourite=True)}
@@ -79,7 +90,7 @@ def _session(data):
     return s
 
 
-def _setup(tmp_path, fmt=8):
+def _setup(tmp_path, fmt=8, version=None):
     import json
 
     from syncmusic.core.models import (
@@ -93,7 +104,9 @@ def _setup(tmp_path, fmt=8):
     from syncmusic.devices.HibyR1.compas import HibyCompas
 
     write_tagcache(tmp_path, ROWS)
-    (tmp_path / ".compas" / "device.json").write_text(json.dumps({"database_format": fmt}))
+    (tmp_path / ".compas" / "device.json").write_text(
+        json.dumps({"database_format": fmt, "player_version": version})
+    )
     dev = HibyCompas(DeviceConfig(id="c", type="hiby_compas", name="C"), tmp_path, None)
     refs = {
         p: ItemRef(library_id="lib", item_id=str(i))
@@ -145,3 +158,96 @@ def test_other_database_format_is_left_alone(tmp_path):
         dev._patch_stats(_session({"library_tracks": tracks, "library_starred": starred}), m)
     )
     assert _master(tmp_path) == before
+
+
+def test_library_ratings_go_to_the_player_but_never_over_the_users_new_stars(tmp_path):
+    import asyncio
+
+    dev, m, refs, tracks, starred = _setup(tmp_path, version="v1.6.0")
+    k1, k3 = refs["Music/Ours/01.flac"].key(), refs["Music/Ours/03.mp3"].key()
+    tracks[k1] = tracks[k1].model_copy(update={"rating": 3})
+    # the user changed 03 to 2 stars on the player since
+    write_tagcache(
+        tmp_path,
+        [("Music/Ours/01.flac", 2, 0, 100), ("Music/Ours/03.mp3", 9, cf.code_of(2), 500)],
+    )
+    tracks[k3] = tracks[k3].model_copy(update={"rating": 4})
+    s = _session({"library_tracks": tracks, "library_starred": starred, "reverse_ok": True})
+    asyncio.run(dev._patch_stats(s, m))
+    data = cf.read_card(tmp_path)
+    assert data.stars["Music/Ours/01.flac"] == 3 and m.items[k1].last_rating == 3
+    assert data.stars["Music/Ours/03.mp3"] == 2 and m.items[k3].last_rating is None
+
+
+def test_album_key_matches_the_player():
+    assert cf.album_key("a", "b   ") == "album://a\tb"
+    assert cf.album_key("a\tb\n", "c\rd\te") == "album://a b \tc d e"
+    assert cf.album_key("", "b") is None
+
+
+def test_album_ratings_both_ways_and_other_rows_kept(tmp_path):
+    import asyncio
+
+    dev, m, refs, tracks, _starred = _setup(tmp_path, version="v1.6.0")
+    k1, k3 = refs["Music/Ours/01.flac"].key(), refs["Music/Ours/03.mp3"].key()
+    tracks[k1] = tracks[k1].model_copy(
+        update={"album_artist": "Гурт", "album": "Перший", "album_id": "al1", "album_rating": 4}
+    )
+    tracks[k3] = tracks[k3].model_copy(
+        update={"album_artist": "Гурт", "album": "Другий", "album_id": "al2"}
+    )
+    m.items[k3].last_rating = 5  # 03's 5 stars (code 1) are already in the library
+    state = tmp_path / ".compas" / "remote_state.tsv"
+    state.write_text(
+        "1 3 77 /data/remote/song.flac\n" + f"{cf.code_of(2)} 0 0 album://Гурт\tДругий\n"
+    )
+    (tmp_path / ".syncmusic").mkdir(exist_ok=True)
+    dev._patch_album_ratings(tracks, m)
+    # the library's rating goes to the player; one rated on the player first stays for the reverse sync
+    assert cf.album_stars(tmp_path) == {"album://Гурт\tПерший": 4, "album://Гурт\tДругий": 2}
+    assert state.read_text().startswith("1 3 77 /data/remote/song.flac\n")
+    fb = asyncio.run(dev.read_feedback(m))
+    assert fb.ratings == {"lib/al2": 2}
+    # the user re-rates the first album on the player; the library changing it meanwhile does not overwrite
+    cf.write_album_stars(tmp_path, {"album://Гурт\tПерший": 1})
+    tracks[k1] = tracks[k1].model_copy(update={"album_rating": 5})
+    dev._patch_album_ratings(tracks, m)
+    assert cf.album_stars(tmp_path)["album://Гурт\tПерший"] == 1
+    assert asyncio.run(dev.read_feedback(m)).ratings["lib/al1"] == 1
+    # once the library has the player's ratings both agree: nothing more to send
+    tracks[k1] = tracks[k1].model_copy(update={"album_rating": 1})
+    tracks[k3] = tracks[k3].model_copy(update={"album_rating": 2})
+    dev._patch_album_ratings(tracks, m)
+    fb = asyncio.run(dev.read_feedback(m))
+    assert not any(k in fb.ratings for k in ("lib/al1", "lib/al2"))
+
+
+def test_star_player_takes_ratings_only_and_never_a_heart(tmp_path):
+    import asyncio
+
+    dev, m, refs, tracks, starred = _setup(tmp_path, version="v1.6.0")
+    before = cf.read_card(tmp_path)
+    s = _session({"library_tracks": tracks, "library_starred": starred, "reverse_ok": False})
+    asyncio.run(dev._patch_stats(s, m))
+    # library hearts changed (01 starred, 03 unstarred) but a star player gets no stars from them
+    assert cf.read_card(tmp_path).stars == before.stars
+    # baselines untouched
+    assert [e.last_starred for e in m.items.values()] == [None, True, None]
+
+
+@pytest.mark.parametrize(
+    ("version", "stars"),
+    [
+        (None, False),
+        ("", False),
+        ("v1.5.2", False),
+        ("1.6.0", True),
+        ("v1.6.0", True),
+        ("v2.0-rc1", True),
+        ("odd", True),
+    ],
+)
+def test_star_ratings_by_player_version(version, stars):
+    from syncmusic.devices.HibyR1.compas import star_ratings
+
+    assert star_ratings({"player_version": version}) is stars

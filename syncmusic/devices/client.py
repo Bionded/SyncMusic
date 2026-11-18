@@ -4,7 +4,9 @@
 A sync writes the client's files like a flash drive's tree, into an **outbox** folder on the server (`mount`, the
 network device's local folder). The client downloads them over the client API and acks each one; an acked file
 leaves the outbox (it is on the client now). So the outbox holds exactly what the client still has to fetch, and an
-interrupted download simply stays there for the next session.
+interrupted download simply stays there for the next session. A prepared file from the processing cache is
+hard-linked into the outbox, not copied, when both are on one file system (cache entries are replaced, never
+written in place).
 
 What the client holds is its **inventory** (sent with every sync): a manifest entry whose file is neither in the
 outbox nor in the inventory is missing and added again. A removed track whose file the client holds becomes a
@@ -24,6 +26,7 @@ import hashlib
 import logging
 import os
 import threading
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
 
@@ -40,6 +43,7 @@ from syncmusic.core.models import (
     Manifest,
     PlayEvent,
     PositionInfo,
+    PreparedItem,
 )
 from syncmusic.devices._filedevice import MEDIA_EXTS, FileDeviceMixin
 from syncmusic.devices.paths import PathLayout
@@ -78,6 +82,9 @@ class ClientSettings(BaseModel):
     # the client app may confirm a plan that waits for confirmation (many removals, not enough space) itself,
     # after showing it to the user on the player (every client by default); off: only the web UI confirms
     client_may_confirm: bool = True
+    # the most the server prepares for the client at once (MB, 0 = no limit): a large sync goes in windows, the
+    # client syncs again for the next one, so the server's disk never holds a copy of the whole library
+    outbox_budget_mb: int = Field(2048, ge=0)
 
 
 class GeneratedFile(BaseModel):
@@ -173,6 +180,11 @@ class ClientDevice(FileDeviceMixin, Device):
         formats=set(),  # what the client reports
         supports_podcasts=True,
         supports_audiobooks=True,
+        # listening data comes up as events: plays, positions, ratings and hearts as the app has them
+        supports_playcounts_read=True,
+        supports_positions_read=True,
+        supports_ratings_read=True,
+        supports_favourites_read=True,
         lyrics="lrc_sidecar",
         # names any phone file system takes (Android's FAT/exFAT cards) that also fit the outbox on the
         # server's own file system (255 bytes of UTF-8 per name)
@@ -280,6 +292,18 @@ class ClientDevice(FileDeviceMixin, Device):
     def outbox(self) -> dict[str, int]:
         """Device path -> size of every file waiting for the client (the outbox tree)."""
         return {self._rel(p): p.stat().st_size for p in self._walk()}
+
+    def clear_outbox(self) -> int:
+        """Drop every file waiting for the client (the next sync prepares again what it still needs). Returns
+        the bytes freed."""
+        freed = 0
+        for p in self._walk():
+            freed += p.stat().st_size if p.stat().st_nlink == 1 else 0
+            p.unlink(missing_ok=True)
+        for d in sorted((d for d in self.mount.rglob("*") if d.is_dir()), reverse=True):
+            if not d.name.startswith(".") and not any(d.iterdir()):
+                d.rmdir()
+        return freed
 
     def delivered(self, rel: str) -> None:
         """The client acked `rel`: it holds it now, the outbox copy goes (and its empty folders)."""
@@ -446,9 +470,19 @@ class ClientDevice(FileDeviceMixin, Device):
         fb = DeviceFeedback()
         used: set[str] = set()
         idle: set[str] = set()
+        libs = {e.ref.library_id for e in manifest.items.values()}
         for e in sorted(log.pending, key=lambda e: (e.when(), e.seq)):
             if e.type == "playlist_edit":  # read_playlists applies them; consumed with this run
                 used.add(e.eid)
+                continue
+            if e.type == "album_rating" and e.value is not None and e.key:
+                # names the album (`album_ref` of the plan's state), not an item on the client
+                if e.key.split("/", 1)[0] in libs:
+                    fb.ratings[e.key] = e.value or None
+                    used.add(e.eid)
+                else:
+                    fb.unmapped += 1
+                    idle.add(e.eid)
                 continue
             entry = manifest.items.get(e.key or "")
             if entry is None:
@@ -550,6 +584,26 @@ class ClientDevice(FileDeviceMixin, Device):
         # the client's files keep their names taken although they left the outbox
         s.data["taken"] |= {paths.path_key(r, rules) for r in self.state.inventory}
         return s
+
+    def _place(self, src: Path, dest: Path) -> None:
+        tmp = dest.with_name(f".link-{uuid.uuid4().hex}")
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp.unlink(missing_ok=True)
+            os.link(src, tmp)
+            tmp.replace(dest)
+            return
+        except OSError:  # another file system, or links not supported: a copy
+            tmp.unlink(missing_ok=True)
+        super()._place(src, dest)
+
+    async def rewrite_tags(
+        self, s: DeviceSession, ref: DeviceTrackRef, item: PreparedItem
+    ) -> DeviceTrackRef | None:
+        dest = self.mount / ref.path
+        if dest.is_file() and dest.stat().st_nlink > 1:
+            return None  # shared with a cache entry: never patched in place, a normal replace
+        return await super().rewrite_tags(s, ref, item)
 
     async def remove_track(self, s: DeviceSession, ref: DeviceTrackRef) -> None:
         await super().remove_track(s, ref)
