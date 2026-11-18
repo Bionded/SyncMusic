@@ -63,7 +63,7 @@ USB drives, FTP/SMB folders and Android players have no listening data to send b
 | iPod nano 6G and 7G, iPod touch, iPhone | not supported | refused: their database checksum cannot be written |
 | Rockbox players (iPods with Rockbox, other Rockbox targets) | supported | music only; play counts from Rockbox's playback log |
 | HiBy R1 (SonixOS) | supported | reboot the player after a sync so it shows the new music |
-| HiBy R1 (Compás) | supported | as USB storage; audiobooks and podcasts need the player's plugins |
+| HiBy R1 (Compás) | supported | as USB storage, or over Wi-Fi with the [SyncMusic app](docs/10-compas-app.md); audiobooks and podcasts need the player's plugins |
 | USB flash drives and memory cards | supported | vfat, exFAT, ext4, NTFS |
 | FTP server, SMB share | supported | a folder on a network player, streamer or NAS |
 | Android players and phones (MTP) | **beta** | tested on an Android handheld only; no Android DAP was available for testing yet |
@@ -328,7 +328,7 @@ Plans, in no fixed order and without dates:
 2. **Cloud storage as devices**: Google Drive, OneDrive, S3, Dropbox, Nextcloud and similar as sync targets.
 3. **The same cloud storage as libraries.**
 4. **Android DAPs** (when one is available for testing): wired and wireless sync.
-5. **Companion apps for Android and Compás** for wireless sync.
+5. **Companion app for Android** for wireless sync (the Compás app is out).
 6. **Windows and macOS** - if there is demand and someone can test on them (today SyncMusic runs on Linux only).
 9. **Rockbox database written by SyncMusic**: the tag database built during the sync, so the player shows the new
    music right away without *Initialize now* or a database rebuild on the player.

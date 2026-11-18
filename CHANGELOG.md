@@ -5,9 +5,45 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Players that ask to connect without a code are now approved on the Devices page (with a count on the Devices menu item) instead of in Settings → Wi-Fi clients.
+- Every Wi-Fi client app may now confirm a sync that needs a confirmation (many removals, not enough space) on the player by default; the device setting *The player may confirm a sync* only turns this off.
+- Pairing codes for Wi-Fi clients are 8 digits (easy to type on a player), valid for 1 minute by default, and a client address gets at most 2 pairing attempts per second.
+
+### Added
+- Settings can download the newest HiBy R1 Compás app from SyncMusic's release, so paired players update themselves without copying the zip by hand.
+- Wi-Fi clients can ask to connect without a pairing code: the request shows up in Settings → Wi-Fi clients with a short code that the player shows too, and you approve or reject it there ("Allow pairing requests", on by default). The reference client does this with `pair --request`.
+- SyncMusic app for HiBy players with the Compás firmware (HiBy R1), released as `syncmusic-compas-<version>.zip`: it pairs and syncs over Wi-Fi like the USB connection (music, audiobooks, podcasts, playlists, plays, hearts, positions), shows progress and a preview before a sync, keeps a sync history, guards the battery and updates itself from the server; the server builds the player's library for it so new music shows right after the sync. New user guide page: SyncMusic app for Compás players.
+- Wi-Fi clients: the listening data in the sync plan also says whether a podcast episode or audiobook is finished, and podcast episodes carry their publication date.
+- Wi-Fi clients: the sync plan now gives each file's modification time, can carry a set of files the server built for the client (installed all at once, with a commit file), and tells the client what to do after a sync that changed something (device setting "After a sync that changed something": nothing, refresh the library or restart the player). The reference client follows all three.
+- A player that the system already mounted (Umbrel, a desktop's automount) is used through that mount and never mounted a second time; SyncMusic now waits a few seconds after a disk is plugged in for such an automounter (Settings → Disks & mounting, "Wait for automount"). "Use an existing mount" in the device settings can refuse such players instead. An eject after a sync leaves another program's mount alone unless "Unmount other mounts when connected" is on.
+- "Stay ready between syncs" (device settings; on for newly added devices, default in Settings → New devices): a disk device stays connected but unmounted whenever nothing uses it, so it can be unplugged or switched off at any time; syncs mount it again by themselves. Browsing a stay-ready player's contents mounts it read-only, so looking never writes to it.
+- Ejecting a FAT or exFAT player (or USB drive) now checks its file system read-only after unmounting it. If the check finds errors, the eject stops with a message and the player stays connected so you can repair it from the device page. Before, the damage only showed up at the next connect.
+- If both copies of SyncMusic's sync record on a player are damaged, the device page offers **Rebuild from files**: the damaged copies are moved aside and the next sync starts as a first sync that can adopt the files already on the player, instead of wiping it.
+
+### Fixed
+- Devices: requests from players that want to connect show the name and code the same way on every row and are separated from each other.
+- A playlist edited on a Wi-Fi client whose file name differs from the library name (for example `Rock - 80s` for `Rock: 80s`) now updates the library playlist instead of creating a new one.
+- A podcast episode or audiobook marked finished in the library without a new position now shows as finished on file-based players too.
+- Podcast episodes marked finished near their end are no longer reported back as played to the end again on every sync.
+- HiBy R1 (Compás): an audiobook's bookmark no longer jumps back to an earlier chapter that the library marks as listened to.
+- Wi-Fi clients no longer download unchanged playlists again on every sync.
+- A newly paired Wi-Fi client with nothing chosen for it yet gets a clear reason (`no_templates`) instead of a server error, and the server logs one warning without a traceback.
+- A player mounted by another program through FUSE (exfat-fuse, ntfs-3g) or read-only is now recognised as mounted: SyncMusic uses that mount instead of mounting the player a second time, and refuses to write through a read-only one.
+- A sync stops before its next write when another program mounts the player a second time while SyncMusic is writing to it, and the device page shows why.
+- The device page's Capacity card keeps showing the disk space when the sync records are damaged, instead of an error.
+- A device whose size or path-length limits changed (for example a disk first seen as FAT, later as NTFS) no longer gets every file written again: files that fit the new limits stay. A disk the operating system mounted with ntfs-3g is now recognised as NTFS. The sync report lists how many files were replaced and why.
+- An automatic eject after a sync no longer crashes when the operating system had already unmounted its own mount of the disk.
+- A player whose sync record was deleted (for example by a file system repair) is no longer treated as a new, unmanaged device: its backup copy is used.
+- A damaged SyncMusic list on a USB-storage player ("manifest is not UTF-8") no longer stops every sync. SyncMusic now keeps a second copy next to it and uses that copy if the first one is damaged.
+- The log no longer fills with hundreds of "event subscriber queue full" warnings during a sync while a browser tab is slow. Progress updates for a slow tab are merged, other events always arrive, and the warning appears at most once a minute.
+
 ## [0.2.5] - 2026-11-13
 
 ### Changed
+- Positions moved back on a player: less than 30 seconds before the one the last sync left there is ignored, 30 seconds or more is the listener's and goes to the library (every device and Wi-Fi clients; on Compás a rewind is no longer undone).
+- The Settings page is split into clearer groups: General, New devices (when to sync, after a sync, writing), Disks & mounting, Libraries & conversion, Wi-Fi clients, Tools, Storage & backups, Notifications, Updates, Maintenance and About; rarely changed options are folded under "More options". No setting changed its value.
+- A device's Settings tab is grouped the same way: General, When to sync, After a sync and mounting (now including the mount options), Safety (delete threshold, safety margins, device database backups), Listening data and Writing, with the remaining options under Advanced.
 - The SonixOS device type is now called *HiBy R1 - SonixOS*, like *HiBy R1 - Compás*.
 
 ### Fixed

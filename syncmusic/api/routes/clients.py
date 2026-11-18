@@ -19,8 +19,8 @@ from typing import Annotated, Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import segno
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from syncmusic import __version__
@@ -29,11 +29,13 @@ from syncmusic.core.client_sessions import (
     AckRequest,
     AsList,
     ClientSession,
+    DiagnosticsRequest,
     FinishRequest,
     SyncRequest,
 )
 from syncmusic.devices.client import EVENTS_MAX, ClientEvent
 from syncmusic.facade import AppFacade
+from syncmusic.infra import client_apps
 from syncmusic.infra.announce import PROTOCOL_MAJOR
 from syncmusic.infra.clients import ClientError, ClientInfo, show_code
 
@@ -57,6 +59,18 @@ class PairRequest(BaseModel):
     code: str = Field(max_length=32)
     client: ClientInfo
     capabilities: dict[str, Any] = {}
+
+
+class PairAsk(BaseModel):
+    client: ClientInfo
+    capabilities: dict[str, Any] = {}
+
+
+REQUEST_POLL_S = 3  # how often a client in registration mode asks whether the user answered
+
+
+class TemplatesRequest(BaseModel):
+    on: Annotated[list[str], AsList] = Field(max_length=500)
 
 
 class EventsRequest(BaseModel):
@@ -152,7 +166,7 @@ def client_router(facade: AppFacade) -> APIRouter:
             "instance": instance(),
             "app_version": __version__,
             "pairing_open": await app.clients.pairing_open(),
-            "features": [],
+            "features": ["pair_requests"] if app.client_settings.client_pair_requests else [],
             "deprecations": [],
         }
 
@@ -160,12 +174,13 @@ def client_router(facade: AppFacade) -> APIRouter:
     async def pair(body: PairRequest, request: Request) -> dict[str, Any]:
         await allowed()
         address = request.client.host if request.client else "?"
+        app.clients.throttle(address)
         device_id, token, continued = await app.clients.pair(
             body.code, body.client, body.capabilities, address
         )
         p = await app.clients.get(device_id)
         await app.client_sessions.ensure_device(
-            device_id, p.name if p else "Wi-Fi client", body.capabilities
+            device_id, p.name if p else "Wi-Fi client", body.capabilities, body.client.os
         )
         app.bus.publish("client.paired", device_id=device_id, continued=continued)
         await app.announce()  # the code is used: `pair=0` once none is open
@@ -175,6 +190,56 @@ def client_router(facade: AppFacade) -> APIRouter:
             "instance": instance(),
             "poll_s": app.client_settings.client_poll_s,
             "continued": continued,
+            "settings": {},
+        }
+
+    async def requests_allowed() -> None:
+        await allowed()
+        if not app.client_settings.client_pair_requests:
+            raise ClientError(
+                "pair_requests_disabled", "pairing requests are off: use a pairing code", 403
+            )
+
+    @r.post("/pair-requests", status_code=202)
+    async def pair_request(body: PairAsk, request: Request) -> dict[str, Any]:
+        """Registration mode: ask the user to approve this client on the server."""
+        await requests_allowed()
+        address = request.client.host if request.client else "?"
+        app.clients.throttle(address)
+        req, secret = app.clients.new_request(
+            body.client, body.capabilities, address, app.client_settings.client_code_minutes
+        )
+        app.bus.publish(
+            "client.pair_request", request_id=req.id, status="pending", name=req.client.name
+        )
+        return {
+            "request_id": req.id,
+            "secret": secret,
+            "display_code": req.display_code,
+            "expires_at": req.expires_at.isoformat(),
+            "poll_s": REQUEST_POLL_S,
+            "instance": instance(),
+        }
+
+    @r.get("/pair-requests/{request_id}", response_model=None)
+    async def pair_request_state(
+        request_id: str, request: Request
+    ) -> JSONResponse | dict[str, Any]:
+        """202 while the user has not answered, 200 with the token once approved (handed out once)."""
+        await requests_allowed()
+        app.clients.throttle(request.client.host if request.client else "?")
+        req = app.clients.request_for_client(request_id, request.headers.get("x-pair-secret", ""))
+        if req.status == "pending":
+            return JSONResponse({"status": "pending", "poll_s": REQUEST_POLL_S}, status_code=202)
+        if req.status == "rejected":
+            raise ClientError("request_rejected", "the pairing request was rejected", 403)
+        return {
+            "status": "approved",
+            "device_id": req.device_id,
+            "token": req.token,
+            "instance": instance(),
+            "poll_s": app.client_settings.client_poll_s,
+            "continued": req.continued,
             "settings": {},
         }
 
@@ -241,6 +306,90 @@ def client_router(facade: AppFacade) -> APIRouter:
         session_id: str, body: AckRequest, device_id: str = Depends(device)
     ) -> dict[str, Any]:
         return await sessions.ack(device_id, session_id, body)
+
+    async def templates_view(device_id: str) -> dict[str, Any]:
+        cfg = await app.sync.config(device_id)
+        on = cfg.rule_set.template_ids
+        tpls = await app.store.templates()
+        items = [{"id": t.id, "name": t.name, "on": t.id in on} for t in tpls.values()]
+        items.sort(key=lambda x: (not x["on"], str(x["name"]).lower()))
+        return {"templates": items}
+
+    @r.get("/templates")
+    async def templates(device_id: str = Depends(device)) -> dict[str, Any]:
+        """The server's templates and which of them this client's device uses (switches only, no editing)."""
+        return await templates_view(device_id)
+
+    @r.put("/templates")
+    async def set_templates(
+        body: TemplatesRequest, device_id: str = Depends(device)
+    ) -> dict[str, Any]:
+        """Turn templates on and off for this client (the ids that are on; unknown ids are refused)."""
+        known = await app.store.templates()
+        bad = [i for i in body.on if i not in known]
+        if bad:
+            raise ClientError("not_found", f"no such template: {', '.join(bad)}", 404)
+        cfg = await app.sync.config(device_id)
+        keep = [i for i in cfg.rule_set.template_ids if i in body.on]  # their order stays
+        ids = keep + [i for i in body.on if i not in keep]
+        if ids != cfg.rule_set.template_ids:
+            rs = cfg.rule_set.model_copy(update={"template_ids": ids})
+            await app.sync.update_device(cfg.model_copy(update={"rule_set": rs}))
+        return await templates_view(device_id)
+
+    @r.get("/app-update")
+    async def app_update(
+        app_name: Annotated[str, Query(alias="app", max_length=64)],
+        version: Annotated[str, Query(max_length=64)],
+        device_id: str = Depends(device),
+    ) -> dict[str, Any]:
+        """A newer release of the client's own app the server holds, or `available: false`. The client installs
+        the files itself (`url` relative to the client API)."""
+        rel = await asyncio.to_thread(client_apps.offer, app_name, version, app.config.data_dir)
+        if rel is None:
+            return {"available": False}
+        return {
+            "available": True,
+            "app": rel.app,
+            "version": rel.version,
+            "files": [
+                {
+                    "path": f.name,
+                    "size": f.size,
+                    "sha256": f.sha256,
+                    "url": f"app-update/{quote(rel.app)}/{quote(rel.version)}/{quote(f.name)}",
+                }
+                for f in rel.files
+            ],
+        }
+
+    @r.get("/app-update/{app_name}/{version}/{name:path}", response_model=None)
+    async def app_update_file(
+        app_name: str, version: str, name: str, device_id: str = Depends(device)
+    ) -> Response:
+        rel = await asyncio.to_thread(client_apps.newest, app_name, app.config.data_dir)
+        data = None
+        if rel is not None and rel.version == version:
+            data = await asyncio.to_thread(rel.read, name)
+        if data is None:
+            raise ClientError("not_found", "no such app file on this server", 404)
+        return Response(
+            data, media_type="application/octet-stream", headers={"Cache-Control": "no-store"}
+        )
+
+    @r.post("/diagnostics", status_code=202)
+    async def diagnostics(
+        body: DiagnosticsRequest, device_id: str = Depends(device)
+    ) -> dict[str, Any]:
+        """The user sent the app's log and state summary from the client (kept: the latest one)."""
+        info = await asyncio.to_thread(sessions.save_diagnostics, device_id, body.log, body.summary)
+        app.bus.publish("client.changed", device_id=device_id)
+        return info
+
+    @r.post("/sync/{session_id}/confirm")
+    async def confirm(session_id: str, device_id: str = Depends(device)) -> dict[str, Any]:
+        """The user confirmed on the client a plan that waits for confirmation (device setting)."""
+        return await sessions.confirm(device_id, session_id)
 
     @r.post("/sync/{session_id}/finish")
     async def finish(
@@ -320,6 +469,35 @@ def admin_router(facade: AppFacade) -> APIRouter:
         await app.announce()
         return {"ok": ok}
 
+    @r.get("/requests")
+    async def list_requests() -> list[dict[str, Any]]:
+        return [q.view() for q in app.clients.requests()]
+
+    @r.post("/requests/{request_id}/{answer}", response_model=None)
+    async def answer_request(request_id: str, answer: str) -> JSONResponse | dict[str, Any]:
+        if answer not in ("approve", "reject"):
+            return JSONResponse(
+                {"error": "not_found", "message": "approve or reject"}, status_code=404
+            )
+        req = await app.clients.answer_request(request_id, answer == "approve")
+        if req is None:
+            return JSONResponse(
+                {"error": "not_found", "message": "no such pairing request (expired?)"},
+                status_code=404,
+            )
+        if req.device_id:
+            p = await app.clients.get(req.device_id)
+            await app.client_sessions.ensure_device(
+                req.device_id,
+                p.name if p else "Wi-Fi client",
+                req.capabilities,
+                req.client.os,
+            )
+            app.bus.publish("client.paired", device_id=req.device_id, continued=req.continued)
+        else:
+            app.bus.publish("client.pair_request", request_id=req.id, status=req.status)
+        return req.view() | {"device_id": req.device_id}
+
     @r.get("/{device_id}", response_model=None)
     async def one_client(device_id: str) -> JSONResponse | dict[str, Any]:
         """A paired client for its device page: what it reported, and the progress of its open sync."""
@@ -334,7 +512,24 @@ def admin_router(facade: AppFacade) -> APIRouter:
             if s
             else None
         )
-        return p.model_dump(mode="json") | {"session": session}
+        diag = await asyncio.to_thread(app.client_sessions.diagnostics_info, device_id)
+        return p.model_dump(mode="json") | {"session": session, "diagnostics": diag}
+
+    @r.get("/{device_id}/diagnostics", response_model=None)
+    async def client_diagnostics(device_id: str) -> JSONResponse:
+        """The client's last diagnostics upload, as a file to save."""
+        doc = await asyncio.to_thread(app.client_sessions.diagnostics, device_id)
+        if doc is None:
+            return JSONResponse(
+                {"error": "not_found", "message": "no diagnostics from this client"},
+                status_code=404,
+            )
+        return JSONResponse(
+            doc,
+            headers={
+                "Content-Disposition": f'attachment; filename="client-{device_id}-diagnostics.json"'
+            },
+        )
 
     @r.patch("/{device_id}", response_model=None)
     async def rename(device_id: str, body: RenameRequest) -> JSONResponse | dict[str, Any]:

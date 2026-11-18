@@ -35,6 +35,7 @@ addStrings({
   "var.best": "Best",
   "dev.state.ejecting": "Ejecting",
   "dev.state.ejected": "Ejected - unplug it",
+  "dev.state.ready": "Ready - safe to unplug",
   "dev.state.no_medium": "Storage not shared",
   "dev.state.clock": "Setting the clock…",
   "dev.state.syncing": "Syncing",
@@ -75,6 +76,7 @@ export function deviceState(d) {
   if (d.error) return ["error", t("dev.state.error")];
   if (d.no_libraries) return ["warn", t("dev.state.no_libraries")];
   if (d.waiting && d.connected) return ["warn", t("dev.state.review")];
+  if (d.connected && d.ready) return ["ok", t("dev.state.ready")];
   if (d.connected) return ["ok", t("dev.state.connected")];
   return ["neutral", t("dev.state.offline")];
 }

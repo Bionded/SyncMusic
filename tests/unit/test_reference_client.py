@@ -3,6 +3,8 @@ interrupted download resumed, deletions, events up (sent twice, counted once).""
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -10,7 +12,7 @@ from syncmusic.api.server import create_api
 from syncmusic.app import Application
 from syncmusic.core.models import RuleSet
 from syncmusic.facade import AppFacade
-from syncmusic.reference_client import ReferenceClient
+from syncmusic.reference_client import ClientProtocolError, ReferenceClient
 from tests.media import make_music
 from tests.unit.test_client_sync import ALL_RULES
 from tests.unit.test_clients import allow, new_code
@@ -112,3 +114,83 @@ async def test_events_recorded_offline_are_sent_once(server, tmp_path):
     await rc.send_events()
     dev = await app.client_sessions.device(rc.state["device_id"])
     assert len(dev.load_events().pending) == 2
+
+
+async def test_client_without_templates_gets_a_reason_and_no_traceback(server, tmp_path, caplog):
+    import logging
+
+    from tests.unit.test_clients import new_code
+
+    app, paired, _ = server
+    http = (await paired(tmp_path / "other")).http
+    rc = ReferenceClient(tmp_path / "phone", http=http)
+    rc.formats = ["mp3"]
+    await rc.pair("http://t/", (await new_code(http))["code"], "New")
+    caplog.set_level(logging.WARNING)
+    with pytest.raises(ClientProtocolError, match="no templates"):
+        await rc.start()
+    s = next(iter(app.client_sessions.sessions.values()))
+    view = app.client_sessions.view(s)
+    assert view["status"] == "failed" and view["code"] == "no_templates"
+    hits = [r for r in caplog.records if "no templates" in r.getMessage()]
+    assert hits and all(r.levelname == "WARNING" and not r.exc_info for r in hits)
+
+
+async def test_generated_set_is_installed_once_with_its_commit_file(server, tmp_path, monkeypatch):
+    from syncmusic.devices.client import ClientDevice, GeneratedFile, GeneratedSet
+
+    app, paired, music = server
+    built = tmp_path / "built"
+    built.mkdir()
+    (built / "a.idx").write_bytes(b"first part")
+    (built / "b.idx").write_bytes(b"second part")
+    set_id = ["v1"]
+
+    def generated(self, manifest):
+        return GeneratedSet(
+            set_id=set_id[0],
+            commit="Index/commit",
+            files=[
+                GeneratedFile(path="Index/a.idx", source=built / "a.idx"),
+                GeneratedFile(path="Index/b.idx", source=built / "b.idx"),
+            ],
+        )
+
+    monkeypatch.setattr(ClientDevice, "generated_files", generated)
+    rc = await paired(tmp_path / "phone")
+    first = await rc.sync()
+    assert first["generated"] == 1 and first["failed"] == 0
+    idx = rc.folder / "Index"
+    assert (idx / "a.idx").read_bytes() == b"first part" and (idx / "commit").read_text() == "v1"
+    assert not list(idx.glob("*.new*"))
+    one = next(rc.folder.rglob("*.mp3"))
+    assert one.stat().st_mtime > 0
+    # the same set again is skipped; the generated files are not reported as synced files
+    assert (await rc.sync())["generated"] == 0
+    assert all(not p.startswith("Index/") for p in rc._files())
+    set_id[0] = "v2"
+    (built / "b.idx").write_bytes(b"second part, rebuilt")
+    assert (await rc.sync())["generated"] == 1
+    assert (idx / "b.idx").read_bytes() == b"second part, rebuilt"
+    assert (idx / "commit").read_text() == "v2"
+
+
+async def test_pairing_request_approved_on_the_server(server, tmp_path):
+    app, paired, _ = server
+    http = (await paired(tmp_path / "other")).http
+    rc = ReferenceClient(tmp_path / "phone", http=http)
+    codes: list[str] = []
+
+    async def approve() -> None:
+        for _ in range(600):
+            if reqs := (await http.get("/api/v1/clients/requests")).json():
+                break
+            await asyncio.sleep(0.05)
+        assert reqs[0]["display_code"] == codes[0]
+        await http.post(f"/api/v1/clients/requests/{reqs[0]['id']}/approve")
+
+    task = asyncio.create_task(approve())
+    device_id = await asyncio.wait_for(rc.request_pairing("http://t/", "Asked", codes.append), 30)
+    await task
+    assert (await app.clients.get(device_id)).name == "Asked"
+    assert ReferenceClient(tmp_path / "phone", http=http).state["token"].startswith("smc_")

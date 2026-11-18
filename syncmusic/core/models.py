@@ -408,6 +408,9 @@ class SyncSettings(BaseModel):
     # unmount other programs' mounts of the device (a host automounter) during the first minute after the app
     # mounted it; disk devices only
     unmount_foreign: bool = False
+    # a partition another program (Umbrel, a desktop automounter) already mounted is used where it is, never
+    # mounted a second time; off: such a device is refused until that mount is gone
+    use_existing_mount: bool = True
     gentle_batch_files: int = Field(25, ge=1, le=1000)
     gentle_pause_s: float = Field(2.0, ge=0, le=60)
     gentle_rate_mb_s: float | None = Field(None, gt=0, le=1000)
@@ -427,6 +430,10 @@ class SyncSettings(BaseModel):
     # eject the device when a sync finished successfully: never, after a full sync, after any sync
     # incl. updates - so it can be unplugged right away
     eject_after: Literal["off", "full", "any"] = "off"
+    # stay ready: the app never leaves the device mounted between jobs - every job or view mounts it for its
+    # duration and it is flushed and unmounted once idle, so pulling the cable or switching the player off
+    # cannot damage its file system; syncs on request, schedule or change still run (an eject wins)
+    stay_ready: bool = False
     # reverse playlist sync: what happens when a device playlist cannot simply go back - both
     # sides reordered it, or a playlist made on the device is named like a library playlist. ask: nothing is
     # changed, the plan lists it (a per-conflict choice); merge: union (the device's order for a
@@ -572,6 +579,10 @@ class AppSettings(BaseModel):
     default_eject_after: Literal["off", "full", "any"] = (
         "off"  # a new device's `SyncSettings.eject_after` (613)
     )
+    default_stay_ready: bool = True  # a new device's `SyncSettings.stay_ready`
+    # before the app mounts a disk that just appeared, it waits this long for a host automounter to mount it
+    # first, so it uses that mount instead of making a second one
+    automount_wait_s: float = Field(5.0, ge=0, le=60)
     # the processing cache for new devices (`SyncSettings.no_cache`) and the memory limits
     # of no-cache mode they start with
     default_no_cache: bool = False
@@ -586,10 +597,12 @@ class AppSettings(BaseModel):
     db_backup_dir: str | None = None
     # Settings → Clients: Wi-Fi client apps may pair and sync (off: the client API answers nothing but an error
     # and nothing is announced); the server announces itself on the LAN via mDNS; how long a pairing code is valid;
-    # how often a client asks whether a sync is due
+    # whether a client may ask to pair without a code; how often a client asks whether a sync is due
     clients_allowed: bool = False
     clients_mdns: bool = True
-    client_code_minutes: int = Field(10, ge=1, le=60)
+    client_code_minutes: int = Field(1, ge=1, le=60)
+    # a client may ask to be paired without a code; the user approves it on the server
+    client_pair_requests: bool = True
     client_poll_s: int = Field(300, ge=30, le=86400)
 
     @field_validator("ffmpeg_path")
@@ -887,6 +900,8 @@ class ManifestEntry(BaseModel):
     pending_plays: int = 0
     last_rating: Rating | None = None
     last_position_s: float | None = None
+    # the library's 'finished' flag last written with the bookmark; None = not yet (entries written before)
+    last_finished: bool | None = None
     # the library's favourite last mirrored as a heart (HiBy); None = not yet
     last_starred: bool | None = None
     # its library no longer has the item: kept on the device, no reverse sync, removable
@@ -1255,6 +1270,8 @@ class SyncReport(BaseModel):
     started_at: UtcDatetime = Field(default_factory=utcnow)
     finished_at: UtcDatetime | None = None
     counts: dict[str, int] = {}
+    # why planned files were replaced: "source changed", "processing changed", ... -> count (the plan is gone later)
+    replace_reasons: dict[str, int] = {}
     bytes_written: int = 0
     # the device is ejected right after this sync (`SyncSettings.eject_after`)
     auto_eject: bool = False

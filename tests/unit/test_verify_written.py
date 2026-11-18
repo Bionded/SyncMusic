@@ -74,7 +74,8 @@ async def test_unreadable_manifest_fails_the_sync(env, monkeypatch, tmp_path):
     app, c = env
 
     def lose_manifest(target):
-        (target / ".syncmusic" / "manifest.jsonl").unlink()
+        # a later unmount runs this again
+        (target / ".syncmusic" / "manifest.jsonl").unlink(missing_ok=True)
 
     _fake_mounts(monkeypatch, tmp_path, on_unmount=lose_manifest)
     await _disk_device(app, on_connect="manual")

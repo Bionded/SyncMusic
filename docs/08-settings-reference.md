@@ -6,34 +6,66 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 
 ## App settings (Settings page)
 
-### Sync
+### General
+
+| Setting | What it does |
+|---|---|
+| Require a password | Off: anyone on your network can use SyncMusic (fine at home). On: the web UI and the API ask for a password. Exposed beyond your network? Put SyncMusic behind a reverse proxy with HTTPS. |
+| New password | At least 8 characters. Setting it turns the login on and signs out every other browser. Lost it? On the host run syncmusic set-password. |
+| Sign out everywhere | Ends the session of every browser, this one too. API tokens keep working. |
+| API tokens | For scripts and the command line (environment variable SYNCMUSIC_TOKEN): sent as Authorization: Bearer <token>. |
+| Allow Wi-Fi clients | Phones and other apps that speak the SyncMusic client protocol can pair with this server and sync over the network. Off: every client request is refused (paired clients keep their pairing). |
+| Announce on the network | Clients find this server by themselves (mDNS). Off: enter the address in the client by hand. |
+| Allow pairing requests | A player can ask to connect without a code; you approve it on the Devices page. Off: clients need a pairing code. |
+
+### New devices
 
 | Setting | What it does |
 |---|---|
 | Keep new devices updated automatically | Plays, ratings, positions, tags and smart playlists. No new files. |
 | Check new devices for changes every | While connected. Empty: only when plugged in and when a library changes. |
-| Update after a library change at most every | A change waits for the device's next slot; Update now on the device runs at once. |
 | Full sync when a device is connected | Never: you start full syncs yourself. Ask me: a notification asks first. Automatically: a full sync starts when it is plugged in. Default: Never. |
 | Verify after writing | Reads written files back and compares them. Every file is safest, Sample 10 % is faster on big syncs. Default: Every file. |
 | Eject after a sync | Unmounts the device when the sync is done, so you can unplug it. Default: No. |
+| Stay ready between syncs | New disk devices are unmounted whenever no sync uses them, so they can be unplugged at any time. Default: on. |
 | Processing cache | What new devices start with; each device can change it in its Settings tab. |
 | Files held in memory (without cache) | Without the cache, converted files are kept in memory until they are written; more files keep slow devices busy. |
 | Memory for them (without cache) | The most memory those files may use together. Lower it on computers with little RAM. |
 | Larger files go to a temporary file (without cache) | Files larger than this are written to a temporary file instead of memory, e.g. long audiobooks. |
+| Update after a library change at most every | A change waits for the device's next slot; Update now on the device runs at once. |
+
+### Disks & mounting
+
+| Setting | What it does |
+|---|---|
+| Wait for automount | Before mounting a disk that was just plugged in, give the system's own automounter (Umbrel, a desktop) this long to mount it first, so SyncMusic uses that mount instead of making a second one. Default: 5. |
 | Write speed limit | Every device's full sync; keeps this computer responsive during big syncs. Empty: no limit. |
 | Devices syncing at once | Other device syncs wait until one finishes. Empty: no limit. |
-| compas-sdtool | Builds the player's library during the sync, so the music, hearts and play counts are there right after unplugging. Empty: next to SyncMusic, then in the data folder's tools/. |
 
 ### Libraries & conversion
 
 | Setting | What it does |
 |---|---|
 | Refresh the library snapshot | Plans use the snapshot; reloading a big library takes a while. Refresh in a library always reloads it. |
-| ffmpeg | Empty: the ffmpeg on the PATH. Its ffprobe must be next to it. |
 | Parallel jobs | Processing threads. Applied at the next start. Empty: one less than the CPU cores. |
 | Priority (nice) | Conversions at a lower priority keep this computer and its other services responsive. |
 
-### Storage
+### Wi-Fi clients
+
+| Setting | What it does |
+|---|---|
+| Pairing code valid for | How long a new pairing code can be used. |
+| Clients check in every | How often a paired client asks whether there is something new to sync. |
+
+### Tools
+
+| Setting | What it does |
+|---|---|
+| ffmpeg | Empty: the ffmpeg on the PATH. Its ffprobe must be next to it. |
+| compas-sdtool | Builds the player's library during the sync, so the music, hearts and play counts are there right after unplugging. Empty: next to SyncMusic, then in the data folder's tools/. |
+| Compás app updates | Paired HiBy R1 players with the SyncMusic app update themselves from the newest app this server holds (next to SyncMusic or in the data folder's tools/). |
+
+### Storage & backups
 
 | Setting | What it does |
 |---|---|
@@ -56,27 +88,24 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 | Webhook URL | Sends a JSON POST for the events ticked under Webhook. Empty: no webhook. |
 | Quiet hours (no webhook) | Notifications still appear in the app. |
 
-### System
+### Updates
 
 | Setting | What it does |
 |---|---|
-| Require a password | Off: anyone on your network can use SyncMusic (fine at home). On: the web UI and the API ask for a password. Exposed beyond your network? Put SyncMusic behind a reverse proxy with HTTPS. |
-| New password | At least 8 characters. Setting it turns the login on and signs out every other browser. Lost it? On the host run syncmusic set-password. |
-| Sign out everywhere | Ends the session of every browser, this one too. API tokens keep working. |
-| API tokens | For scripts and the command line (environment variable SYNCMUSIC_TOKEN): sent as Authorization: Bearer <token>. |
-| Allow Wi-Fi clients | Phones and other apps that speak the SyncMusic client protocol can pair with this server and sync over the network. Off: every client request is refused (paired clients keep their pairing). |
-| Announce on the network | Clients find this server by themselves (mDNS). Off: enter the address in the client by hand. |
-| Pairing code valid for | How long a new pairing code can be used. |
-| Clients check in every | How often a paired client asks whether there is something new to sync. |
+| Update channel | Stable: releases only. Beta: also the test builds made from every change; they may have bugs. |
+| Automatic updates | Off: SyncMusic only tells you about a new version. |
+
+### Maintenance
+
+| Setting | What it does |
+|---|---|
 | Log level | Applied at once. Debug writes a lot; use it while looking for a problem. |
 | System check | Checks ffmpeg, disk space, permissions and connected devices. Runs when this page opens. |
 | Diagnostics bundle | A zip for a bug report: versions, settings, libraries, devices, recent sync reports and logs. Passwords and tokens are masked; no media files or databases. |
 | Test allowlist | tests/hardware.toml for SyncMusic's own hardware tests, with all registered players. The tests may format every player in it. |
-| Update channel | Stable: releases only. Beta: also the test builds made from every change; they may have bugs. |
-| Automatic updates | Off: SyncMusic only tells you about a new version. |
 | Factory reset | Removes all libraries, devices, templates, history and settings. Files on devices and in libraries stay. |
 
-## Per device (a device's Settings tab → Sync behaviour)
+## Per device (a device's Settings tab)
 
 ### Automatic updates
 
@@ -86,12 +115,18 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 | Updates may remove items that no longer match | Off: removals wait for the next full sync and its review. |
 | Updates remove what was played on this device | An episode played to the end that an unplayed-only rule no longer selects goes at the next update. |
 
-### Full sync schedule and safety
+### After a sync and mounting
 
 | Setting | What it does |
 |---|---|
 | Verify after writing | Reads the files back after flushing the device. |
 | Eject after a sync | So it can be unplugged right away. Not after a sync that failed or was cancelled. |
+| Stay ready between syncs | Unmounted whenever no sync or view uses it, so unplugging it or switching the player off cannot damage its files. Syncs mount it again by themselves. |
+
+### Safety
+
+| Setting | What it does |
+|---|---|
 | Ask before removing more than | An automatic full sync that removes more of the items on the device waits for you. |
 | Remove songs deleted from the library | Syncs remove items their library no longer has. Kept when a library returns nothing or loses many items at once. |
 

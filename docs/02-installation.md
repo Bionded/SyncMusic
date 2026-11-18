@@ -169,7 +169,7 @@ go back anyway, restore the backup made before the upgrade.
 ## Security
 By default SyncMusic has **no login**: anyone who can reach its port can change its settings and write to connected
 devices. That is fine on a home network you trust; otherwise bind it to `127.0.0.1` (`--host 127.0.0.1`) or turn
-on the **optional password** under *Settings → System → Access* (or with `syncmusic set-password` on the host). With
+on the **optional password** under *Settings → General → Access* (or with `syncmusic set-password` on the host). With
 it on, the web interface shows a login page, the API needs the session of a login or an **API token**
 (`Authorization: Bearer <token>`, created under Access and shown once), and `/api/v1/health` stays open. Lost the
 password? Run `sudo syncmusic set-password --config /etc/syncmusic/config.toml` on the host (it asks for the new

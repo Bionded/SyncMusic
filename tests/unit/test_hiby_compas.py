@@ -368,15 +368,20 @@ def test_positions_a_stale_plugin_overwrote_are_written_again(tmp_path, monkeypa
 
     asyncio.run(sync(300.0))
     assert cf.audiobook_positions(tmp_path)[path][0] == 300.0
-    # the plugin, never reloaded, saves its old position over ours
-    cf.write_positions(tmp_path, {path: cf.Position(20.0, False, 600.0)}, 1)
+    # a slip back of less than 30 s (a plugin saving its old state over ours) is ignored
+    cf.write_positions(tmp_path, {path: cf.Position(285.0, False, 600.0)}, 1)
     asyncio.run(dev.read_feedback(manifest))
     assert path not in seen  # not sent to the library as the listener's
     data = asyncio.run(sync())
     assert cf.audiobook_positions(tmp_path)[path][0] == 300.0
     assert data["player_notice"] == cmod.RELOAD_HINT
+    # a rewind of 30 s or more is the listener's and wins
+    cf.write_positions(tmp_path, {path: cf.Position(250.0, False, 600.0)}, 2)
+    asyncio.run(dev.read_feedback(manifest))
+    assert seen[path][0] == 250.0
+    seen.clear()
     # real progress past ours is the listener's and stays
-    cf.write_positions(tmp_path, {path: cf.Position(400.0, False, 600.0)}, 2)
+    cf.write_positions(tmp_path, {path: cf.Position(400.0, False, 600.0)}, 3)
     asyncio.run(dev.read_feedback(manifest))
     assert seen[path][0] == 400.0
     assert "player_notice" not in asyncio.run(sync())

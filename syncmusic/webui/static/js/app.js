@@ -15,6 +15,7 @@ import { ejectedText } from "./views/common.js";
 
 addStrings({
   "app.auto_ejected": "Ejected - you can unplug {name}.",
+  "app.pair_request": "A player wants to connect: approve it on the Devices page.",
   "live.banner": "Lost the connection to the SyncMusic service. Showing the last known state; retrying by itself.",
   "live.retry": "Retry now",
   "theme.btn": "Theme: {mode} (click for {next})",
@@ -234,6 +235,7 @@ function dispatch(ev) {
 onEvent(dispatch);
 // Eject after a sync: wherever the user is
 onEvent((ev) => {
+  if (ev.type === "client.pair_request" && ev.data.status === "pending" && !/^#\/devices\/?$/.test(location.hash)) toast(t("app.pair_request"));
   if (ev.type === "device.auto_ejected") toast(ejectedText(ev.data, t("app.auto_ejected", { name: ev.data.name })), "ok");
 });
 

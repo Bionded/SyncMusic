@@ -639,3 +639,44 @@ async def test_update_that_sent_data_publishes_update_sent(env, tmp_path, monkey
     monkeypatch.setattr(app.sync.reverse_sync, "run", nothing)
     await _job(app, await c.post("/api/v1/devices/flash/update"))
     assert not any(q.get_nowait().type == "update.sent" for _ in range(q.qsize()))
+
+
+@pytest.mark.parametrize(
+    ("error", "failed"),
+    [
+        ("umount /media/x failed (32): not mounted", False),
+        ("umount /media/x failed (16): busy", True),
+    ],
+)
+async def test_auto_eject_handles_blockdev_errors(
+    env, tmp_path, monkeypatch, caplog, error, failed
+):
+    """an eject that fails in the block-device layer (e.g. a host OS mount that vanished) is logged,
+    never left as an unhandled task exception; 'not mounted' is not a failure."""
+    from syncmusic.core.models import SyncReport
+    from syncmusic.infra.blockdev.mount import BlockdevError
+
+    app, c = env
+    await _register(c, tmp_path / "flash", name="Flash")
+    cfg = await app.store.device("flash")
+    cfg = cfg.model_copy(
+        update={"mount_path": None, "sync": cfg.sync.model_copy(update={"eject_after": "any"})}
+    )
+
+    async def eject(device_id: str) -> None:
+        raise BlockdevError(error)
+
+    monkeypatch.setattr(app.sync, "eject", eject)
+    q = app.bus.subscribe()
+    report = SyncReport(id="r", device_id="flash", status="succeeded")
+
+    async def job(ctx):
+        app.sync._plan_auto_eject(cfg, SimpleNamespace(network=False), report, ctx.info.id, False)
+        return {}
+
+    info = app.jobs.submit("sync", "sync Flash", job, device_id="flash")
+    await app.jobs.wait(info.id)
+    results = await asyncio.gather(*app.sync._update_tasks, return_exceptions=True)
+    assert not any(isinstance(r, BaseException) for r in results)
+    events = [q.get_nowait().type for _ in range(q.qsize())]
+    assert ("device.eject_failed" in events) is failed

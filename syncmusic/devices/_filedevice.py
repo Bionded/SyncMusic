@@ -31,6 +31,7 @@ import logging
 import os
 import posixpath
 import shutil
+import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -93,7 +94,7 @@ def fstype_of(path: Path) -> str | None:
     except OSError:
         return None
     target = os.path.realpath(path)
-    best: tuple[int, str] | None = None
+    best: tuple[int, str, str] | None = None
     for line in lines:
         fields = line.split()
         if len(fields) < 3:
@@ -101,8 +102,31 @@ def fstype_of(path: Path) -> str | None:
         mnt = unescape_mount_field(fields[1])
         inside = target == mnt or target.startswith(mnt.rstrip("/") + "/")
         if inside and (best is None or len(mnt) > best[0]):
-            best = (len(mnt), fields[2])
-    return best[1] if best else None
+            best = (len(mnt), fields[2], unescape_mount_field(fields[0]))
+    if best is None:
+        return None
+    if (
+        best[1] == "fuseblk"
+    ):  # ntfs-3g / exfat-fuse (a mount of the host OS): the file system on the disk
+        return _blkdev_fstype(best[2]) or best[1]
+    return best[1]
+
+
+def _blkdev_fstype(source: str) -> str | None:
+    """The file system type udev knows for a block device, None if unknown."""
+    if not source.startswith("/dev/"):
+        return None
+    try:
+        out = subprocess.run(
+            ["lsblk", "-dno", "FSTYPE", source],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None
 
 
 def changed_range(a: Path, b: Path) -> tuple[int, int] | None:

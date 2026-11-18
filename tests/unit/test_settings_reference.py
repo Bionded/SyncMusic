@@ -25,11 +25,14 @@ def test_reference_is_up_to_date():
 def test_reference_has_every_group_and_known_settings():
     text = _gen().render()
     for group in (
-        "### Sync",
+        "### New devices",
+        "### Disks & mounting",
         "### Libraries & conversion",
-        "### Storage",
+        "### Storage & backups",
         "### Notifications",
-        "### System",
+        "### Maintenance",
+        "### After a sync and mounting",
+        "### Safety",
     ):
         assert group in text
     for label in ("Write speed limit", "Webhook URL", "Ask before removing more than", "Log level"):

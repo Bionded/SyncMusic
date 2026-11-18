@@ -12,8 +12,10 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import hashlib
+import json
 import logging
 import mimetypes
+import re
 import secrets
 import uuid
 from pathlib import Path
@@ -21,7 +23,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, Field
 
-from syncmusic.core.models import Manifest, MediaKind, Track
+from syncmusic.core.models import ActionKind, Manifest, MediaKind, Track
 from syncmusic.infra.clients import ClientError, Clients
 from syncmusic.infra.jobs import JobStatus
 
@@ -101,6 +103,23 @@ class AckRequest(BaseModel):
     storage: dict[str, Any] | None = None
 
 
+DIAG_MAX = 512 * 1024  # characters of client log the server keeps
+
+
+_SECRET = re.compile(r"smc_[A-Za-z0-9_-]{8,}|(?i:bearer)\s+\S+")
+_SECRET_FIELD = re.compile(r"(\"(?:token|secret)\"\s*:\s*)\"[^\"]*\"")
+
+
+def redact(text: str) -> str:
+    """Mask what looks like a client token or secret in an uploaded log (JSON stays JSON)."""
+    return _SECRET.sub("[redacted]", _SECRET_FIELD.sub(r'\1"[redacted]"', text))
+
+
+class DiagnosticsRequest(BaseModel):
+    log: str = Field("", max_length=DIAG_MAX)
+    summary: dict[str, Any] = {}
+
+
 class FinishRequest(BaseModel):
     status: Literal["complete", "partial", "cancelled"] = "complete"
 
@@ -111,6 +130,7 @@ class ClientSession(BaseModel):
     mode: Literal["full", "update"]
     status: Status = "planning"
     message: str = ""
+    code: str = ""  # why a failed session failed (a protocol error code, e.g. no_templates)
     job_id: str | None = None
     plan_id: str | None = None
     created_at: dt.datetime = Field(default_factory=_now)
@@ -119,6 +139,11 @@ class ClientSession(BaseModel):
     delete: list[dict[str, Any]] = []
     state: list[dict[str, Any]] = []  # the library's listening data of every item on the client
     playlists: dict[str, Any] = {"set": [], "remove": []}
+    generated: dict[str, Any] | None = (
+        None  # a set of server-built files (see ClientDevice.generated_files)
+    )
+    gen_files: dict[str, Path] = {}  # fid -> server file of the generated set
+    after_sync: str = "none"
     fids: dict[str, str] = {}  # fid -> device path (in the outbox)
     # download ticket: lets a downloader that cannot send headers fetch this session's own files
     ticket: str = Field(default_factory=lambda: secrets.token_urlsafe(24))
@@ -127,6 +152,7 @@ class ClientSession(BaseModel):
     failed: dict[str, str] = {}  # device path -> error
     bytes_done: int = 0
     cancel: bool = False
+    may_confirm: bool = False  # needs_review that the client itself may confirm (device setting)
 
     def totals(self) -> dict[str, int]:
         return {
@@ -146,7 +172,7 @@ class ClientSession(BaseModel):
 
 def track_meta(t: Track) -> dict[str, Any]:
     """What a client with its own database shows for a track (the file's tags say the same)."""
-    return {
+    meta: dict[str, Any] = {
         "title": t.title,
         "artist": t.artist,
         "album_artist": t.album_artist,
@@ -157,16 +183,21 @@ def track_meta(t: Track) -> dict[str, Any]:
         "genre": t.genres[0] if t.genres else None,
         "duration_s": t.duration_s,
         "kind": t.kind.value,
-    } | listening_state(None, t)
+    }
+    if t.kind is MediaKind.PODCAST:  # what a podcast app lists an episode under
+        meta["series"] = t.series
+        meta["published"] = t.published.isoformat() if t.published else None
+    return meta | listening_state(None, t)
 
 
 def listening_state(key: str | None, t: Track) -> dict[str, Any]:
     """The library's listening data of an item: rating 0-5 (None = unrated), favourite, play count and, for
-    podcasts and audiobooks, the resume position."""
+    podcasts and audiobooks, the resume position and whether it is finished."""
     out: dict[str, Any] = {"key": key} if key is not None else {}
     out |= {"rating": t.rating, "favourite": t.starred, "play_count": t.play_count}
     if t.kind in (MediaKind.PODCAST, MediaKind.AUDIOBOOK):
         out["position_s"] = t.position_s
+        out["finished"] = t.finished
     return out
 
 
@@ -192,9 +223,14 @@ class ClientSessions:
         return dev
 
     async def ensure_device(
-        self, device_id: str, name: str, capabilities: dict[str, Any] | None
+        self,
+        device_id: str,
+        name: str,
+        capabilities: dict[str, Any] | None,
+        client_os: str = "",
     ) -> None:
-        """The device of a paired client (made at its first pairing; a re-pair keeps it and its settings)."""
+        """The device of a paired client (made at its first pairing; a re-pair keeps it and its settings). A
+        player that cannot index its own files (`client_os`) gets its library database built on the server."""
         from syncmusic.core.models import DeviceConfig
         from syncmusic.core.proc_templates import with_tag_step
         from syncmusic.core.sync import suggested_processors
@@ -204,6 +240,8 @@ class ClientSessions:
         new = cfg is None
         if cfg is None:
             cfg = DeviceConfig(id=device_id, type="client", name=name, on_connect="manual")
+            if client_os.lower() == "compas":  # reads its database only at start
+                cfg.settings = {"player_database": "compas", "after_sync": "restart"}
         outbox = self._outbox_root(device_id)
         await asyncio.to_thread(outbox.mkdir, parents=True, exist_ok=True)
         dev = ClientDevice(cfg, outbox, self.sync.ctx)
@@ -266,13 +304,18 @@ class ClientSessions:
         return s
 
     async def _plan(self, s: ClientSession, *, first_inventory: bool) -> None:
+        from syncmusic.core.sync import SyncError
+
         try:
             await self._run_sync(s, first_inventory=first_inventory)
             if s.status == "planning":
                 await self._fill(s)
                 s.status = "ready"
         except ClientError as e:
-            s.status, s.message = "failed", str(e)
+            s.status, s.message, s.code = "failed", str(e), e.code
+        except SyncError as e:  # a precondition (no templates, library down): no traceback
+            log.warning("client sync %s: %s", s.device_id, e)
+            s.status, s.message, s.code = "failed", str(e), e.code
         except Exception as e:  # noqa: BLE001 - the client sees the reason, the server logs it
             log.warning("client sync %s: %s", s.device_id, e, exc_info=True)
             s.status, s.message = "failed", str(e)
@@ -303,12 +346,61 @@ class ClientSessions:
                 reasons = plan.confirmation_reasons + (
                     ["does not fit"] if plan.does_not_fit else []
                 )
+                dev = await self.device(s.device_id)
+                s.may_confirm = dev.settings.client_may_confirm
                 return self._review(s, reasons)
             job = await sync.apply(plan.id, first_sync=first)
         s.job_id = job.id
         info = await sync.ctx.jobs.wait(job.id)
         if info.status != JobStatus.SUCCEEDED:
             raise ClientError("server_error", info.error or f"sync job {info.status.value}", 500)
+
+    def _review_totals(self, plan_id: str) -> dict[str, int]:
+        """What the plan waiting for confirmation would do (for the client's preview)."""
+        pc = self.sync.plans.get(plan_id)
+        if pc is None:
+            return {}
+        plan = pc.plan
+        adds = [a for a in plan.actions if a.kind in (ActionKind.ADD, ActionKind.REPLACE)]
+        return {
+            "fetch_count": len(adds),
+            "fetch_bytes": sum(max(a.size_delta, 0) for a in adds),
+            "delete_count": plan.count(ActionKind.REMOVE),
+            "skipped_for_space": len(plan.space.dropped),
+        }
+
+    async def confirm(self, device_id: str, session_id: str) -> dict[str, Any]:
+        """The client confirmed the plan its user saw on the player: apply it like the web UI's confirm."""
+        s = self.get(device_id, session_id)
+        if s.status != "needs_review" or not s.may_confirm or s.plan_id is None:
+            raise ClientError(
+                "confirm_not_allowed", "this sync can only be confirmed on the server", 409
+            )
+        if s.plan_id not in self.sync.plans:
+            raise ClientError("session_expired", "the plan is gone: start a new sync", 410)
+        s.status, s.message, s.may_confirm = "planning", "", False
+        self._tasks[s.id] = asyncio.create_task(self._confirmed(s))
+        return self.view(s)
+
+    async def _confirmed(self, s: ClientSession) -> None:
+        try:
+            assert s.plan_id is not None
+            job = await self.sync.apply(s.plan_id, confirm=True)
+            s.job_id = job.id
+            info = await self.sync.ctx.jobs.wait(job.id)
+            if info.status != JobStatus.SUCCEEDED:
+                raise ClientError(
+                    "server_error", info.error or f"sync job {info.status.value}", 500
+                )
+            await self._fill(s)
+            s.status = "ready"
+        except ClientError as e:
+            s.status, s.message, s.code = "failed", str(e), e.code
+        except Exception as e:  # noqa: BLE001 - the client sees the reason, the server logs it
+            log.warning("client sync %s: %s", s.device_id, e, exc_info=True)
+            s.status, s.message = "failed", str(e)
+        finally:
+            self._tasks.pop(s.id, None)
 
     def _review(self, s: ClientSession, reasons: list[str]) -> None:
         s.status, s.message = "needs_review", "; ".join(reasons) or "confirm the sync on the server"
@@ -332,15 +424,15 @@ class ClientSessions:
         rank = {p: i for i, p in enumerate(order)}
         ordered = sorted(outbox, key=lambda p: (rank.get(p, len(rank)), p))
 
-        def fids() -> dict[str, str]:
-            out = {}
-            for rel in ordered:
-                st = (dev.mount / rel).stat()
-                ck = (dev.id, rel, st.st_size, st.st_mtime_ns)
-                if ck not in self._fid_cache:
-                    self._fid_cache[ck] = sha256_of(dev.mount / rel)
-                out[rel] = self._fid_cache[ck]
-            return out
+        def fid(p: Path) -> tuple[str, int]:
+            st = p.stat()
+            ck = (dev.id, str(p), st.st_size, st.st_mtime_ns)
+            if ck not in self._fid_cache:
+                self._fid_cache[ck] = sha256_of(p)
+            return self._fid_cache[ck], int(st.st_mtime)
+
+        def fids() -> dict[str, tuple[str, int]]:
+            return {rel: fid(dev.mount / rel) for rel in ordered}
 
         fid_of = await asyncio.to_thread(fids)
         tracks = await self._tracks(s.device_id, manifest)
@@ -354,12 +446,13 @@ class ClientSessions:
                 {
                     "op": "replace" if rel in held else "add",
                     "key": item_key,
-                    "fid": fid_of[rel],
+                    "fid": fid_of[rel][0],
                     "size": outbox[rel],
+                    "mtime": fid_of[rel][1],
                     "mime": mimetypes.guess_type(rel)[0] or "application/octet-stream",
                     "path": rel,
                     "role": role,
-                    "url": f"files/{fid_of[rel]}?ticket={s.ticket}",
+                    "url": f"files/{fid_of[rel][0]}?ticket={s.ticket}",
                 }
                 | (
                     {"meta": track_meta(tracks[item_key])}
@@ -383,6 +476,26 @@ class ClientSessions:
             ],
             "remove": [],
         }
+        gen = await asyncio.to_thread(dev.generated_files, manifest)
+        s.generated, s.gen_files = None, {}
+        if gen is not None:
+            files = []
+            for g in gen.files:
+                gfid, mtime = await asyncio.to_thread(fid, g.source)
+                s.gen_files[gfid] = g.source
+                size = (await asyncio.to_thread(g.source.stat)).st_size
+                files.append(
+                    {
+                        "path": g.path,
+                        "fid": gfid,
+                        "size": size,
+                        "mtime": mtime,
+                        "url": f"files/{gfid}?ticket={s.ticket}",
+                    }
+                )
+            s.generated = {"set_id": gen.set_id, "commit": gen.commit, "files": files}
+        # what to do after a sync; the client does it only when the sync changed something on it
+        s.after_sync = dev.settings.after_sync
 
     async def _tracks(self, device_id: str, manifest: Manifest | None) -> dict[str, Track]:
         """The library's view of every item in the manifest that a library can tell about now (key -> track)."""
@@ -418,8 +531,13 @@ class ClientSessions:
             out["retry_after_s"] = 2
         elif s.status in ("needs_review", "failed"):
             out["message"] = s.message
+            if s.code:
+                out["code"] = s.code
             if s.status == "needs_review":
                 out["retry_after_s"] = 60
+                out["may_confirm"] = s.may_confirm
+                if s.may_confirm and s.plan_id is not None:
+                    out["review"] = self._review_totals(s.plan_id)
         if s.status == "ready":
             plan: dict[str, Any] = {
                 "session_id": s.id,
@@ -427,6 +545,8 @@ class ClientSessions:
                 "mode": s.mode,
                 "totals": s.totals(),
                 "playlists": s.playlists,
+                "generated": s.generated,
+                "after_sync": s.after_sync,
                 "expires_at": s.expires_at.isoformat(),
                 "next": {},
             }
@@ -477,19 +597,62 @@ class ClientSessions:
         """(outbox file, device path) of `fid` when an open session of this device lists it; else None."""
         self._expire()
         for s in self.sessions.values():
-            if s.device_id == device_id and s.status == "ready" and fid in s.fids:
-                rel = s.fids[fid]
-                return self._outbox_root(device_id) / rel, rel
+            if s.device_id == device_id and s.status == "ready":
+                if fid in s.fids:
+                    rel = s.fids[fid]
+                    return self._outbox_root(device_id) / rel, rel
+                if fid in s.gen_files:
+                    return s.gen_files[fid], s.gen_files[fid].name
         return None
 
     def file_by_ticket(self, ticket: str, fid: str) -> tuple[str, Path, str] | None:
         """(device id, outbox file, device path) of `fid` when the open session with this ticket lists it."""
         self._expire()
         for s in self.sessions.values():
-            if secrets.compare_digest(s.ticket, ticket) and s.status == "ready" and fid in s.fids:
-                rel = s.fids[fid]
-                return s.device_id, self._outbox_root(s.device_id) / rel, rel
+            if secrets.compare_digest(s.ticket, ticket) and s.status == "ready":
+                if fid in s.fids:
+                    rel = s.fids[fid]
+                    return s.device_id, self._outbox_root(s.device_id) / rel, rel
+                if fid in s.gen_files:
+                    return s.device_id, s.gen_files[fid], s.gen_files[fid].name
         return None
+
+    # --- diagnostics: the client's log and state summary, sent by the user from the app ------------------
+
+    def _diag_path(self, device_id: str) -> Path:
+        return self.sync.ctx.config.data_dir / "network" / f"{device_id}.diagnostics.json"
+
+    def save_diagnostics(
+        self, device_id: str, log_text: str, summary: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Keep the latest upload (secrets that look like tokens are masked once more here)."""
+        doc = {
+            "received_at": _now().isoformat(),
+            "log": redact(log_text),
+            "summary": json.loads(redact(json.dumps(summary))),
+        }
+        path = self._diag_path(device_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(path)
+        return {"received_at": doc["received_at"], "size": path.stat().st_size}
+
+    def diagnostics(self, device_id: str) -> dict[str, Any] | None:
+        path = self._diag_path(device_id)
+        if not path.is_file():
+            return None
+        doc: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        return doc
+
+    def diagnostics_info(self, device_id: str) -> dict[str, Any] | None:
+        doc = self.diagnostics(device_id)
+        if doc is None:
+            return None
+        return {
+            "received_at": doc["received_at"],
+            "size": self._diag_path(device_id).stat().st_size,
+        }
 
     def _outbox_root(self, device_id: str) -> Path:
         return self.sync.ctx.config.data_dir / "network" / device_id

@@ -45,6 +45,7 @@ from syncmusic.core.models import (
     ReverseReport,
     ReverseSyncSettings,
 )
+from syncmusic.core.planner import position_changed
 from syncmusic.core.playlist_reverse import Policy, push_playlists
 from syncmusic.infra.store import PendingRow, Store
 
@@ -169,6 +170,15 @@ def mark_finished(
             continue
         if pos is None and (entry.last_position_s or 0) >= end - FINISHED_WITHIN_S:
             continue  # already finished at the last sync: nothing new to say
+        if (
+            near_end
+            and pos is not None
+            and pos.finished
+            and entry.last_finished
+            and key not in played
+            and not position_changed(pos.position_s, entry.last_position_s)
+        ):
+            continue  # the finished bookmark the last sync wrote: no new listening
         at = pos.updated_at if pos is not None and pos.updated_at else played.get(key)
         fb.positions[key] = PositionInfo(position_s=end, finished=True, updated_at=at)
         marked[key] = pos.position_s if pos is not None else None
@@ -320,6 +330,32 @@ def _mass_unrate(fb: DeviceFeedback, new: DeviceFeedback, manifest: Manifest | N
     return len(removed)
 
 
+REWIND_S = (
+    30  # a device position this much (or more) behind the one synced to it wins; less is ignored
+)
+
+
+def is_small_rewind(device_s: float, synced_s: float | None) -> bool:
+    """A device position behind the one the last sync left there by less than REWIND_S: a slip, not a rewind."""
+    return synced_s is not None and 0 < synced_s - device_s < REWIND_S
+
+
+def _small_rewinds(fb: DeviceFeedback, manifest: Manifest | None) -> int:
+    """Drop the unfinished device positions that are a small rewind (`is_small_rewind`); how many."""
+    if manifest is None:
+        return 0
+    drop = [
+        k
+        for k, p in fb.positions.items()
+        if not p.finished
+        and k in manifest.items
+        and is_small_rewind(p.position_s, manifest.items[k].last_position_s)
+    ]
+    for k in drop:
+        del fb.positions[k]
+    return len(drop)
+
+
 class ReverseSync:
     def __init__(self, store: Store) -> None:
         self.store = store
@@ -363,6 +399,9 @@ class ReverseSync:
         # every play the device shows, captured before or not: a run cancelled before the device commit finds the
         # same plays again and must not push the reset bookmark after the finished position
         finished = mark_finished(fb, fb.plays, manifest)
+        small = _small_rewinds(fb, manifest)
+        if small:
+            log.info("%s: %d positions moved back less than %ds ignored", cfg.id, small, REWIND_S)
         if finished:
             log.info("%s: %d podcasts/audiobooks played to the end", cfg.id, len(finished))
         new = _new_feedback(fb, plays, manifest, libraries, settings, device_wins)

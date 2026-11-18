@@ -6,7 +6,7 @@ it to keep the protocol stable. It pairs a throwaway client with a fresh pairing
 Wi-Fi clients. Checks that need something to download are skipped until the paired client has rules that select at
 least one item; give the paired device rules in the web UI and run it again with `--folder` of the first run.
 
-    python -m syncmusic.client_conformance http://server:8765 ABCD-1234 ./conformance-client
+    python -m syncmusic.client_conformance http://server:8765 1234-5678 ./conformance-client
     python -m syncmusic.client_conformance http://server:8765 - ./conformance-client   # reuse that pairing
 
 Exit code 0 when no check failed.

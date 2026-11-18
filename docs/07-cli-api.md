@@ -55,6 +55,6 @@ Useful entry points: `GET /api/v1/health`, `GET /api/v1/devices`, `POST /api/v1/
 `GET /api/v1/jobs`, `GET /api/v1/settings`. Live events (progress, device plugged in) come as a server-sent event
 stream (`GET /api/v1/events?types=job.,sync.`).
 
-By default the API has **no authentication**. With the optional login on (*Settings → System → Access*) every
+By default the API has **no authentication**. With the optional login on (*Settings → General → Access*) every
 request needs the session cookie of a login or an API token: `curl -H "Authorization: Bearer $SYNCMUSIC_TOKEN" …`;
 the `syncmusic` commands send `SYNCMUSIC_TOKEN` by themselves. See [Installation → Security](02-installation.md#security).

@@ -359,10 +359,13 @@ def test_torn_appended_line_is_dropped_and_forces_compaction(tmp_path):
 
 
 def test_torn_base_line_still_raises(tmp_path):
-    mf.write(tmp_path, _manifest(3))
+    m = _manifest(3)
+    mf.write(tmp_path, m)
     path = tmp_path / mf.MANIFEST_PATH
     path.write_bytes(path.read_bytes()[:-20])
     mf.drop_cache()
+    assert mf.read(tmp_path) == m  # never "fewer items": the full backup is read
+    (tmp_path / mf.BACKUP_PATH).unlink()
     with pytest.raises(mf.ManifestError):
         mf.read(tmp_path)
 
@@ -435,3 +438,67 @@ def test_a_manifest_written_by_0_2_0_reads_stays_ours_and_upgrades_in_place(tmp_
         assert again.playlist_refs == got.playlist_refs
     finally:
         mf.set_context(mf.Context())
+
+
+def _damage(root, at: int = 200) -> None:
+    """Foreign bytes in the middle of the manifest, as when its clusters were handed to another file."""
+    path = root / mf.MANIFEST_PATH
+    raw = bytearray(path.read_bytes())
+    raw[at : at + 4] = b"\x8c\x00\xff\x8c"
+    path.write_bytes(bytes(raw))
+    mf.drop_cache()
+
+
+def test_damaged_manifest_falls_back_to_the_backup(tmp_path, caplog):
+    m = _manifest(5)
+    mf.write(tmp_path, m)
+    assert (tmp_path / mf.BACKUP_PATH).read_bytes() == (tmp_path / mf.MANIFEST_PATH).read_bytes()
+    _damage(tmp_path)
+    assert mf.read(tmp_path) == m
+    assert "using the backup copy" in caplog.text
+    mf.write(tmp_path, m)  # the next write repairs the manifest itself
+    mf.drop_cache()
+    assert (tmp_path / mf.MANIFEST_PATH).read_bytes() == (tmp_path / mf.BACKUP_PATH).read_bytes()
+
+
+def test_appended_items_reach_the_backup(tmp_path):
+    m = _manifest(40)
+    mf.write(tmp_path, m)
+    mf.read(tmp_path)
+    m.items[next(iter(m.items))].size = 4242
+    mf.write(tmp_path, m)
+    assert b'{"type":"append"}' in (tmp_path / mf.MANIFEST_PATH).read_bytes()
+    _damage(tmp_path, at=30)
+    assert mf.read(tmp_path) == m
+
+
+def test_both_damaged_still_raises(tmp_path):
+    mf.write(tmp_path, _manifest(3))
+    _damage(tmp_path)
+    (tmp_path / mf.BACKUP_PATH).write_bytes(b"\xff garbage")
+    with pytest.raises(mf.ManifestError, match="not UTF-8"):
+        mf.read(tmp_path)
+
+
+def test_delete_removes_the_backup(tmp_path):
+    mf.write(tmp_path, _manifest(2))
+    mf.delete(tmp_path)
+    assert not (tmp_path / mf.STATE_DIR).exists()
+
+
+def test_missing_manifest_falls_back_to_the_backup(tmp_path, caplog):
+    m = _manifest(4)
+    mf.write(tmp_path, m)
+    (tmp_path / mf.MANIFEST_PATH).unlink()
+    mf.drop_cache()
+    assert mf.read(tmp_path) == m
+    assert "manifest is missing" in caplog.text
+    assert mf.read_header(tmp_path) is not None
+    mf.write(tmp_path, m)  # the next write restores the manifest
+    mf.drop_cache()
+    assert (tmp_path / mf.MANIFEST_PATH).read_bytes() == (tmp_path / mf.BACKUP_PATH).read_bytes()
+
+
+def test_no_manifest_and_no_backup_is_none(tmp_path):
+    assert mf.read(tmp_path) is None
+    assert mf.read_header(tmp_path) is None

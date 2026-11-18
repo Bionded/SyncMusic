@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from syncmusic.base.capabilities import DeviceCapabilities
+from syncmusic.base.capabilities import DeviceCapabilities, PathRules
 from syncmusic.core import books
 from syncmusic.core.manifest import is_external
 from syncmusic.core.models import (
@@ -491,7 +491,9 @@ def plan_sync(
         if any(h not in inputs for h in c.processing.values()):
             inputs.update(chain.processing_inputs(c.item, caps))
         entry = entries.get(c.key)
-        action, changed = _selected_action(c, entry, missing, chain, caps, tag_device, by)
+        action, changed = _selected_action(
+            c, entry, missing, chain, caps, tag_device, by, stored, inputs
+        )
         actions.append(action)
         if changed is not None:
             reprocessed += 1
@@ -740,6 +742,52 @@ def touched_only(old: str, new: str) -> bool:
     return a is not None and b is not None and a[0] == b[0] and a[2] == b[2] and a[1] != b[1]
 
 
+_PATH_LIMITS = frozenset({"max_file_size", "max_path_len", "max_name_len"})
+
+
+def _path_limits_only(
+    entry: ManifestEntry,
+    c: _Candidate,
+    stored: Mapping[str, dict[str, Any]],
+    inputs: Mapping[str, dict[str, Any]],
+) -> bool:
+    """Only the device's size or length limits changed and the file on the device fits the new ones: the
+    file stays as it is (e.g. a disk first seen as FAT, then as NTFS - the 4 GiB limit went away)."""
+    if not entry.processing or entry.processing.keys() != c.processing.keys():
+        return False
+    if any(entry.processing[n] != v for n, v in c.processing.items() if n != "device"):
+        return False
+    old, new = stored.get(entry.processing["device"]), inputs.get(c.processing["device"])
+    if old is None or new is None:
+        return False
+    if {k: v for k, v in old.items() if k != "path_rules"} != {
+        k: v for k, v in new.items() if k != "path_rules"
+    }:
+        return False
+    old_pr, new_pr = old.get("path_rules") or {}, new.get("path_rules") or {}
+    changed = {k for k in old_pr.keys() | new_pr.keys() if old_pr.get(k) != new_pr.get(k)}
+    if not changed or not changed <= _PATH_LIMITS:
+        return False
+    try:
+        rules = PathRules.model_validate(new_pr)
+    except ValueError:
+        return False
+    if rules.max_file_size is not None and entry.size > rules.max_file_size:
+        return False
+    path = entry.path
+    if len(path) > rules.max_path_len:
+        return False
+    for part in path.split("/"):
+        n = (
+            len(part.encode("utf-16-le")) // 2
+            if rules.name_len_unit == "utf16"
+            else len(part.encode())
+        )
+        if n > rules.max_name_len:
+            return False
+    return True
+
+
 def _selected_action(
     c: _Candidate,
     entry: ManifestEntry | None,
@@ -748,6 +796,8 @@ def _selected_action(
     caps: DeviceCapabilities,
     tag_device: bool,
     by: Callable[[Collection[str]], str],
+    stored: Mapping[str, dict[str, Any]] | None = None,
+    inputs: Mapping[str, dict[str, Any]] | None = None,
 ) -> tuple[PlanAction, list[str] | None]:
     """Add, replace, update or keep one selected item. The second value is set when it is replaced only because
     the processing changed: the processing parts that changed."""
@@ -778,7 +828,7 @@ def _selected_action(
         and bool(entry.processing)
         and entry.processing.keys() == c.processing.keys()
         and all(entry.processing[n] == v for n, v in c.processing.items() if n != "device")
-    )
+    ) or (entry.chain_hash != chash and _path_limits_only(entry, c, stored or {}, inputs or {}))
     restamp = (
         entry.source_state != track.source_state
         and entry.meta_hash == mhash

@@ -140,8 +140,8 @@ class Helper:
             "sg_raw": self._sg_raw,
             "sg_inq": self._sg_inq,
             # file system check and repair of a damaged data partition
-            "fsck.vfat": lambda a: self._flags(a, ["-a"], "repair"),
-            "fsck.exfat": lambda a: self._flags(a, ["-y"], "repair"),
+            "fsck.vfat": lambda a: self._fsck(a, "-a"),
+            "fsck.exfat": lambda a: self._fsck(a, "-y"),
             "dmesg": lambda a: self._exact(a, 0, lambda: None),
             "eject": lambda a: self._exact(a, 1, lambda: self.device(a[0], "eject")),
             "udisksctl": lambda a: self._flags(
@@ -166,6 +166,13 @@ class Helper:
         if len(args) != n:
             raise Refused(f"expected {n} arguments, got {len(args)}")
         then()
+
+    def _fsck(self, args: list[str], repair_flag: str) -> None:
+        """`-n <device>`: the read-only check after an eject's unmount; the repair flag: a repair."""
+        if args[:1] == ["-n"]:
+            self._flags(args, ["-n"], "eject")
+        else:
+            self._flags(args, [repair_flag], "repair")
 
     def _flags(self, args: list[str], flags: list[str], operation: str) -> None:
         """Exactly `flags` then one device."""

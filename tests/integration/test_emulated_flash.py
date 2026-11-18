@@ -171,3 +171,34 @@ async def test_combine_audiobooks_setting(services, tmp_path, merge):
                 assert chapters is not None and len(list(chapters)) == len(book)
             else:
                 assert len(audio) == len(book), audio
+
+
+async def test_missing_manifest_read_from_backup(services, tmp_path):
+    """The manifest file is gone (a file-system repair removed it) but its backup copy is on the device: the
+    device stays managed, the next plan changes nothing and the sync writes the manifest back."""
+    from syncmusic.core import manifest as manifest_io
+
+    with attach("emulated_flash", 256) as disk:
+        await flash(disk, "vfat", "OLD")
+        async with running_app(tmp_path, [disk], [navidrome_config(services)]) as (app, [blk]):
+            two = {"rules": [{"id": "t", "criteria": {"is": {"kind": "music"}}, "limit": 2}]}
+            req = RegisterRequest(
+                name="Backup Stick",
+                disk=blk.path,
+                rule_set=await own_rules(app, "Backup Stick", two, ["nd"]),
+                on_connect="manual",
+            )
+            cfg = await app.sync.register(req)
+            pc = await app.sync.plan(cfg.id)
+            job = await app.jobs.wait((await app.sync.apply(pc.plan.id, first_sync="keep")).id)
+            assert job.status == "succeeded", job.error
+
+            mount = (await app.sync.open_device(cfg.id)).mount
+            (mount / manifest_io.MANIFEST_PATH).unlink()
+            manifest_io.drop_cache()
+            pc = await app.sync.plan(cfg.id)
+            assert {x.kind for x in pc.plan.actions} == {ActionKind.KEEP}
+            job = await app.jobs.wait((await app.sync.apply(pc.plan.id)).id)
+            assert job.status == "succeeded", job.error
+            mount = (await app.sync.open_device(cfg.id)).mount
+            assert (mount / manifest_io.MANIFEST_PATH).is_file()

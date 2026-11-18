@@ -114,6 +114,29 @@ jobs:
             dist/compas-sdtool-notices.tar.gz
           if-no-files-found: error
 
+  # the SyncMusic app for Compás players: one static MIPS binary, zipped as the folder that goes to <SD>/.apps/
+  compas-app:
+    needs: meta
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: clients/compas/go.mod
+      - name: Unit tests
+        run: cd clients/compas && go test ./...
+      - name: Build the app folder
+        run: |
+          v="${{ needs.meta.outputs.tag }}"
+          clients/compas/build.sh "${v#v}"
+          mkdir -p dist && cp clients/compas/out/syncmusic-compas-*.zip dist/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: compas-app
+          path: dist/syncmusic-compas-*.zip
+          if-no-files-found: error
+
   docker:
     needs: meta
     runs-on: ubuntu-24.04
@@ -139,7 +162,7 @@ jobs:
             ${{ env.IMAGE }}:${{ needs.meta.outputs.prerelease == 'true' && 'beta' || 'latest' }}
 
   release:
-    needs: [meta, binaries, sdtool, docker]
+    needs: [meta, binaries, sdtool, compas-app, docker]
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
@@ -158,8 +181,12 @@ jobs:
           pattern: sdtool-*
           merge-multiple: true
           path: dist
-      - name: Checksums of compas-sdtool
-        run: cd dist && sha256sum compas-sdtool-* >> SHA256SUMS && cat SHA256SUMS
+      - uses: actions/download-artifact@v8
+        with:
+          name: compas-app
+          path: dist
+      - name: Checksums of compas-sdtool and the Compás app
+        run: cd dist && sha256sum compas-sdtool-* syncmusic-compas-*.zip >> SHA256SUMS && cat SHA256SUMS
       - uses: actions/download-artifact@v8
         with:
           name: notes

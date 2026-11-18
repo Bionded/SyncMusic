@@ -428,6 +428,17 @@ def router(facade: AppFacade) -> APIRouter:
         checked) into the data folder, as a job."""
         return await facade.compas_sdtool_download()
 
+    @r.get("/settings/compas-app")
+    async def settings_compas_app() -> dict[str, Any]:
+        """The newest Compás app zip the server holds for paired players (version, path) and where it looks."""
+        return await facade.compas_app()
+
+    @r.post("/settings/compas-app/download", status_code=202)
+    async def settings_compas_app_download() -> dict[str, Any]:
+        """Download the newest Compás app zip from SyncMusic's release (checksum checked, zip read back) into the
+        data folder, as a job."""
+        return await facade.compas_app_download()
+
     @r.get("/settings/backup")
     async def settings_backup(secrets: bool = False) -> JSONResponse:
         """Download a backup; `secrets=true`: with passwords and the webhook URL, in plain text."""

@@ -649,3 +649,33 @@ def test_mass_rating_clear_writes_the_library_ratings_back_on_the_next_sync():
     entry = manifest.items[keys[0]]
     track = make_track("t", rating=4)
     assert any(c.field == "rating" for c in meta_changes(entry, track, caps, tags=False))
+
+
+def test_small_rewinds_on_the_device_are_ignored():
+    from syncmusic.core.models import (
+        DeviceFeedback,
+        ItemRef,
+        Manifest,
+        ManifestEntry,
+        ManifestHeader,
+        PositionInfo,
+    )
+    from syncmusic.core.reverse import _small_rewinds, is_small_rewind
+
+    assert is_small_rewind(271.0, 300.0)  # 29 s back
+    assert not is_small_rewind(270.0, 300.0)  # 30 s back wins
+    assert not is_small_rewind(269.0, 300.0)  # 31 s back wins
+    assert not is_small_rewind(310.0, 300.0)
+    assert not is_small_rewind(10.0, None)
+    m = Manifest(header=ManifestHeader(device_id="d"))
+    fb = DeviceFeedback()
+    for i, (dev_s, done) in enumerate(
+        [(271.0, False), (270.0, False), (269.0, False), (290.0, True)]
+    ):
+        r = ItemRef(library_id="l", item_id=str(i))
+        m.items[r.key()] = ManifestEntry(
+            ref=r, device_ref=str(i), path=str(i), size=1, last_position_s=300.0
+        )
+        fb.positions[r.key()] = PositionInfo(position_s=dev_s, finished=done)
+    assert _small_rewinds(fb, m) == 1
+    assert sorted(p.position_s for p in fb.positions.values()) == [269.0, 270.0, 290.0]

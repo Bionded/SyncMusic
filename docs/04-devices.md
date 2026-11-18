@@ -103,7 +103,7 @@ The device page shows these as *Tips for this player* (Overview tab; close the c
   and writes it again instead of sending the old position to the library.
 - **The player's library, built during the sync:** with **compas-sdtool** SyncMusic builds the player's library on
   the computer at the end of each sync (the player's own indexing code, so the player keeps it), and the new music,
-  hearts and play counts are there right after unplugging. Set its path or download it in *Settings → Sync →
+  hearts and play counts are there right after unplugging. Set its path or download it in *Settings → Tools →
   HiBy R1 with Compás*; the device page offers the download too. Without it, Compás indexes the new music itself
   after you unplug (or use *Settings → Update Music Database* on the player). compas-sdtool is part of
   [Compás Tools](https://github.com/Starnished66/compas-tools) by the Compás authors, built from the
@@ -198,9 +198,9 @@ The device page shows these as *Tips for this player* (Overview tab; close the c
 A client app that speaks the SyncMusic client protocol syncs over your network instead of a cable: SyncMusic
 prepares the files (with the device's processors) and the app downloads them when it checks in.
 
-1. **Settings → System → Wi-Fi clients**: turn on **Allow Wi-Fi clients** (and keep **Announce on the network** on so
+1. **Settings → Wi-Fi clients**: turn on **Allow Wi-Fi clients** (and keep **Announce on the network** on so
    the app finds the server by itself).
-2. **Add client** shows a QR code, the server address and a pairing code (valid for 10 minutes by default, single
+2. **Add client** shows a QR code, the server address and an 8-digit pairing code (valid for 1 minute by default, single
    use). Scan the code in the app or type the address and code there. The dialog says when the app has paired.
 3. The client appears as a device: link templates on its **Templates** tab like for any other player. It takes
    what is new the next time it checks in (every 5 minutes by default) or when you sync it in the app.
@@ -210,6 +210,15 @@ progress while the app downloads. Plays, ratings, favourites and positions the a
 with its next sync. **Rename** or **Revoke** a client under Settings → Wi-Fi clients; a revoked client keeps its
 device and history but can no longer sync until it is paired again. The connection is plain HTTP: use it only on a
 network you trust.
+
+**SyncMusic app for Compás players.** Each release has `syncmusic-compas-<version>.zip` next to the server
+downloads: unzip it into the `.apps/` folder of the player's SD card (it holds a `syncmusic/` folder) and start
+*SyncMusic* from the player's apps. A player paired with this app gets **Player library built by the server** set
+to *Compás* and **After a sync that changed something** set to *Restart the player*: the server builds the player's
+library database over the files on the card (this needs compas-sdtool on the server, see
+[HiBy R1 (Compás)](#hiby-r1-compás)), the app installs it and restarts the player, so new music shows at once.
+Without the tool the app only copies the files and the player indexes them itself. Installing, pairing and using
+the app: [SyncMusic app for Compás players](10-compas-app.md).
 
 ## A player used by more than one SyncMusic
 A player remembers which SyncMusic installation set it up: its **home**. When you register a player that another

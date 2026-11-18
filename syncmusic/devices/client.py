@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
+import logging
 import os
 import threading
 from pathlib import Path, PurePosixPath
@@ -45,6 +47,11 @@ from syncmusic.devices.Rockbox.rockbox_feedback import counts_as_play
 from syncmusic.infra.blockdev.identify import BlockDeviceInfo
 
 STATE_FILE = "client.json"
+# where the SyncMusic app on a Compás player takes the server-built database from
+log = logging.getLogger(__name__)
+
+COMPAS_GEN_DIR = ".apps-data/syncmusic/gen"
+COMPAS_COMMIT = ".apps-data/syncmusic/generated.set"
 EVENTS_FILE = "events.json"
 EVENTS_MAX = 1000  # per request
 SEEN_DAYS = 90  # how long a consumed event's id still dedups a resend
@@ -62,6 +69,31 @@ class ClientSettings(BaseModel):
     # a `play` event the client did not mark completed counts from this much of the track (scrobble rule)
     play_min_fraction: float = Field(0.5, gt=0, le=1)
     play_min_seconds: float = Field(240, gt=0)
+    # what the client should do after a sync that changed something: nothing, refresh its library view, or
+    # restart (a player that reads its database only at start)
+    after_sync: Literal["none", "refresh", "restart"] = "none"
+    # a library database the server builds over the files the client holds (players that cannot index their own
+    # files): none, or the Compás player's database (needs compas-sdtool on the server)
+    player_database: Literal["none", "compas"] = "none"
+    # the client app may confirm a plan that waits for confirmation (many removals, not enough space) itself,
+    # after showing it to the user on the player (every client by default); off: only the web UI confirms
+    client_may_confirm: bool = True
+
+
+class GeneratedFile(BaseModel):
+    """A file the server builds for the client (a database, an index), not one of the synced items."""
+
+    path: str  # device path
+    source: Path  # the built file on the server
+
+
+class GeneratedSet(BaseModel):
+    """Files the server built for the client, installed as one set: the client writes them all, and only then
+    the `commit` file whose content is `set_id`. A client whose commit file already holds `set_id` skips the set."""
+
+    set_id: str
+    commit: str  # device path of the commit file
+    files: list[GeneratedFile]
 
 
 class ClientEvent(BaseModel):
@@ -113,8 +145,14 @@ class ClientState(BaseModel):
     # device paths the client must delete (removed tracks, their sidecars, old playlists)
     deletes: list[str] = []
     inventory_cursor: int = 0
+    # device path -> SHA-256 of the playlist the client acked (an identical rewrite is not sent again)
+    playlist_hashes: dict[str, str] = {}
     last_seen: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
+
+
+def _sha256(p: Path) -> str:
+    return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
 def client_formats(reported: list[str] | None) -> set[str] | None:
@@ -236,6 +274,9 @@ class ClientDevice(FileDeviceMixin, Device):
         st.deletes = [d for d in st.deletes if d in held]  # deleted on the client already
         self.save_state()
 
+    def _is_playlist(self, rel: str) -> bool:
+        return rel.lower().endswith((".m3u", ".m3u8"))
+
     def outbox(self) -> dict[str, int]:
         """Device path -> size of every file waiting for the client (the outbox tree)."""
         return {self._rel(p): p.stat().st_size for p in self._walk()}
@@ -247,6 +288,13 @@ class ClientDevice(FileDeviceMixin, Device):
         if not p.resolve().is_relative_to(base) or p.resolve() == base:
             raise ValueError(f"not a device path: {rel!r}")
         size = p.stat().st_size if p.is_file() else self.state.inventory.get(rel, 0)
+        if p.is_file() and self._is_playlist(rel):
+            self.state.playlist_hashes[rel] = _sha256(p)
+        if p.is_file() and self.settings.player_database != "none":
+            keep = self._shadow / rel  # the database is built over every file the client holds
+            keep.parent.mkdir(parents=True, exist_ok=True)
+            keep.unlink(missing_ok=True)
+            os.link(p, keep)
         p.unlink(missing_ok=True)
         d = p.parent
         while d.resolve() != base and d.is_dir() and not any(d.iterdir()):
@@ -256,7 +304,9 @@ class ClientDevice(FileDeviceMixin, Device):
 
     def deleted(self, rel: str) -> None:
         """The client acked the delete of `rel`."""
+        (self._shadow / rel).unlink(missing_ok=True)
         self.state.inventory.pop(rel, None)
+        self.state.playlist_hashes.pop(rel, None)
         if rel in self.state.deletes:
             self.state.deletes.remove(rel)
 
@@ -301,6 +351,44 @@ class ClientDevice(FileDeviceMixin, Device):
         if isinstance(limits.get("max_file_bytes"), int):
             update["max_file_size"] = limits["max_file_bytes"]
         return rules.model_copy(update=update) if update else rules
+
+    def generated_files(self, manifest: Manifest | None) -> GeneratedSet | None:
+        """Files the server builds for this client after a sync (e.g. a player's own database over the files it
+        holds), or None: the database chosen in the `player_database` setting."""
+        if self.settings.player_database != "compas" or manifest is None:
+            return None
+        from syncmusic.devices.HibyR1 import compas_sdtool as sd
+        from syncmusic.devices.HibyR1 import compas_tagset
+
+        files: dict[str, Path] = {}
+        for rel in sorted({e.path for e in manifest.items.values()}):
+            for base in (self.mount, self._shadow):
+                if (base / rel).is_file():
+                    files[rel] = base / rel
+                    break
+        if not files:
+            return None
+        data_dir = self.ctx.data_dir if self.ctx is not None else Path("/nonexistent")
+        tool = sd.locate(sd.configured(), data_dir)
+        if tool is None:
+            log.warning(
+                "%s: compas-sdtool not found, the player builds its own library", self.config.name
+            )
+            return None
+        sid, out, names = compas_tagset.build_cached(files, self._side("gen"), tool)
+        return GeneratedSet(
+            set_id=sid,
+            commit=COMPAS_COMMIT,
+            files=[GeneratedFile(path=f"{COMPAS_GEN_DIR}/{n}", source=out / n) for n in names],
+        )
+
+    def _side(self, what: str) -> Path:
+        return self.mount.parent / f"{self.mount.name}.{what}"
+
+    @property
+    def _shadow(self) -> Path:
+        """Hard links to the files the client already took (the outbox keeps only what waits)."""
+        return self._side("shadow")
 
     def model_capabilities(self) -> DeviceCapabilities:
         return super().model_capabilities().model_copy(update={"path_rules": self.path_rules()})
@@ -408,7 +496,8 @@ class ClientDevice(FileDeviceMixin, Device):
     async def read_playlists(self, manifest: Manifest) -> dict[str, list[str]] | None:
         """The client's playlists for the reverse playlist sync: each as last synced, with the user's pending
         `playlist_edit` events applied in order (`name`, `ops`: add / remove / move of an item `key` at `index`);
-        a name the server does not know is a playlist made on the client."""
+        a name the server does not know is a playlist made on the client. A client may name a playlist by its file
+        (`Rock - 80s` for `Rock: 80s`, whose file name could not hold the ':'): the file name maps back."""
         log = await asyncio.to_thread(self.load_events)
         edits = sorted(
             (e for e in log.pending if e.type == "playlist_edit"), key=lambda e: (e.when(), e.seq)
@@ -417,12 +506,24 @@ class ClientDevice(FileDeviceMixin, Device):
             name: [manifest.items[k].path for k in refs if k in manifest.items]
             for name, refs in manifest.playlist_refs.items()
         }
+        by_file: dict[str, str] = {}
+        from syncmusic.devices import paths as device_paths
+
+        rules = self.path_rules()
+        for n in manifest.playlists:
+            rel = manifest.playlist_paths.get(n) or device_paths.playlist_path(n, rules)
+            stem = PurePosixPath(rel).stem
+            by_file.setdefault(stem, n)
+            by_file.setdefault(stem.casefold(), n)
         for e in edits:
             extra = e.model_extra or {}
             name, ops = extra.get("name"), extra.get("ops")
             if not isinstance(name, str) or not name.strip() or not isinstance(ops, list):
                 continue
-            paths = lists.setdefault(name.strip(), [])
+            name = name.strip()
+            if name not in lists:
+                name = by_file.get(name, by_file.get(name.casefold(), name))
+            paths = lists.setdefault(name, [])
             for op in ops:
                 entry = manifest.items.get(str(op.get("key", ""))) if isinstance(op, dict) else None
                 if entry is None:
@@ -464,6 +565,17 @@ class ClientDevice(FileDeviceMixin, Device):
         for rel in old - keep:
             if rel in self.state.inventory and rel not in self.state.deletes:
                 self.state.deletes.append(rel)
+        # a playlist rewritten with the content the client already holds stays off the outbox
+        for rel in keep:
+            p = self.mount / rel
+            held = self.state.playlist_hashes.get(rel)
+            if (
+                held is not None
+                and p.is_file()
+                and self.state.inventory.get(rel) == p.stat().st_size
+                and await asyncio.to_thread(_sha256, p) == held
+            ):
+                p.unlink()
         self.save_state()  # the manifest is written last
         await super().commit(s, manifest)
 

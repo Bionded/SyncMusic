@@ -62,7 +62,19 @@ def test_change_every_setting_and_reload(web_server, chrome, receiver, tmp_path,
     assert page.locator("[data-about-logs]").count() == 1
     for path in ("data", "cache", "mnt"):
         assert page.locator("#content td.mono", has_text=path).count() >= 1
-    sections = ["sync", "libs", "storage", "notif", "system", "about"]
+    sections = [
+        "basics",
+        "sync",
+        "disks",
+        "libs",
+        "clients",
+        "tools",
+        "storage",
+        "notif",
+        "updates",
+        "maint",
+        "about",
+    ]
     assert (
         page.locator("[data-set-section]").evaluate_all("els => els.map(e => e.dataset.setSection)")
         == sections
@@ -114,6 +126,7 @@ def test_change_every_setting_and_reload(web_server, chrome, receiver, tmp_path,
                 "setCacheUse][value=without"):  # fmt: skip
         # the label, not the hidden radio: a force click at phone width can land on the next row
         page.locator(f"input[name={sel}]").evaluate("e => e.closest('label').click()")
+    page.locator("#set-nd_write [data-set-more] > summary").click()  # rare options are collapsed
     _field(page, "default_no_cache_files").fill("6")
     _save(page)
 
@@ -302,7 +315,7 @@ def test_compas_sdtool_entry(web_server, chrome, tmp_path, width):
         "() => document.querySelector('[data-sdtool]').innerText.includes('does not start')"
         " || document.querySelector('[data-sdtool]').innerText.includes('Not found')"
     )
-    page.get_by_role("button", name="Download").click()
+    page.get_by_role("button", name="Download", exact=True).click()
     dialog = page.locator(".modal")
     dialog.wait_for()
     assert "compas-sdtool-linux-" in dialog.inner_text() and "GPL-3.0" in dialog.inner_text()

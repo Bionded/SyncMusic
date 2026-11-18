@@ -28,6 +28,7 @@ from syncmusic.infra.blockdev.mount import BlockdevError
 STATUS = {
     "not_found": 404,
     "invalid": 400,
+    "no_templates": 400,
     "conflict": 409,
     "busy": 409,
     "not_connected": 409,
@@ -213,7 +214,9 @@ def install_error_handlers(api: Any) -> None:
     async def bad_manifest(request: Request, e: ManifestError) -> JSONResponse:
         if fs_damage(e) is not None:
             return _damaged(request, e)
-        return _error(409, "manifest_unreadable", str(e))
+        device_id = request.path_params.get("device_id")
+        request.app.state.facade.app.sync.mark_manifest_damaged(device_id, e)
+        return _error(409, "manifest_unreadable", str(e), choices=["rebuild", "wipe"])
 
     @api.exception_handler(OSError)
     async def os_error(request: Request, e: OSError) -> JSONResponse:
@@ -552,6 +555,11 @@ def router(facade: AppFacade) -> APIRouter:
     async def repair_device(device_id: str) -> dict[str, Any]:
         """Check and repair the data partition's file system (fsck); clears 'file system damaged'."""
         return await facade.repair_device(device_id)
+
+    @r.post("/devices/{device_id}/manifest/rebuild")
+    async def rebuild_manifest(device_id: str) -> dict[str, Any]:
+        """Both manifest copies unreadable: move them aside; the next sync is a first sync that adopts the files."""
+        return await facade.rebuild_manifest(device_id)
 
     @r.post("/devices/{device_id}/integrity/fix", status_code=202)
     async def integrity_fix(device_id: str) -> dict[str, Any]:

@@ -9,7 +9,7 @@ prepared for it and reports what the user did (plays, ratings, favourites, posit
 - Working example: [`syncmusic/reference_client.py`](../../syncmusic/reference_client.py) — one file, only `httpx`
   and the standard library; `python -m syncmusic.reference_client --help`.
 - Conformance checks a client author can run against a server:
-  `python -m syncmusic.client_conformance http://server:8765 ABCD-2345 ./scratch-folder` (see the end of this page).
+  `python -m syncmusic.client_conformance http://server:8765 1234-5678 ./scratch-folder` (see the end of this page).
 
 On the server a paired client **is a device** of type `client`: it has templates, processors, history and Player
 contents like a USB player. The server prepares its files with the device's processors into an **outbox**; the
@@ -21,7 +21,7 @@ client downloads them and acknowledges each one.
 - Authentication: `Authorization: Bearer <client token>` on every route except `hello` and `pair`. A client token
   only works on `/api/client/v1/` and only for its own device; the web UI's session and API tokens are not accepted
   here.
-- Clients must be allowed on the server (Settings → System → Wi-Fi clients). While they are not, every route —
+- Clients must be allowed on the server (Settings → Wi-Fi clients). While they are not, every route —
   `hello` included — answers `403 clients_disabled`.
 - Plain HTTP on the local network. For anything beyond a trusted network, put SyncMusic behind a reverse proxy with
   HTTPS; the protocol does not change (the base URL becomes `https://…`).
@@ -39,7 +39,11 @@ Act on `code`, show `message`. Codes in v1:
 | `auth_required` | 401 | no or malformed `Authorization` header, or an unknown token |
 | `token_revoked` | 401 | the user revoked this client: pair again |
 | `code_invalid` / `code_expired` | 400 / 410 | wrong or expired pairing code |
-| `rate_limited` | 429 | too many wrong codes; wait `retry_after_s` (also in `Retry-After`) |
+| `rate_limited` | 429 | too many wrong codes or pairing requests; wait `retry_after_s` (also in `Retry-After`) |
+| `pair_requests_disabled` | 403 | pairing requests are off on this server: use a pairing code |
+| `too_many_requests` | 429 | too many pairing requests are waiting for the user |
+| `request_expired` | 410 | unknown or expired pairing request (or a wrong secret): ask again |
+| `request_rejected` | 403 | the user rejected the pairing request |
 | `not_found` | 404 | no such file in an open sync session |
 | `not_in_plan` | 409 | an ack names something the session's plan does not contain |
 | `inventory_required` | 409 | a delta inventory's `since` is unknown: send a full inventory |
@@ -67,12 +71,15 @@ A client needs the server's **base URL**. Three ways to get it:
 Keep `instance.id`: when the same address later answers with another id, it is a different server.
 
 ## Pairing
-The user clicks **Add client** on the server, which shows a QR code and an 8-character code (`ABCD-2345`; case and
-the dash do not matter). The code is single use and valid for 10 minutes by default.
+The user clicks **Add client** on the server, which shows a QR code and an 8-digit code (`1234-5678`; the dash and
+spaces do not matter; codes made by older versions also had letters). The code is single use and valid for 1 minute
+by default (the user can make a new one at once). A client address gets at most 2 pairing attempts per second
+(`pair`, `pair-requests` and polls of a request alike): more answer `429 rate_limited` with `Retry-After`; wrong
+codes are also limited per minute and a code guessed at too often is burnt.
 
 `POST pair`
 ```json
-{"code": "ABCD-2345",
+{"code": "1234-5678",
  "client": {"uid": "3f0c…", "name": "Pixel", "model": "", "manufacturer": "", "os": "Android",
             "os_version": "15", "app": "MyPlayer", "app_version": "1.0"},
  "capabilities": {…}}
@@ -84,6 +91,24 @@ the dash do not matter). The code is single use and valid for 10 minutes by defa
 - Store the token safely; the server keeps only its hash and cannot show it again.
 - After pairing the user chooses on the server what the device gets (templates); until then a sync has nothing to
   plan.
+
+### Pairing request (registration mode)
+Without a code: when `hello` lists `"pair_requests"` in `features`, a client can ask the user to approve it on the
+server.
+
+`POST pair-requests {"client": {…}, "capabilities": {…}}` →
+`202 {"request_id": "…", "secret": "…", "display_code": "4821", "expires_at": "…", "poll_s": 3, "instance": {…}}`
+
+Show `display_code` on the player: the server's web UI lists the request with the same code (Settings → Clients),
+so the user approves the right player. Then poll `GET pair-requests/{request_id}` with the header
+`X-Pair-Secret: <secret>` every `poll_s` seconds:
+- `202 {"status": "pending"}` — the user has not answered yet;
+- `200 {"status": "approved", "device_id": …, "token": …, "instance": …, "poll_s": …, "continued": …,
+  "settings": {}}` — the same answer as `POST pair`; it is handed out **once**;
+- `403 request_rejected` or `410 request_expired` — stop (a request is valid as long as a pairing code).
+
+The same install asking again replaces its earlier request. Requests live in the server's memory: a restart drops
+them (`request_expired`).
 
 Other routes for a paired client: `GET me` (`device_id`, `name`, `instance`, `poll_s`), `PATCH me {"name": "…"}`,
 `POST me/token/rotate` → `{"token": "…"}` (the old token stays valid until the new one is first used, or for 24 h,
@@ -118,32 +143,63 @@ the connection may drop between any two requests.
 - The lists in request bodies (`items`, `removed`, `done`, `deleted`, `failed`, `events`) also accept an empty object `{}` as an empty list, for JSON encoders that cannot tell the two apart (Lua).
 - Answers: `202 {"session_id", "status": "planning" | "needs_review", "message", "retry_after_s"}` while the server
   plans or waits for the user to confirm the plan in the web UI (first sync onto a non-empty client, many
-  removals, not enough space). Poll `GET sync/{session_id}` after `retry_after_s`. `200` with
+  removals, not enough space). Poll `GET sync/{session_id}` after `retry_after_s`. When the device setting
+  *The player may confirm a sync* is on (`client_may_confirm`; on by default for every client, the user may turn it off), a `needs_review` answer
+  also has `"may_confirm": true` and `"review": {"fetch_count", "fetch_bytes", "delete_count",
+  "skipped_for_space"}`: show it to the user and, when they agree, `POST sync/{session_id}/confirm`; the session
+  goes back to `planning` and then `ready` as usual (`409 confirm_not_allowed` otherwise). A first sync onto a
+  client that already holds files is always confirmed on the server. `200` with
   `"status": "ready"` carries the plan. `failed` (with `message`) means the server could not plan (e.g. no templates
   linked yet).
+
+- **Templates** (any time): `GET templates` → `{"templates": [{"id", "name", "on"}]}` lists the server's
+  templates and which of them the client's device uses; `PUT templates {"on": [ids]}` switches them (switches only:
+  templates are edited in the web UI; `404 not_found` for an unknown id). The next sync follows.
+- **App update** (any time, e.g. at start): `GET app-update?app=<app>&version=<running version>` →
+  `{"available": false}`, or `{"available": true, "app", "version", "files": [{"path", "size", "sha256", "url"}]}`
+  when the server holds a newer release zip of that app (`<app>-<version>.zip` next to the SyncMusic binary or in
+  the data directory's `tools/` folder). `url` is relative to the client API and needs the bearer token. The client
+  checks size and SHA-256 of every file before it replaces anything, and replaces its program file last.
+- **Diagnostics** (any time, when the user asks for it): `POST diagnostics {"log": "<text, at most 512 KiB>",
+  "summary": {…}}` → `202 {"received_at", "size"}`. The server keeps the latest upload per client for the device
+  page (*Diagnostics: Download*). Leave tokens out; what still looks like one is masked by the server.
 
 ### 2. The plan
 ```json
 {"session_id": "…", "status": "ready",
  "plan": {"fetch":  [{"op": "add", "key": "nd/123", "fid": "<sha256>", "size": 4123456, "mime": "audio/mpeg",
-                      "path": "Music/Artist/Album/01 Song.mp3", "role": "track", "url": "files/<sha256>?ticket=…",
+                      "mtime": 1763290000, "path": "Music/Artist/Album/01 Song.mp3", "role": "track",
+                      "url": "files/<sha256>?ticket=…",
                       "meta": {"title": "Song", "artist": "…", "album_artist": "…", "album": "…", "track": 1,
                                "disc": 1, "year": 2001, "genre": "…", "duration_s": 245.1, "kind": "music",
                                "rating": 4, "favourite": true, "play_count": 12}}],
           "delete": [{"key": "nd/77", "path": "Music/Old/02 Gone.mp3"}],
           "playlists": {"set": [{"name": "Running", "path": "Playlists/Running.m3u8"}], "remove": []},
           "state":  [{"key": "nd/123", "rating": 4, "favourite": true, "play_count": 12},
-                     {"key": "abs/ep-9", "rating": null, "favourite": false, "play_count": 0, "position_s": 1834.2}],
+                     {"key": "abs/ep-9", "rating": null, "favourite": false, "play_count": 0, "position_s": 1834.2,
+                      "finished": false}],
+          "generated": null, "after_sync": "none",
           "next": {"fetch": "500"},
           "totals": {"fetch_bytes": 912345678, "fetch_count": 812, "delete_count": 3}}}
 ```
 - `fid` is the SHA-256 of the file's bytes; verify it after downloading. `key` is the item the file belongs to —
   remember it per file: events name items by `key`.
 - `role`: `track`, `sidecar` (cover, lyrics), `playlist` (an `.m3u8` with paths relative to it) or `file`.
-- `meta` (tracks only) is what a client with its own database shows; the file's tags say the same.
+- `meta` (tracks only) is what a client with its own database shows; the file's tags say the same. Podcast
+  episodes also carry `series` (the show; `album` when empty) and `published` (ISO 8601 or `null`).
 - `state` lists the libraries' listening data of every item on the client: `rating` 0–5 (`null` = unrated),
-  `favourite`, `play_count` and, for podcasts and audiobooks, `position_s` (where to resume). Show these in the
+  `favourite`, `play_count` and, for podcasts and audiobooks, `position_s` (where to resume) and `finished`. Show these in the
   app; what the user changes goes back up as events.
+- `mtime` (Unix seconds) is the file's modification time on the server; set it on the file after moving it in
+  place (a player's own database may compare file times with the ones it was built from).
+- `generated` (or `null`): files the server built for this client — e.g. a player database over the files the
+  client holds — installed as **one set**: `{"set_id": "…", "commit": "<path>", "files": [{"path", "fid", "size",
+  "mtime", "url"}]}`. If the `commit` file already contains `set_id`, skip the set. Otherwise download and verify every
+  file to a temporary name first, then move them all in place, then write `set_id` into the `commit` file. Generated
+  files are not acknowledged and not part of the inventory. Which devices get a set is decided on the server.
+- `after_sync`: `none`, `refresh` (reload the library view) or `restart` (restart the player): what to do after a
+  sync that changed something on the client (files fetched or deleted, or a new generated set installed). A sync
+  that changed nothing does nothing. Set per device on the server.
 - A tags-only change arrives as a fetch with a new `fid` that replaces the file at the same `path`.
 - Work order: **deletes first** (frees space), then fetches in list order (rule priority: the most important come
   first when space runs out).

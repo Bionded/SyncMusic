@@ -912,3 +912,71 @@ def test_turning_a_kind_off_removes_our_items_of_it_in_every_mode():
     )
     kept = _plan(_device([music_only, some_pods], mode="additive"), [music, pod], m, caps=IPOD_CAPS)
     assert _kinds(kept)["4"] == "keep"
+
+
+def _limits_manifest(tracks, chain, old_caps, **entry_kw):
+    entries = []
+    inputs: dict = {}
+    for t in tracks:
+        item = initial_plan_item(t)
+        chash, processing = chain.hashes(item, old_caps)
+        inputs.update(chain.processing_inputs(item, old_caps))
+        entries.append(
+            _entry(t, chain, old_caps, processing=processing, chain_hash=chash, **entry_kw)
+        )
+    m = _manifest(entries)
+    m.header.processing_inputs = inputs
+    return m
+
+
+def test_raised_file_size_limit_keeps_the_files():
+    """a disk first seen with a 4 GiB file limit, later without: files under the limit stay, re-stamped."""
+    tracks, chain = _tracks()[:3], Chain([])
+    fat = FILE_CAPS.model_copy(
+        update={"path_rules": PathRules(max_file_size=4 * 1024**3 - 1, max_path_len=240)}
+    )
+    ntfs = FILE_CAPS.model_copy(update={"path_rules": PathRules(max_path_len=240)})
+    plan = _plan(_device(), tracks, _limits_manifest(tracks, chain, fat), caps=ntfs)
+    assert set(_kinds(plan).values()) == {ActionKind.KEEP}
+    assert all(a.rehash for a in plan.actions)
+
+
+def test_lowered_file_size_limit_replaces_a_file_that_does_not_fit():
+    tracks, chain = _tracks()[:1], Chain([])
+    old = FILE_CAPS.model_copy(update={"path_rules": PathRules()})
+    new = FILE_CAPS.model_copy(update={"path_rules": PathRules(max_file_size=10)})
+    plan = _plan(_device(), tracks, _limits_manifest(tracks, chain, old), caps=new)
+    assert _kinds(plan) == {"1": ActionKind.REPLACE}
+
+
+def test_shorter_path_limit_replaces_only_paths_that_are_too_long():
+    tracks, chain = _tracks()[:2], Chain([])
+    old = FILE_CAPS.model_copy(update={"path_rules": PathRules()})
+    new = FILE_CAPS.model_copy(update={"path_rules": PathRules(max_path_len=12)})
+    m = _limits_manifest(tracks, chain, old)
+    m.items[tracks[0].ref.key()].path = "Music/O.mp3"
+    plan = _plan(_device(), tracks, m, caps=new)
+    assert _kinds(plan) == {"1": ActionKind.KEEP, "2": ActionKind.REPLACE}
+
+
+def test_other_path_rule_change_still_replaces():
+    tracks, chain = _tracks()[:1], Chain([])
+    old = FILE_CAPS.model_copy(update={"path_rules": PathRules()})
+    new = FILE_CAPS.model_copy(update={"path_rules": PathRules(ascii_only=True)})
+    plan = _plan(_device(), tracks, _limits_manifest(tracks, chain, old), caps=new)
+    assert _kinds(plan) == {"1": ActionKind.REPLACE}
+
+
+def test_replace_reasons_are_counted():
+    from syncmusic.core.applier import replace_reasons
+
+    tracks, chain = _tracks()[:3], Chain([])
+    m = _manifest(
+        [
+            _entry(tracks[0], chain, FILE_CAPS, source_state="old"),
+            _entry(tracks[1], chain, FILE_CAPS, source_state="old"),
+            _entry(tracks[2], chain, FILE_CAPS, chain_hash="other"),
+        ]
+    )
+    plan = _plan(_device(), tracks, m)
+    assert replace_reasons(plan) == {"source changed": 2, "processing changed": 1}

@@ -1,0 +1,144 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+package main
+
+// Self-update: the server offers the files of a newer release of this app (GET app-update); they are downloaded
+// into a staging folder, checked (size + SHA-256), then moved into .apps/syncmusic/ one by one with the program
+// file last, so a killed update leaves either the old app or a complete new one with the old binary.
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+const appName = "syncmusic-compas"
+
+type appFile struct {
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	Sha256 string `json:"sha256"`
+	URL    string `json:"url"`
+}
+
+type appUpdate struct {
+	Available bool      `json:"available"`
+	Version   string    `json:"version"`
+	Files     []appFile `json:"files"`
+}
+
+// appDir: where the app is installed on the card.
+func (c *Client) appDir() string { return filepath.Join(c.root, ".apps", "syncmusic") }
+
+// CheckUpdate asks the server for a newer release of the app; a development build never updates.
+func (c *Client) CheckUpdate() (appUpdate, error) {
+	var u appUpdate
+	if version == "dev" || c.st.Token == "" {
+		return u, nil
+	}
+	q := url.Values{"app": {appName}, "version": {version}}
+	err := c.call("GET", "app-update?"+q.Encode(), nil, &u)
+	if err == nil && u.Available && len(u.Files) == 0 {
+		u.Available = false
+	}
+	return u, err
+}
+
+// InstallUpdate downloads every file of u and installs them, the program file last.
+func (c *Client) InstallUpdate(u appUpdate) error {
+	stage := filepath.Join(c.data, "update")
+	_ = os.RemoveAll(stage)
+	defer os.RemoveAll(stage)
+	var exe *appFile
+	for i, f := range u.Files {
+		if !safeRel(f.Path) {
+			return fmt.Errorf("update: bad file name %q", f.Path)
+		}
+		if err := c.fetchTo(f, filepath.Join(stage, filepath.FromSlash(f.Path))); err != nil {
+			return err
+		}
+		if f.Path == appName {
+			exe = &u.Files[i]
+		}
+	}
+	if exe == nil {
+		return fmt.Errorf("update: the release has no %s", appName)
+	}
+	dir := c.appDir()
+	for _, f := range append(others(u.Files, exe.Path), *exe) {
+		src, dst := filepath.Join(stage, filepath.FromSlash(f.Path)), filepath.Join(dir, filepath.FromSlash(f.Path))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, softBinary)); err == nil {
+		if err := os.Chmod(filepath.Join(dir, softBinary), 0o755); err != nil {
+			return err
+		}
+	}
+	return os.Chmod(filepath.Join(dir, appName), 0o755)
+}
+
+func others(fs []appFile, skip string) []appFile {
+	var out []appFile
+	for _, f := range fs {
+		if f.Path != skip {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func safeRel(p string) bool {
+	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "\\") {
+		return false
+	}
+	for _, part := range strings.Split(p, "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// fetchTo downloads one file of the release to dest and checks its size and SHA-256.
+func (c *Client) fetchTo(f appFile, dest string) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	req, _ := http.NewRequest("GET", c.url(f.URL), nil)
+	req.Header.Set("Authorization", "Bearer "+c.st.Token)
+	r, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer r.Body.Close()
+	if r.StatusCode >= 400 {
+		return &ProtoError{r.StatusCode, "download", f.Path}
+	}
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(out, h), r.Body)
+	if err == nil {
+		err = out.Sync()
+	}
+	out.Close()
+	if err != nil {
+		return err
+	}
+	if n != f.Size || hex.EncodeToString(h.Sum(nil)) != f.Sha256 {
+		return fmt.Errorf("update: %s arrived damaged", f.Path)
+	}
+	return nil
+}

@@ -79,8 +79,10 @@ async def test_stalled_client_never_blocks_publishers():
     for i in range(CLIENT_QUEUE * 3):
         bus.publish("job.progress", n=i)  # returns at once, the client's queue just fills up
     assert other.qsize() == CLIENT_QUEUE * 3  # other subscribers get everything
-    events = [await _next_data(stream) for _ in range(CLIENT_QUEUE)]
-    assert [e["data"]["n"] for e in events] == list(range(CLIENT_QUEUE))  # the oldest are kept
+    bus.publish("job.finished", job="j")
+    events = [await _next_data(stream) for _ in range(2)]
+    # queued progress is replaced by the newest; other events always arrive
+    assert [e["data"].get("n") for e in events] == [CLIENT_QUEUE * 3 - 1, None]
     await stream.aclose()
 
 

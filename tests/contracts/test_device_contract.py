@@ -7,6 +7,7 @@ from pathlib import PurePosixPath
 import pytest
 
 from syncmusic.base.device import Device
+from syncmusic.core import manifest as manifest_io
 from syncmusic.core.models import Manifest, ManifestEntry, ManifestHeader, MediaKind
 
 
@@ -75,6 +76,9 @@ async def test_manifest_written_last(device, tmp_path):
     await device.abort(s)
 
 
+BACKUP_NAME = manifest_io.BACKUP_PATH.name  # the manifest's own copy comes after it by design
+
+
 async def test_commit_writes_manifest_last(device, tmp_path):
     """An interrupted commit must never leave a manifest describing files that are not there yet."""
     rel = device._harness.manifest_path
@@ -85,7 +89,7 @@ async def test_commit_writes_manifest_last(device, tmp_path):
     newer = [
         str(p.relative_to(device.mount))
         for p in device.mount.rglob("*")
-        if p.is_file() and p.stat().st_mtime_ns > manifest_mtime
+        if p.is_file() and p.stat().st_mtime_ns > manifest_mtime and p.name != BACKUP_NAME
     ]
     assert not newer, f"written after the manifest: {newer}"
 

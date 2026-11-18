@@ -61,3 +61,16 @@ def test_cases():
         "abs/song" not in p and "abs/again" not in p
     )  # music; finished last time, no bookmark: nothing new
     assert mark_finished(DeviceFeedback(), [], None) == {}
+
+
+def test_finished_bookmark_written_by_the_last_sync_is_not_echoed_up():
+    m = _manifest(echo=590.0, old=590.0)
+    m.items["abs/echo"].last_finished = True  # the last sync wrote 590 s finished
+    fb = DeviceFeedback(
+        positions={
+            "abs/echo": PositionInfo(position_s=590.0, finished=True),
+            "abs/old": PositionInfo(position_s=590.0, finished=True),  # no baseline yet
+        }
+    )
+    assert mark_finished(fb, [], m) == {"abs/old": 590.0}
+    assert fb.positions["abs/echo"].position_s == 590.0

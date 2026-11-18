@@ -6,7 +6,7 @@ SyncMusic has three kinds of settings:
    see [Installation → Paths and options](02-installation.md#paths-and-options). `syncmusic config init` prints
    them all with their defaults.
 2. **Application settings** - *Settings* in the web interface (stored in the database).
-3. **Device settings** - per device, on the device's *Settings* tab (sections *Sync behaviour* and *Device*).
+3. **Device settings** - per device, on the device's *Settings* tab (groups *General*, *When to sync*, *After a sync and mounting*, *Safety*, *Listening data*, *Writing*; the rest folded under *Advanced*).
 
 The key names below are the ones the API uses (`GET/PATCH /api/v1/settings`, `/api/v1/devices/{id}`) and the ones
 an export file contains.
@@ -27,6 +27,8 @@ What a **newly registered** device starts with; each device can change them late
 | `default_update_every_min` | 60 | Check for changes every N minutes while connected (empty: only on connect and when a library changes). |
 | `default_verify` | `all` | Read back after a full sync: every file, a 10 % `sample`, or `off`. |
 | `default_eject_after` | `off` | Eject after a successful sync: `off`, after a `full` sync, after `any` sync. |
+| `automount_wait_s` | `5` | Seconds to wait after a disk is plugged in before SyncMusic mounts it, so a host automounter (Umbrel, a desktop) can mount it first and SyncMusic uses that mount instead of a second one. |
+| `default_stay_ready` | `true` | New disk devices stay ready between syncs (see `stay_ready`); devices registered before keep their setting. |
 | `default_no_cache` | off | Do not keep converted files in the processing cache (saves disk, converts again next time). |
 | `default_no_cache_files` | 4 | No-cache mode: files waiting in memory for the device write. |
 | `default_no_cache_budget_mb` | 1000 | No-cache mode: memory for those files together (MB). |
@@ -41,7 +43,8 @@ What a **newly registered** device starts with; each device can change them late
 | `compas_sdtool_path` | none | *HiBy R1 with Compás*: the compas-sdtool program (empty: next to SyncMusic, then `<data_dir>/tools/`). **Check tool** shows its version and library format; **Download** fetches it from SyncMusic's release after you confirm (checksum, architecture and version are checked). compas-sdtool is part of [Compás Tools](https://github.com/Starnished66/compas-tools) (GPL-3.0); see [THIRD-PARTY.md](../THIRD-PARTY.md). |
 | `clients_allowed` | off | *Wi-Fi clients*: client apps may pair with this server and sync over the network. Off: the client API refuses every request and nothing is announced. Plain HTTP: use it only on a network you trust. |
 | `clients_mdns` | on | Announce the server on the local network (mDNS) while Wi-Fi clients are allowed, so apps find it without typing an address. |
-| `client_code_minutes` | 10 | How long a pairing code stays valid (single use; at most three are open at once). |
+| `client_code_minutes` | 1 | How long a pairing code (8 digits) stays valid (single use; at most three are open at once). |
+| `client_pair_requests` | on | A client may ask to connect without a code; you approve or reject it on the Devices page (it shows the same short code as the player). |
 | `client_poll_s` | 300 | How often a paired client asks whether a sync is due (seconds). |
 
 ### Libraries
@@ -100,7 +103,7 @@ every session (this one too). **API tokens** for scripts and the command line (e
 `SYNCMUSIC_TOKEN`): give a name, copy the token at once - it is not shown again - and *Revoke* it when no longer
 needed. The login is not part of a backup and a restore keeps it.
 
-![Settings → System → Access](img/settings-access.png)
+![Settings → General → Access](img/settings-access.png)
 
 **Appearance → Instance name** (`instance_name`, default empty): what this SyncMusic installation is called (empty: the host name). It is shown
 under the logo and in *About*, next to the installation's id, which is made at the first start and stays the same
@@ -111,14 +114,14 @@ browser only; the sun/moon/monitor button in the top bar switches between the th
 
 ## Device settings
 
-### Settings tab - Sync behaviour
+### Settings tab - sync settings
 | Key | Default | Meaning |
 |---|---|---|
-| `on_connect` | from Settings → Sync | `auto`, `ask` or `manual` when the device is plugged in. |
+| `on_connect` | from Settings → New devices | `auto`, `ask` or `manual` when the device is plugged in. |
 | `sync_at` | none | A daily sync at this time (`HH:MM`) while the device is connected. |
 | `sync_windows` | none (any time) | Automatic syncs (on connect, update syncs, the daily sync) start only inside these windows: `start`/`end` `HH:MM` (may cross midnight), `days` 0 = Monday. Outside, a change waits for the next window; Sync now always works. |
 | `update_sync` | on | Updates while connected. |
-| `update_every_min` | from Settings → Sync | How often updates check for changes. |
+| `update_every_min` | from Settings → New devices | How often updates check for changes. |
 | `update_removals` | off | Updates may also remove what no rule selects any more (otherwise removals wait for a full sync). |
 | `update_remove_played` | on | …but items played, finished or rated on the device are removed by updates too. |
 | `remove_deleted` | on | Items deleted from their library are removed from the device. |
@@ -126,6 +129,8 @@ browser only; the sun/moon/monitor button in the top bar switches between the th
 | `rating_priority` | `device` | When device and library ratings differ, which one wins. |
 | `verify` | `all` | Read back after a full sync: `all`, `sample` or `off`. |
 | `eject_after` | `off` | Eject after a successful `full` or `any` sync. |
+| `use_existing_mount` | `true` | A player another program already mounted is used through that mount, never mounted a second time. Off: such a player is refused until the other mount is gone. An eject after a sync leaves another program's mount alone unless `unmount_foreign` is on; eject it from the device page instead. |
+| `stay_ready` | `false` | Stay ready between syncs: the device stays connected but is unmounted whenever no sync or view has used it for about 20 seconds, so it can be unplugged or switched off at any time without damage. Syncs on request, on a schedule or on library changes mount it again by themselves. The device page and sidebar show *Ready - safe to unplug*. An eject after the sync still wins. Disk devices only. |
 | `combine_audiobooks` | on for iPods | A multi-file audiobook becomes one `.m4b` with chapters. |
 | `playlist_conflicts` | `ask` | A playlist changed on both sides, or a player playlist named like a library one: `ask`, `merge`, `replace` (device wins), `ignore` (library wins), `rename`. |
 | `backup_device_db` | off | Keep a copy of the device's database before each sync. |
@@ -133,7 +138,7 @@ browser only; the sun/moon/monitor button in the top bar switches between the th
 | `safety_margin_pct` | 1 | Space left free on the device (percent of its size)… |
 | `safety_margin_min_bytes` | 100 MB | …at least this much… |
 | `safety_margin_max_bytes` | 500 MB | …and at most this much (the minimum wins if larger). |
-| `no_cache` | from Settings → Sync | No-cache mode for this device (see above). |
+| `no_cache` | from Settings → New devices | No-cache mode for this device (see above). |
 | `no_cache_files`, `no_cache_budget_mb`, `no_cache_file_max_mb` | 4, 1000, 256 | Its memory limits. |
 | `gentle_write` | off | Gentle write mode: write in batches with pauses. |
 | `unmount_foreign` | off | Unmount other programs' mounts of the player (a system automount) during the first minute after SyncMusic mounted it. |

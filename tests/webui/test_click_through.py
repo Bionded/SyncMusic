@@ -97,6 +97,10 @@ CONTROLS: dict[str, tuple[str, str]] = {
         "test_devices.py::test_register_a_detected_disk_from_the_list",
     ),
     "devices:repairFs": ("elsewhere", "test_fs_damaged_ui.py::test_damaged_file_system_banner"),
+    "devices:rebuildManifest": (
+        "elsewhere",
+        "test_device_records_damaged.py::test_capacity_card_with_damaged_records",
+    ),
     "devices:heldUnstars": (
         "elsewhere",
         "test_device_history.py::test_history_held_favourites_and_undo_buttons",
@@ -174,6 +178,15 @@ CONTROLS: dict[str, tuple[str, str]] = {
     "welcome:wizLibType": ("elsewhere", "test_welcome.py::test_first_run_wizard"),
     "welcome:wizSkip": ("elsewhere", "test_welcome.py::test_wizard_skip_and_existing_library"),
     "devices:ftpTest": ("elsewhere", "test_ftp_register.py::test_ftp_test_and_save"),
+    "devices:clientApprove": (
+        "elsewhere",
+        "test_clients_ui.py::test_pairing_requests_approve_and_reject",
+    ),
+    "devices:clientReject": (
+        "elsewhere",
+        "test_clients_ui.py::test_pairing_requests_approve_and_reject",
+    ),
+    "settings:downloadCompasApp": (CLICK, CANCEL),
     "devices:switchFirmware": (
         "elsewhere",
         "test_firmware_switch_ui.py::test_firmware_switch_note",

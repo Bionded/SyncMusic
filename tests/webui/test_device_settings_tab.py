@@ -1,5 +1,5 @@
-"""One device Settings tab: the old Sync settings hash redirects, Sync behaviour and Device are
-saved together by one Save bar, the links to Templates / Processors, and the search over the cards."""
+"""One device Settings tab: the old Sync settings hash redirects, every group is saved together by
+one Save bar, the links to Templates / Processors, and the search over the cards."""
 
 from __future__ import annotations
 
@@ -34,6 +34,12 @@ def test_merged_settings_tab(web_server, chrome, tmp_path, width):
     page.wait_for_selector("[data-sync-form]")
     page.wait_for_function("location.hash === '#/devices/stick/settings'")
     assert page.locator("[data-settings-form]").count() == 1
+    parts = page.locator(".ds-part").evaluate_all("els => els.map(e => e.id.slice(7))")
+    assert parts[:5] == ["general", "when", "after", "safety", "listen"], parts
+    # the mount options sit with the after-sync choices, the safety margins under Safety, not in Advanced
+    assert page.locator("[data-after-card] [id$='-s-use_existing_mount']").count() == 1
+    assert page.locator("[data-safety-card] [id$='-s-safety_margin_pct']").count() == 1
+    assert page.locator("[data-advanced-card] [id$='-s-use_existing_mount']").count() == 0
     assert page.locator(".tabs a[aria-selected=true]").inner_text() == "Settings"
     assert page.locator(".ds-link[href='#/devices/stick/rules']").count() == 1
     assert page.locator(".ds-link[href='#/devices/stick/processors']").count() == 1

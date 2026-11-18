@@ -378,6 +378,7 @@ APPLY_ONLY_SYNC_FIELDS = frozenset(
         "no_cache_budget_mb",
         "no_cache_file_max_mb",
         "eject_after",
+        "stay_ready",
         "backup_device_db",
         "backup_keep",
     }
@@ -445,12 +446,17 @@ class SyncService:
         self._configs: list[DeviceConfig] = []
         self._libraries: dict[str, Library] = {}
         self._mounts: dict[str, mnt.Mounted] = {}  # device id -> our mount
+        self._ro_mounts: dict[
+            str, mnt.Mounted
+        ] = {}  # device id -> its mount when a view mounted it read-only
         # device id -> lock around "check the cache, mount": concurrent opens share one mount
         self._mount_locks: dict[str, asyncio.Lock] = {}
         self._errors: dict[str, str] = {}  # device id -> why the connected device is unusable
         # device id -> the I/O error that showed its file system is damaged: no automatic syncs until a
         # re-plug, a repair, a format or a wipe clears it
         self._damaged: dict[str, str] = {}
+        # devices whose manifest and its backup are both unreadable: why (the UI offers to rebuild from the files)
+        self._manifest_bad: dict[str, str] = {}
         # network devices whose server did not answer the last scheduled start, and since when
         self._offline: dict[str, dt.datetime] = {}
         self._ignored: set[str] = set()  # unknown disks the user ignores, see disk_key
@@ -487,6 +493,10 @@ class SyncService:
         self._update_spawned: dict[
             str, asyncio.Task[Any]
         ] = {}  # device id -> its latest update trigger
+        self._appeared: dict[str, float] = {}  # device id -> monotonic time its disk appeared
+        self._ready_tasks: dict[
+            str, asyncio.Task[None]
+        ] = {}  # stay-ready devices: their idle unmount
 
     async def add_tag_steps(self) -> None:
         """Startup: stored processor templates and device chains from before get the tag step."""
@@ -935,6 +945,8 @@ class SyncService:
                     "health_warning": None if network else (await self.health(cfg.id))["warning"],
                     # ejected but its disk is not gone yet (powered off): not idle, nothing to ask it
                     "ejected": cfg.id in self._ejected,
+                    # stay ready: connected, unmounted between jobs - safe to unplug
+                    "ready": self.ready_state(cfg.id),
                     "player_notice": self._player_notice.get(cfg.id),
                     # a damaged file system is an error too: the sidebar, dashboard and list show it
                     "error": (
@@ -948,6 +960,7 @@ class SyncService:
                     if connected
                     else None,
                     "fs_damaged": self._damaged.get(cfg.id) if connected else None,
+                    "manifest_damaged": self._manifest_bad.get(cfg.id) if connected else None,
                     # nothing to plan without a template or rule pulling from a library: not
                     # "waiting", the UI links to its Rules tab
                     "waiting": self._waiting.get(cfg.id) if connected and libs else None,
@@ -1160,6 +1173,7 @@ class SyncService:
             sync=SyncSettings(
                 verify=defaults.default_verify,
                 eject_after=defaults.default_eject_after,
+                stay_ready=defaults.default_stay_ready,
                 no_cache=defaults.default_no_cache,
                 no_cache_files=defaults.default_no_cache_files,
                 no_cache_budget_mb=defaults.default_no_cache_budget_mb,
@@ -1345,9 +1359,12 @@ class SyncService:
     async def home_info(self, device_id: str) -> dict[str, Any]:
         """The home instance and the last writer from the manifest (none before the first sync)."""
         cfg = await self.config(device_id)
-        manifest = await (await self.open_device(cfg.id)).read_manifest()
+        manifest, damaged = await self._manifest_for_display(
+            cfg.id, (await self.open_device(cfg.id)).read_manifest()
+        )
         h = manifest.header if manifest is not None else None
         return {
+            "manifest_damaged": damaged,
             "home": h.home.model_dump(mode="json") if h and h.home else None,
             "last_writer": h.last_writer.model_dump(mode="json") if h and h.last_writer else None,
             "is_home": is_home(manifest),
@@ -1618,8 +1635,10 @@ class SyncService:
         await self.load()
         await self.detector.rematch()  # its disk is unknown again
 
-    async def open_device(self, device_id: str) -> Device:
-        """Device instance on its mounted tree (mounts the data partition if needed)."""
+    async def open_device(self, device_id: str, *, read_only: bool = False) -> Device:
+        """Device instance on its mounted tree (mounts the data partition if needed). `read_only`: a view that
+        only reads; a stay-ready device that is not mounted yet gets a read-only mount for it, which the next
+        writable open replaces with a writable one."""
         cfg = await self.config(device_id)
         if device_id in self._ejecting:
             raise SyncError(f"{cfg.name} is being ejected", "busy")
@@ -1664,6 +1683,17 @@ class SyncService:
                 log.warning("%s: mount at %s is gone, mounting again", device_id, m.path)
                 self._mounts.pop(device_id, None)
                 m = None
+            if m is not None and not read_only and self._ro_mounts.get(device_id) is m:
+                # a view's read-only mount: a writer needs it writable
+                try:
+                    await mnt.unmount(m)
+                except mnt.BlockdevError as e:
+                    raise SyncError(f"{cfg.name} is busy (being read): {e}", "busy") from e
+                self._mounts.pop(device_id, None)
+                self._ro_mounts.pop(device_id, None)
+                m = None
+            if m is not None and (msg := await self._second_mount(cfg, m)) is not None:
+                raise SyncError(msg, "foreign_mount")
             if m is None:
                 if self.ctx.guard is None:
                     raise SyncError("no block device guard configured", "invalid")
@@ -1674,27 +1704,111 @@ class SyncService:
                     await asyncio.shield(
                         clock
                     )  # the iPod writes its FAT after the clock: never mount meanwhile
+                await self._wait_for_automount(device_id)
                 registered = cfg.identity.guard_ids()
+                ro = read_only and cfg.sync.stay_ready
                 try:
                     m = await mnt.mount(
                         self.ctx.guard,
                         cd.data_partition,
                         device_id,
                         self.ctx.config.mount_root,
+                        read_only=ro,
                         registered=registered,
+                        reuse=cfg.sync.use_existing_mount,
                     )
+                except mnt.ForeignMountError as e:
+                    self._errors[device_id] = str(e)
+                    raise SyncError(f"{cfg.name}: {e}", "foreign_mount") from e
                 except mnt.UnmountableError as e:
                     self._errors[device_id] = str(e)
                     raise SyncError(f"{cfg.name}: {e}", "unmountable") from e
                 self._errors.pop(device_id, None)
                 self._mounts[device_id] = m
+                if ro and m.owned:
+                    self._ro_mounts[device_id] = m
+                else:
+                    self._ro_mounts.pop(device_id, None)
                 # the sidebar shows the used space of mounted devices only
                 self.ctx.bus.publish("device.mounted", device_id=device_id)
                 if cfg.sync.unmount_foreign:
                     self._watch_foreign(cfg)
+        if cfg.sync.stay_ready:
+            self._schedule_ready_unmount(device_id)
         dev = cls(cfg, m.path, self.ctx)
         dev.block_path = cd.disk.path
         return dev
+
+    async def _wait_for_automount(self, device_id: str) -> None:
+        """A disk that appeared moments ago: give a host automounter `automount_wait_s` to mount it first."""
+        appeared = self._appeared.get(device_id)
+        if appeared is None:
+            return
+        wait = (await self.store.app_settings()).automount_wait_s
+        left = appeared + wait - time.monotonic()
+        if left > 0:
+            log.info("%s: waiting %.1f s for another program to mount it first", device_id, left)
+            await asyncio.sleep(left)
+
+    def _foreign_mount(self, device_id: str) -> bool:
+        """The device's current mount was made by another program (not at our own mountpoint)."""
+        m = self._mounts.get(device_id)
+        return m is not None and not m.owned and m.path != self.ctx.config.mount_root / device_id
+
+    def _schedule_ready_unmount(self, device_id: str) -> None:
+        """Stay ready: unmount the device once it was idle for `READY_IDLE_S` (no job on it, no view opened it
+        meanwhile). Every `open_device` starts the wait again."""
+        old = self._ready_tasks.pop(device_id, None)
+        if old is not None and not old.done():
+            old.cancel()
+        self._ready_tasks[device_id] = asyncio.create_task(
+            self._ready_unmount(device_id), name=f"ready-unmount-{device_id}"
+        )
+
+    def ready_state(self, device_id: str) -> bool:
+        """A stay-ready device that is connected and not mounted by the app: safe to unplug."""
+        cfg = next((c for c in self._configs if c.id == device_id), None)
+        return bool(
+            cfg is not None
+            and cfg.sync.stay_ready
+            and not cfg.mount_path
+            and not self._network(cfg)
+            and self.detector.by_device(device_id) is not None
+            and device_id not in self._mounts
+            and device_id not in self._ejected
+        )
+
+    async def _ready_unmount(self, device_id: str) -> None:
+        await asyncio.sleep(self.READY_IDLE_S)
+        # a job holds it: unmount once it is done
+        while self.ctx.jobs.device_busy(device_id) or self.ctx.jobs.running_for_device(device_id):  # noqa: ASYNC110
+            await asyncio.sleep(self.READY_BUSY_POLL_S)
+        if self._ready_tasks.get(device_id) is not asyncio.current_task():
+            return  # a newer open replaced this wait
+        self._ready_tasks.pop(device_id, None)
+        try:
+            cfg = await self.config(device_id)
+        except SyncError:
+            return
+        if not cfg.sync.stay_ready or device_id in self._ejecting:
+            return
+        async with self._mount_locks.setdefault(device_id, asyncio.Lock()):
+            m = self._mounts.get(device_id)
+            if m is None or self._shared(m) not in (None, device_id):
+                return
+            # a mount left by an earlier run of the app at our own mountpoint counts as ours
+            ours = m.owned or m.path == self.ctx.config.mount_root / device_id
+            if not ours and not cfg.sync.unmount_foreign:
+                return  # another program's mount: only when the device allows it
+            try:
+                await mnt.unmount(m, force_reused=True)
+            except mnt.BlockdevError as e:
+                log.warning("%s: could not unmount it to stay ready: %s", device_id, e)
+                self._schedule_ready_unmount(device_id)  # busy (a long read): try again later
+                return
+            self._mounts.pop(device_id, None)
+        log.info("%s: unmounted, ready for the next sync: it can be unplugged", device_id)
+        self.ctx.bus.publish("device.unmounted", device_id=device_id, ready=True)
 
     def _mount_check(self, cfg: DeviceConfig) -> Callable[[], Awaitable[None]] | None:
         """Raises DeviceLostError once the mount the sync started on is gone: from then on
@@ -1708,12 +1822,38 @@ class SyncService:
                 raise DeviceLostError(
                     f"device {cfg.name} was unmounted during the sync ({m.dev_path} at {m.path})"
                 )
+            if (msg := await self._second_mount(cfg, m)) is not None:
+                raise DeviceLostError(msg)
 
         return check
+
+    async def _second_mount(self, cfg: DeviceConfig, m: mnt.Mounted) -> str | None:
+        """Another mount of the device appeared next to the one SyncMusic writes through (a host automounter
+        that mounted it after us): two writers damage a FAT volume, so writing stops and the device shows
+        the error until that mount is gone."""
+        others = [
+            e.path
+            for e in await asyncio.to_thread(mnt.mounts_of, m.dev_path)
+            if e.path != str(m.path)
+        ]
+        if not others:
+            if "mounted a second time" in self._errors.get(cfg.id, ""):
+                self._errors.pop(cfg.id, None)  # that mount is gone again
+            return None
+        msg = (
+            f"{cfg.name} was mounted a second time by another program at {others[0]} while SyncMusic "
+            f"uses {m.path}: writing stopped. Unmount the other mount, then sync again"
+        )
+        log.error("%s", msg)
+        self._errors[cfg.id] = msg
+        return msg
 
     def _shared(self, m: mnt.Mounted) -> str | None:
         """Another device whose cached mount is the same mountpoint as `m`."""
         return next((d for d, o in self._mounts.items() if o.path == m.path), None)
+
+    READY_IDLE_S = 20.0  # stay ready: how long an idle device stays mounted
+    READY_BUSY_POLL_S = 2.0
 
     async def _unmount(self, device_id: str) -> None:
         m = self._mounts.pop(device_id, None)
@@ -2099,7 +2239,7 @@ class SyncService:
     async def _snapshots(self, cfg: DeviceConfig) -> dict[str, LibrarySnapshot]:
         libs = await self.libraries_of(cfg)
         if not libs:
-            raise SyncError(f"{cfg.name} has no templates that pull from a library", "invalid")
+            raise SyncError(f"{cfg.name} has no templates that pull from a library", "no_templates")
         return await self.library_snapshots(libs, cfg)
 
     async def library_snapshots(
@@ -2430,7 +2570,9 @@ class SyncService:
         planned = pending.needed if pending else None
         capacity, free = await device.capacity(), await device.free_space()
         unknown = capacity >= UNKNOWN_SPACE
-        manifest = await self._read_manifest(await self.config(device_id), device)
+        manifest, damaged = await self._manifest_for_display(
+            device_id, self._read_manifest(await self.config(device_id), device)
+        )
         by_kind = {"music": 0, "audiobook": 0, "podcast": 0, "video": 0, "others": 0, "other": 0}
         for e in manifest.items.values() if manifest else ():
             # items another installation keeps on this device get a segment of their own
@@ -2460,6 +2602,8 @@ class SyncService:
             "capacity": None if unknown else capacity,
             "free": None if unknown else free,
             "unknown": unknown,
+            # both manifest copies unreadable: no per-kind split until the rebuild
+            "manifest_damaged": damaged,
             "used": used,
             "by_kind": by_kind,
             "planned": planned,
@@ -3232,6 +3376,11 @@ class SyncService:
         wanted = cfg.sync.eject_after == "any" or (cfg.sync.eject_after == "full" and not update)
         if not wanted or (device.network and not device.usb_mtp) or cfg.mount_path:
             return
+        if self._foreign_mount(cfg.id) and not cfg.sync.unmount_foreign:
+            report.warnings.append(
+                f"{cfg.name} was not ejected: another program mounted it; eject it from the device page"
+            )
+            return
         if report.status != "succeeded":
             report.warnings.append(
                 f"{cfg.name} was not ejected: the sync did not finish without problems"
@@ -3260,7 +3409,17 @@ class SyncService:
                 type=cfg.type,
                 notice=self._player_notice.get(device_id),
             )
-        except SyncError as e:
+        except mnt.BlockdevError as e:
+            if "not mounted" in str(
+                e
+            ):  # the host OS let go of its own mount meanwhile: nothing to undo
+                log.info(
+                    "%s: not ejected after the sync: it is no longer mounted (%s)", device_id, e
+                )
+                return
+            log.warning("%s: eject after the sync failed: %s", device_id, e)
+            self.ctx.bus.publish("device.eject_failed", device_id=device_id, error=str(e))
+        except (SyncError, GuardError, OSError) as e:
             log.warning("%s: eject after the sync failed: %s", device_id, e)
             self.ctx.bus.publish("device.eject_failed", device_id=device_id, error=str(e))
 
@@ -3290,6 +3449,16 @@ class SyncService:
         else:  # a directory or a mount someone else owns: flush, then read back what we can
             await asyncio.to_thread(mnt.syncfs, device.mount)
         manifest = await self._read_manifest(cfg, device)
+        root = getattr(device, "mount", None)
+        # FTP/SMB/MTP keep the manifest remote: only a local mount can be checked for the file itself
+        local_manifest = type(device).write_manifest is Device.write_manifest
+        if (
+            manifest is not None
+            and root is not None
+            and local_manifest
+            and not (root / manifest_io.MANIFEST_PATH).is_file()
+        ):
+            manifest = None  # only the backup copy came back: the manifest itself was not written
         if manifest is None:
             missing, total = {"(manifest)"}, 0
         else:
@@ -3523,13 +3692,27 @@ class SyncService:
                 self._device_items[cfg.id] = keys
         return manifest
 
+    async def _manifest_for_display(
+        self, device_id: str, read: Awaitable[Manifest | None]
+    ) -> tuple[Manifest | None, bool]:
+        """A read-only view (capacity, home) that still works when both manifest copies are unreadable: no
+        manifest and `True`; the device is marked damaged so its page offers the rebuild. A damaged filesystem
+        and a manifest from a newer version still raise."""
+        try:
+            return await read, False
+        except manifest_io.ManifestError as e:
+            if fs_damage(e) is not None or isinstance(e, manifest_io.ManifestTooNew):
+                raise
+            self.mark_manifest_damaged(device_id, e)
+            return None, True
+
     async def device_items(self) -> dict[str, set[str]]:
         """Per registered device the item keys it held when its manifest was last read."""
         return await self.store.device_items()
 
     async def _read_contents(self, device_id: str) -> list[dict[str, Any]]:
         cfg = await self.config(device_id)
-        device = await self.open_device(device_id)
+        device = await self.open_device(device_id, read_only=True)
         manifest = await self._read_manifest(cfg, device)
         found = await device.read_contents()
         snaps = await self._readable_snapshots(cfg, manifest) if manifest is not None else {}
@@ -3544,7 +3727,7 @@ class SyncService:
         """The orphans of a device from its manifest and the library snapshots alone: no walk over
         the device's files, so it answers at once even on a large card (same rule as `contents`)."""
         cfg = await self.config(device_id)
-        device = await self.open_device(device_id)
+        device = await self.open_device(device_id, read_only=True)
         manifest = await self._read_manifest(cfg, device)
         if manifest is None:
             return []
@@ -3554,7 +3737,7 @@ class SyncService:
     async def content_file(self, device_id: str, key: str) -> Path:
         """The on-device file of a Player contents row (a manifest key, or `device:<device_ref>` for an item another tool put there) for playback; never a path outside the device."""
         cfg = await self.config(device_id)
-        device = await self.open_device(device_id)
+        device = await self.open_device(device_id, read_only=True)
         rel: str | None = None
         cached = self._contents_cache.get(device_id)
         if cached is not None and cached[0] == await self._contents_stamp(device_id):
@@ -3870,6 +4053,8 @@ class SyncService:
         cfg = await self.store.device(cd.device_id)
         if cfg is None:
             return
+        if not startup:
+            self._appeared[cfg.id] = time.monotonic()
         # the clock first, before anything mounts it; open_device waits for it
         if not cfg.mount_path and cd.device_id not in self._mounts:
             probe = registry.device_class(cfg.type)(
@@ -4206,9 +4391,49 @@ class SyncService:
             )
         return True
 
+    def mark_manifest_damaged(self, device_id: str | None, e: BaseException) -> None:
+        """Reading the manifest (and its backup) of `device_id` failed: the device page offers a rebuild."""
+        if device_id is None or isinstance(e, manifest_io.ManifestTooNew):
+            return
+        if device_id not in self._manifest_bad:
+            self._manifest_bad[device_id] = str(e)
+            self.ctx.bus.publish("device.updated", device_id=device_id)
+
+    async def rebuild_manifest(self, device_id: str) -> dict[str, Any]:
+        """Both manifest copies are unreadable: move them aside, so the next sync is a first sync that adopts the
+        files matching the library (path and tags) instead of wiping the device."""
+        cfg = await self.config(device_id)
+        if self._network(cfg) or self._usb_mtp(cfg):
+            raise SyncError(
+                f"{cfg.name}: rebuilding the manifest needs a mounted device", "invalid"
+            )
+        if self.ctx.jobs.device_busy(cfg.id):
+            raise SyncError(f"{cfg.name} is busy", "busy")
+        device = await self.open_device(cfg.id)
+        try:
+            await device.read_manifest()
+        except manifest_io.ManifestTooNew:
+            raise
+        except manifest_io.ManifestError:
+            pass
+        else:
+            self._manifest_bad.pop(cfg.id, None)
+            raise SyncError(f"{cfg.name}: the manifest is readable, nothing to rebuild", "invalid")
+        moved = await device.set_aside_manifest()
+        log.warning(
+            "%s: unreadable manifest moved aside (%s); the next sync adopts the files",
+            cfg.id,
+            moved,
+        )
+        self._manifest_bad.pop(cfg.id, None)
+        self.drop_plans(cfg.id)
+        self.ctx.bus.publish("device.updated", device_id=cfg.id)
+        return {"moved": moved}
+
     def job_failed(self, info: JobInfo, e: BaseException) -> None:
         """Every failed job (JobRunner.on_failed): a device job that hit a damaged file system marks it."""
-        self.mark_damaged(info.device_id, e)
+        if not self.mark_damaged(info.device_id, e) and isinstance(e, manifest_io.ManifestError):
+            self.mark_manifest_damaged(info.device_id, e)
 
     def _refuse_damaged(self, cfg: DeviceConfig) -> None:
         if cfg.id in self._damaged:
@@ -4260,6 +4485,7 @@ class SyncService:
         await self.detector.disk_removed(name)
         if cd is not None and cd.device_id is not None:
             self._ejected.discard(cd.device_id)
+            self._appeared.pop(cd.device_id, None)
             self._clock_set.pop(cd.device_id, None)
             task = self._clock_tasks.pop(cd.device_id, None)
             if task is not None and not task.done():
@@ -4269,6 +4495,7 @@ class SyncService:
                 foreign.cancel()
             self._errors.pop(cd.device_id, None)
             self._damaged.pop(cd.device_id, None)  # re-plugged: try again
+            self._manifest_bad.pop(cd.device_id, None)
             self._waiting.pop(cd.device_id, None)
             self.drop_plans(cd.device_id)
             await self._close_mtp(cd.device_id)

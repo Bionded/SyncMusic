@@ -157,6 +157,18 @@ def test_audiobook_positions_merge_keeps_every_other_line():
     assert lines[3:] == old.splitlines()[2:]
 
 
+def test_a_finished_earlier_chapter_does_not_move_the_book_back():
+    old = "P\tBook\t002%20-%20b.mp3\t30\t40\t0\t100\t0\t0\n"
+    new, _ = cf.merge_audiobook_positions(
+        old, {"Audiobooks/Book/001 - a.mp3": cf.Position(40.0, True)}, now=500
+    )
+    assert new == old
+    new, _ = cf.merge_audiobook_positions(  # the last chapter finished: the whole book is
+        old, {"Audiobooks/Book/002 - b.mp3": cf.Position(40.0, True)}, now=500
+    )
+    assert new.split("\t")[3:6] == ["40", "40", "1"]
+
+
 def test_audiobook_positions_round_trip(tmp_path):
     cf.write_positions(tmp_path, {"Audiobooks/Книга/01 Розділ.mp3": cf.Position(321.0)}, now=1000)
     got = cf.audiobook_positions(tmp_path)

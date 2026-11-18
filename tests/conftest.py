@@ -206,3 +206,11 @@ def services(compose_stack):
     saved = navidrome_db.save(user)
     yield compose_stack
     navidrome_db.restore(saved, user)
+
+
+@pytest.fixture(autouse=True)
+def _pairing_attempts_unthrottled(monkeypatch):
+    """Tests pair many clients from one address at once; the per-second limit has its own test."""
+    from syncmusic.infra import clients
+
+    monkeypatch.setattr(clients, "ATTEMPTS_PER_SECOND", 10_000)

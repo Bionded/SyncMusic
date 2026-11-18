@@ -90,6 +90,8 @@ def test_the_apps_own_commands_pass(helper):
     assert ok(helper, ["dmesg"])
     assert ok(helper, ["fsck.vfat", "-a", "/dev/sdz2"])  # repair
     assert ok(helper, ["fsck.exfat", "-y", "/dev/sdz1"])
+    assert ok(helper, ["fsck.exfat", "-n", "/dev/sdz1"])  # read-only check after an eject
+    assert ok(helper, ["fsck.vfat", "-n", "/dev/sdz2"])
     assert ("/dev/sdz2", "repair") in helper.guard.calls
     assert ("/dev/sdz1", "mount") in helper.guard.calls and (
         "/dev/sdz",

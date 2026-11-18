@@ -157,7 +157,9 @@ async def test_sync_service_drops_mount_when_disk_removed(monkeypatch, tmp_path)
         _mounts={"flash": ours},
         _errors={"flash": "dirty"},
         _damaged={},
+        _manifest_bad={},
         _ejected={"flash"},
+        _appeared={"flash": 1.0},
         _waiting={"flash": {"reason": "on_connect: ask", "plan_id": None}},
         _clock_set={"flash": 1.0},
         _clock_tasks={},
@@ -185,7 +187,7 @@ def test_mount_table_keeps_non_ascii_paths(monkeypatch):
 
     monkeypatch.setattr(mnt, "Path", lambda _: Mountinfo())
     [entry] = mnt.mount_table()
-    assert entry == mnt.MountEntry("8:18", "/mnt/домашній-mini два", "/dev/sdb2")
+    assert entry == mnt.MountEntry("8:18", "/mnt/домашній-mini два", "/dev/sdb2", "vfat")
 
 
 def test_is_live_with_non_ascii_and_escaped_mount_point(monkeypatch, tmp_path):

@@ -43,6 +43,8 @@ const STRINGS = {
   "set.cl_open_device": "Open device",
   "set.cl_need_allow": "Allow Wi-Fi clients first.",
   "set.cl_none": "No clients are paired yet.",
+  "set.cl_req": "Allow pairing requests",
+  "set.cl_req_sub": "A player can ask to connect without a code; you approve it on the Devices page. Off: clients need a pairing code.",
   "set.cl_seen": "last seen {when}",
   "set.cl_never": "not seen yet",
   "set.cl_revoked": "Revoked",
@@ -84,16 +86,25 @@ const STRINGS = {
   "set.acc_revoke": "Revoke",
   "set.acc_revoke_title": "Revoke token “{name}”?",
   "set.acc_revoke_text": "Scripts using it get no access any more.",
-  "set.sec.sync": "Sync",
-  "set.sec.storage": "Storage",
-  "set.sec.system": "System",
+  "set.sec.basics": "General",
+  "set.sec.sync": "New devices",
+  "set.sec.nd_when": "When to sync",
+  "set.sec.nd_after": "After a sync",
+  "set.sec.nd_write": "Writing",
+  "set.sec.disks": "Disks & mounting",
+  "set.disks_sub": "How SyncMusic mounts and writes to every device.",
+  "set.sec.tools": "Tools",
+  "set.tools_sub": "Programs SyncMusic runs for conversions and for players.",
+  "set.sec.storage": "Storage & backups",
+  "set.storage_sub": "The cache, history, backups and what SyncMusic keeps on this computer's disk.",
+  "set.maint_sub": "Logs, the system check, moving settings between installs and the factory reset.",
+  "set.more": "More options",
   "set.sec.cache": "Cache & space",
   "set.search": "Search settings",
   "set.search_ph": "Search settings…",
   "set.search_none": "No setting matches.",
   "set.perdev": "This is set per device:",
   "set.perdev_open": "Open the settings of {name}",
-  "set.system_sub": "Appearance, logs, the system check, updates, moving settings between installs and the factory reset.",
   "set.when_sub": "Never: you start full syncs yourself. Ask me: a notification asks first. Automatically: a full sync starts when it is plugged in. Default: Never.",
   "set.verify_sub": "Reads written files back and compares them. Every file is safest, Sample 10 % is faster on big syncs. Default: Every file.",
   "set.eject_sub": "Unmounts the device when the sync is done, so you can unplug it. Default: No.",
@@ -121,6 +132,10 @@ const STRINGS = {
   "set.eject.off": "No",
   "set.eject.full": "Full syncs",
   "set.eject.any": "All syncs",
+  "set.automount": "Wait for automount",
+  "set.automount_sub": "Before mounting a disk that was just plugged in, give the system's own automounter (Umbrel, a desktop) this long to mount it first, so SyncMusic uses that mount instead of making a second one. Default: 5.",
+  "set.ready": "Stay ready between syncs",
+  "set.ready_sub": "New disk devices are unmounted whenever no sync uses them, so they can be unplugged at any time. Default: on.",
   "set.verify.all": "Every file",
   "set.verify.sample": "Sample 10 %",
   "set.verify.off": "No",
@@ -151,7 +166,7 @@ const STRINGS = {
   "set.cache_line": "{used} of {max}{inuse} · disk {pct} % full",
   "set.cache_in_use": " (in use by a sync)",
   "set.cache_label": "Media cache: {used} of {max}",
-  "set.sec.res": "Storage & resources",
+  "set.sec.res": "Disk & memory",
   "set.res_disk": "On disk",
   "set.res_total": "{size} in total",
   "set.res_fs": "{path}: {free} free of {total}",
@@ -208,6 +223,14 @@ const STRINGS = {
   "set.sdtool_found": "Found compas-sdtool {version} ({build}) · library format {format}",
   "set.sdtool_missing": "Not found. Without it the player indexes new music itself after unplugging.",
   "set.sdtool_check": "Check tool",
+  "set.compas_app": "Compás app updates",
+  "set.compas_app_sub": "Paired HiBy R1 players with the SyncMusic app update themselves from the newest app this server holds (next to SyncMusic or in the data folder's tools/).",
+  "set.compas_app_have": "Holding syncmusic-compas {version}",
+  "set.compas_app_none": "No app here yet: paired players keep the version they have.",
+  "set.compas_app_download": "Download newest",
+  "set.compas_app_dl_title": "Download the Compás app?",
+  "set.compas_app_dl_text": "SyncMusic downloads the newest syncmusic-compas zip from its own release on GitHub, checks its checksum and keeps it in the data folder. Paired players are offered it on their next connection.",
+  "set.compas_app_done": "Compás app {version} downloaded",
   "set.ffmpeg_sub": "Empty: the ffmpeg on the PATH. Its ffprobe must be next to it.",
   "set.ffmpeg_check": "Check",
   "set.ffmpeg_found": "Found ffmpeg {version} · encoders:",
@@ -412,7 +435,7 @@ addStrings(STRINGS);
 export const settingsIndex = () => Object.keys(STRINGS).filter((k) => `${k}_sub` in STRINGS)
   .map((k) => ({ key: k, label: t(k), sub: t(`${k}_sub`) }));
 
-const SECTIONS = ["sync", "libs", "storage", "notif", "system", "about"]; // six groups
+const SECTIONS = ["basics", "sync", "disks", "libs", "clients", "tools", "storage", "notif", "updates", "maint", "about"];
 const IO_BADGE = { add: "ok", replace: "warn", skip: "neutral" };
 const LOG_LEVELS = ["", "INFO", "DEBUG", "WARNING"];
 const UPDATE_CHANNELS = ["stable", "beta"];
@@ -428,6 +451,7 @@ const VERIFY = ["all", "sample", "off"];
 const EJECT = ["off", "full", "any"];
 // number fields: [setting, label key, integer, unit]
 const NUMBERS = {
+  automount_wait_s: ["set.automount", false],
   write_limit_mb_s: ["set.limit", false],
   max_device_syncs: ["set.syncs", true],
   cache_max_gb: ["set.cache_max", false],
@@ -531,6 +555,14 @@ function resourcesBox(r) {
       ${r.caches.map((c) => html`<tr><td>${t("set.res_caches")}: ${c.label}</td><td class="mono" data-res-cache="${c.id}">${t("set.res_cache_line", { entries: c.entries, items: c.items })}</td></tr>`)}</tbody></table>
     <div class="ds-row"><span class="ds-label">${t("set.res_free")}<small>${t("set.res_free_sub")}</small></span>
       <button type="button" class="btn small" data-action="freeMemory" ${r.busy ? "disabled" : ""}>${t("set.res_free")}</button></div></div>`;
+}
+
+// "Holding syncmusic-compas 1.3.0" or none, with the download button
+function compasAppLine(f) {
+  const have = f?.version;
+  return html`<div class="set-ff" data-compas-app-state="${have ? "ok" : "missing"}"><span class="set-ff-head">${icon(have ? "ccheck" : "info", { size: 16 })}
+    <span>${have ? t("set.compas_app_have", { version: have }) : t("set.compas_app_none")}</span></span>
+    <button type="button" class="btn small" data-action="downloadCompasApp">${t("set.compas_app_download")}</button></div>`;
 }
 
 // "Found compas-sdtool 1.1.0 (tools-…+player-…) · library format 8", or why it is not usable
@@ -646,6 +678,8 @@ function clientsBox(c) {
       <span class="ds-label">${t("set.cl_allow")}<small>${t("set.cl_allow_sub")}</small></span></label>
     <label class="ds-check" data-set-row><input type="checkbox" id="cl-mdns" data-change="clientsMdns" ${c.mdns ? "checked" : ""} ${c.allowed ? "" : "disabled"}>
       <span class="ds-label">${t("set.cl_mdns")}<small>${t("set.cl_mdns_sub")}</small></span></label>
+    <label class="ds-check" data-set-row><input type="checkbox" id="cl-requests" data-change="clientsRequests" ${c.requests_on ? "checked" : ""} ${c.allowed ? "" : "disabled"}>
+      <span class="ds-label">${t("set.cl_req")}<small>${t("set.cl_req_sub")}</small></span></label>
     <div class="ds-row" data-set-row><span class="ds-label">${t("set.cl_add")}<small>${c.allowed ? t("set.cl_add_text") : t("set.cl_need_allow")}</small></span>
       <button type="button" class="btn small primary" data-action="clientAdd" ${c.allowed ? "" : "disabled"}>${icon("plus", { size: 16 })}${t("set.cl_add")}</button></div>
     <div class="set-io-list" data-client-list>${list.length ? list.map((x) => html`<div class="set-io-row" data-client="${x.device_id}">
@@ -659,7 +693,7 @@ function clientsBox(c) {
 
 async function clientsState() {
   const [c, v] = await Promise.all([get("/clients").catch(() => null), get("/settings").catch(() => null)]);
-  return c && { ...c, mdns: v?.clients_mdns };
+  return c && { ...c, mdns: v?.clients_mdns, requests_on: v?.client_pair_requests };
 }
 
 async function redrawClients(root) {
@@ -695,10 +729,11 @@ function general(v, version) {
 export const nav = "settings";
 
 export async function render(ctx) {
-  const [meta, v, version, cache, ffinfo, upd, dbb, access, store, res, sdinfo] = await Promise.all([get("/settings/schema"), get("/settings"), get("/version"),
+  const [meta, v, version, cache, ffinfo, upd, dbb, access, store, res, sdinfo, appinfo] = await Promise.all([get("/settings/schema"), get("/settings"), get("/version"),
     get("/settings/cache").catch(() => null), get("/settings/ffmpeg").catch(() => null), get("/updates").catch(() => null),
     get("/db-backups").catch(() => null), get("/auth").catch(() => null), get("/system/storage").catch(() => null),
-    get("/system/resources").catch(() => null), get("/settings/compas-sdtool").catch(() => null)]);
+    get("/system/resources").catch(() => null), get("/settings/compas-sdtool").catch(() => null),
+    get("/settings/compas-app").catch(() => null)]);
   const clients = await clientsState();
   ctx.state.devices = (await get("/devices").catch(() => null))?.registered || [];
   ctx.state.values = v;
@@ -715,21 +750,48 @@ export async function render(ctx) {
         <div class="set-search" data-nosave><input type="search" class="set-search-in" data-set-search placeholder="${t("set.search_ph")}"
           aria-label="${t("set.search")}" autocomplete="off" spellcheck="false"><p class="muted" data-set-none hidden>${t("set.search_none")}</p>
           <div class="set-perdev" data-set-perdev hidden></div></div>
+        ${section("basics", html`
+          ${general(v, version)}
+          ${sub("access", accessBox(access))}`)}
         ${section("sync", html`
+          ${sub("nd_when", html`
           <label class="ds-check" data-set-row><input type="checkbox" id="set-default_update_sync" ${v.default_update_sync ? "checked" : ""}>
             <span class="ds-label">${t("set.upd")}<small>${t("set.upd_sub")}</small></span></label>
           ${row(t("set.upd_every"), t("set.upd_every_sub"), num("default_update_every_min", v.default_update_every_min, { unit: t("set.minutes"), placeholder: t("set.upd_every_ph") }))}
-          ${row(t("set.upd_gap"), t("set.upd_gap_sub"), num("update_change_gap_min", v.update_change_gap_min, { unit: t("set.minutes") }))}
           ${row(t("set.when"), t("set.when_sub"), radios("setWhen", WHEN, v.default_on_connect, t("set.when"), (x) => t(`set.when.${x}`)))}
-          <div data-set-row>${windowsEditor("default", v.default_sync_windows || [])}</div>
+          <div data-set-row>${windowsEditor("default", v.default_sync_windows || [])}</div>`)}
+          ${sub("nd_after", html`
           ${row(t("set.verify"), t("set.verify_sub"), radios("setVerify", VERIFY, v.default_verify, t("set.verify"), (x) => t(`set.verify.${x}`)))}
           ${row(t("set.eject"), t("set.eject_sub"), radios("setEject", EJECT, v.default_eject_after || "off", t("set.eject"), (x) => t(`set.eject.${x}`)))}
+          <label class="ds-check" data-set-row><input type="checkbox" id="set-default_stay_ready" ${v.default_stay_ready ? "checked" : ""}>
+            <span class="ds-label">${t("set.ready")}<small>${t("set.ready_sub")}</small></span></label>`)}
+          ${sub("nd_write", html`
           ${row(t("set.cache_use"), t("set.cache_use_sub"), radios("setCacheUse", CACHE_USE, v.default_no_cache ? "without" : "with", t("set.cache_use"), (x) => t(`set.cache_use.${x}`)))}
+          <details class="ds-adv" data-set-more><summary>${t("set.more")}</summary>
           ${row(t("set.nc_files"), t("set.nc_files_sub"), num("default_no_cache_files", v.default_no_cache_files))}
           ${row(t("set.nc_budget"), t("set.nc_budget_sub"), num("default_no_cache_budget_mb", v.default_no_cache_budget_mb, { unit: "MB" }))}
           ${row(t("set.nc_max"), t("set.nc_max_sub"), num("default_no_cache_file_max_mb", v.default_no_cache_file_max_mb, { unit: "MB" }))}
+          ${row(t("set.upd_gap"), t("set.upd_gap_sub"), num("update_change_gap_min", v.update_change_gap_min, { unit: t("set.minutes") }))}</details>`)}`, t("set.sync_sub"))}
+        ${section("disks", html`
+          ${row(t("set.automount"), t("set.automount_sub"), num("automount_wait_s", v.automount_wait_s, { unit: t("set.seconds") }))}
           ${row(t("set.limit"), t("set.limit_sub"), num("write_limit_mb_s", v.write_limit_mb_s, { unit: "MB/s", placeholder: t("set.limit_ph") }))}
-          ${row(t("set.syncs"), t("set.syncs_sub"), num("max_device_syncs", v.max_device_syncs, { placeholder: t("set.limit_ph") }))}
+          ${row(t("set.syncs"), t("set.syncs_sub"), num("max_device_syncs", v.max_device_syncs, { placeholder: t("set.limit_ph") }))}`, t("set.disks_sub"))}
+        ${section("libs", html`
+          ${row(t("set.refresh"), t("set.refresh_sub"), radios("setRefresh", REFRESH, v.snapshot_refresh, t("set.refresh"), (x) => t(`set.refresh.${x}`)))}
+          ${row(t("set.conc"), t("set.conc_sub"), num("concurrency", v.concurrency, { placeholder: t("set.conc_ph") }))}
+          ${row(t("set.nice"), t("set.nice_sub"), html`<select id="set-convert_nice" class="set-select" aria-label="${t("set.nice")}">${NICE.map((n) =>
+            html`<option value="${n}" ${n === v.convert_nice ? "selected" : ""}>${t(`set.nice.${n}`)}</option>`)}</select>`)}`)}
+        ${section("clients", html`${clientsBox(clients)}
+          ${row(t("set.cl_code_min"), t("set.cl_code_min_sub"), num("client_code_minutes", v.client_code_minutes, { unit: t("set.minutes") }))}
+          ${row(t("set.cl_poll"), t("set.cl_poll_sub"), num("client_poll_s", v.client_poll_s, { unit: t("set.seconds") }))}`)}
+        ${section("tools", html`
+          ${sub("conv", html`
+          <div class="field" data-set-row><label for="set-ffmpeg_path">${t("set.ffmpeg")}</label>
+            <div class="set-inline"><input id="set-ffmpeg_path" type="text" class="mono" value="${v.ffmpeg_path ?? ""}" placeholder="${ffinfo?.path || "ffmpeg"}"
+              autocomplete="off" spellcheck="false" aria-describedby="set-ffmpeg_path-h">
+              <button type="button" class="btn small" data-action="checkFfmpeg">${t("set.ffmpeg_check")}</button></div>
+            <div class="hint" id="set-ffmpeg_path-h">${t("set.ffmpeg_sub")}</div></div>
+          <div data-ffmpeg>${ffmpegLine(ffinfo)}</div>`)}
           ${sub("compas", html`
           <div class="field" data-set-row><label for="set-compas_sdtool_path">${t("set.sdtool")}</label>
             <div class="set-inline"><input id="set-compas_sdtool_path" type="text" class="mono" value="${v.compas_sdtool_path ?? ""}" placeholder="${sdinfo?.path || "compas-sdtool"}"
@@ -737,19 +799,9 @@ export async function render(ctx) {
               <button type="button" class="btn small" data-action="checkSdtool">${t("set.sdtool_check")}</button></div>
             <div class="hint" id="set-compas_sdtool_path-h">${t("set.sdtool_sub")}</div></div>
           <div data-sdtool>${sdtoolLine(sdinfo)}</div>
-          ${sdtoolCredit(sdinfo)}`)}`, t("set.sync_sub"))}
-        ${section("libs", html`
-          ${row(t("set.refresh"), t("set.refresh_sub"), radios("setRefresh", REFRESH, v.snapshot_refresh, t("set.refresh"), (x) => t(`set.refresh.${x}`)))}
-          ${sub("conv", html`
-          <div class="field" data-set-row><label for="set-ffmpeg_path">${t("set.ffmpeg")}</label>
-            <div class="set-inline"><input id="set-ffmpeg_path" type="text" class="mono" value="${v.ffmpeg_path ?? ""}" placeholder="${ffinfo?.path || "ffmpeg"}"
-              autocomplete="off" spellcheck="false" aria-describedby="set-ffmpeg_path-h">
-              <button type="button" class="btn small" data-action="checkFfmpeg">${t("set.ffmpeg_check")}</button></div>
-            <div class="hint" id="set-ffmpeg_path-h">${t("set.ffmpeg_sub")}</div></div>
-          <div data-ffmpeg>${ffmpegLine(ffinfo)}</div>
-          ${row(t("set.conc"), t("set.conc_sub"), num("concurrency", v.concurrency, { placeholder: t("set.conc_ph") }))}
-          ${row(t("set.nice"), t("set.nice_sub"), html`<select id="set-convert_nice" class="set-select" aria-label="${t("set.nice")}">${NICE.map((n) =>
-            html`<option value="${n}" ${n === v.convert_nice ? "selected" : ""}>${t(`set.nice.${n}`)}</option>`)}</select>`)}`)}`)}
+          ${sdtoolCredit(sdinfo)}
+          <div class="field"><label>${t("set.compas_app")}</label><div class="hint">${t("set.compas_app_sub")}</div></div>
+          <div data-compas-app>${compasAppLine(appinfo)}</div>`)}`, t("set.tools_sub"))}
         ${section("storage", html`
           ${sub("cache", html`${cacheBar(cache)}
           ${row(t("set.cache_max"), t("set.cache_max_sub"), num("cache_max_gb", v.cache_max_gb, { unit: "GB" }))}
@@ -775,7 +827,8 @@ export async function render(ctx) {
             <div class="hint" id="set-db_backup_dir-h">${t("set.dbb_dir_sub")}</div></div>
           <div data-nosave><div class="ds-row" data-set-row><span class="ds-label">${t("set.dbb")}<small>${t("set.dbb_sub")}</small></span>
             <button type="button" class="btn small" data-action="dbBackupNow">${t("set.dbb_now")}</button></div>
-          <div data-db-backups>${dbBackups(dbb)}</div></div>`)}`)}
+          <div data-db-backups>${dbBackups(dbb)}</div></div>`)}
+          ${sub("res", html`<div data-nosave>${storageBox(store)}${resourcesBox(res)}</div>`)}`, t("set.storage_sub"))}
         ${section("notif", html`${matrix(v)}
           ${row(t("set.notif_keep"), t("set.notif_keep_sub"), html`<select id="set-notification_days" class="set-select" aria-label="${t("set.notif_keep")}">${(NOTIF_KEEP.includes(v.notification_days) ? NOTIF_KEEP : [...NOTIF_KEEP, v.notification_days]).map((d) =>
             html`<option value="${d ?? ""}" ${d === v.notification_days ? "selected" : ""}>${d == null ? t("set.notif_keep.never") : NOTIF_KEEP.includes(d) ? t(`set.notif_keep.${d}`) : `${d} ${t("set.days")}`}</option>`)}</select>`)}
@@ -787,14 +840,13 @@ export async function render(ctx) {
             <span class="ds-label">${t("set.quiet")}<small>${t("set.quiet_sub")}</small></span></label>
             <span class="ds-num"><input type="time" id="set-quiet_start" class="ds-time" value="${v.quiet_hours?.start || "23:00"}" aria-label="${t("set.quiet_from")}" ${v.quiet_hours ? "" : "disabled"}>
               ${t("set.to")} <input type="time" id="set-quiet_end" class="ds-time" value="${v.quiet_hours?.end || "07:30"}" aria-label="${t("set.quiet_to")}" ${v.quiet_hours ? "" : "disabled"}></span></div>`)}
-        ${section("system", html`
-          ${general(v, version)}
-          ${sub("access", accessBox(access))}
-          ${sub("clients", html`${clientsBox(clients)}
-          ${row(t("set.cl_code_min"), t("set.cl_code_min_sub"), num("client_code_minutes", v.client_code_minutes, { unit: t("set.minutes") }))}
-          ${row(t("set.cl_poll"), t("set.cl_poll_sub"), num("client_poll_s", v.client_poll_s, { unit: t("set.seconds") }))}`)}
-          ${sub("res", html`<div data-nosave>${storageBox(store)}${resourcesBox(res)}</div>`)}
-          ${sub("maint", html`
+        ${section("updates", html`
+          ${row(t("set.upd_channel"), t("set.upd_channel_sub"), html`<select id="set-update_channel" class="set-select" aria-label="${t("set.upd_channel")}">${UPDATE_CHANNELS.map((c) =>
+            html`<option value="${c}" ${c === v.update_channel ? "selected" : ""}>${t(`set.upd_channel.${c}`)}</option>`)}</select>`)}
+          ${upd?.installable ? row(t("set.upd_auto"), html`${t("set.upd_auto_sub")} <span data-auto-warn ${v.auto_update === "now" ? "" : "hidden"}>${t("set.upd_auto_now_warn")}</span>`, html`<select id="set-auto_update" class="set-select" aria-label="${t("set.upd_auto")}" data-change="autoUpdate">${AUTO_UPDATES.map((c) =>
+            html`<option value="${c}" ${c === v.auto_update ? "selected" : ""}>${t(`set.upd_auto.${c}`)}</option>`)}</select>`) : ""}
+          <div data-updates>${updatesBox(upd)}</div>`)}
+        ${section("maint", html`
           ${row(t("set.loglevel"), t("set.loglevel_sub"), html`<select id="set-log_level" class="set-select" aria-label="${t("set.loglevel")}">${LOG_LEVELS.map((l) =>
             html`<option value="${l}" ${l === (v.log_level || "") ? "selected" : ""}>${t(`set.loglevel.${l}`)}</option>`)}</select>`)}
           <div class="ds-row" data-set-row><span class="ds-label">${t("set.diag")}<small>${t("set.diag_sub")}</small></span>
@@ -803,13 +855,7 @@ export async function render(ctx) {
           <div class="ds-row" data-set-row><span class="ds-label">${t("set.bundle")}<small>${t("set.bundle_sub")}</small></span>
             <a class="btn small" href="/api/v1/diagnostics/bundle" download data-bundle-dl>${t("set.bundle_dl")}</a></div>
           <div class="ds-row" data-set-row><span class="ds-label">${t("set.allowlist")}<small>${t("set.allowlist_sub")}</small></span>
-            <a class="btn small" href="/api/v1/devices/allowlist.toml" download="hardware.toml" data-allowlist-dl>${t("set.allowlist_dl")}</a></div>`)}
-          ${sub("updates", html`
-          ${row(t("set.upd_channel"), t("set.upd_channel_sub"), html`<select id="set-update_channel" class="set-select" aria-label="${t("set.upd_channel")}">${UPDATE_CHANNELS.map((c) =>
-            html`<option value="${c}" ${c === v.update_channel ? "selected" : ""}>${t(`set.upd_channel.${c}`)}</option>`)}</select>`)}
-          ${upd?.installable ? row(t("set.upd_auto"), html`${t("set.upd_auto_sub")} <span data-auto-warn ${v.auto_update === "now" ? "" : "hidden"}>${t("set.upd_auto_now_warn")}</span>`, html`<select id="set-auto_update" class="set-select" aria-label="${t("set.upd_auto")}" data-change="autoUpdate">${AUTO_UPDATES.map((c) =>
-            html`<option value="${c}" ${c === v.auto_update ? "selected" : ""}>${t(`set.upd_auto.${c}`)}</option>`)}</select>`) : ""}
-          <div data-updates>${updatesBox(upd)}</div>`)}
+            <a class="btn small" href="/api/v1/devices/allowlist.toml" download="hardware.toml" data-allowlist-dl>${t("set.allowlist_dl")}</a></div>
           ${sub("io", html`<div data-nosave>
             <div class="ds-row" data-set-row><span class="ds-label">${t("set.export_d")}<small>${t("set.io_sub")}</small></span>
               <div class="toolbar"><a class="btn small" href="/api/v1/settings/export?what=templates" download data-export="templates">${t("set.export_t")}</a>
@@ -817,7 +863,7 @@ export async function render(ctx) {
               <label class="btn small set-file">${t("set.import")}<input type="file" accept="application/json,.json" data-change="importFile" aria-label="${t("set.import_file")}"></label></div></div>
             <div data-import></div></div>`)}
           <div class="set-danger" data-set-row><span class="ds-label"><b>${t("set.reset")}</b><small>${t("set.reset_sub")}</small></span>
-            <button type="button" class="btn danger" data-action="factoryReset">${t("set.reset_btn")}</button></div>`, t("set.system_sub"))}
+            <button type="button" class="btn danger" data-action="factoryReset">${t("set.reset_btn")}</button></div>`, t("set.maint_sub"))}
         ${section("about", html`<table class="table" id="about"><tbody>${about.map(([k, x]) => html`<tr><td>${t(`set.${k}`)}</td><td class="mono" data-version="${k}">${x}</td></tr>`)}
             ${Object.entries(meta.paths).map(([k, x]) => html`<tr><td>${t(`set.${k}`)}</td><td class="mono" style="overflow-wrap:anywhere">${x}</td></tr>`)}</tbody></table>
           <p class="muted" style="font-size:12px;margin:0">${t("set.paths_note")}</p>
@@ -929,6 +975,7 @@ function filter(root, query) {
       s.hidden = !whole && !has(s.querySelector("h3")) && !s.querySelector("[data-set-row]:not([hidden])");
       if (!s.hidden && !whole && has(s.querySelector("h3"))) for (const r of s.querySelectorAll("[data-set-row]")) r.hidden = false;
     }
+    for (const d of sec.querySelectorAll("details[data-set-more]")) if (words.length && d.querySelector("[data-set-row]:not([hidden])")) d.open = true;
     sec.hidden = !whole && !sec.querySelector("[data-set-row]:not([hidden])");
     any ||= !sec.hidden;
   }
@@ -963,7 +1010,7 @@ async function save(ctx, form) {
   try {
     values = Object.fromEntries(Object.keys(NUMBERS).map((k) => [k, number(form, k)]));
   } catch (e) { toast(e.message, "error"); return false; }
-  for (const k of ["cache_max_gb", "default_no_cache_files", "default_no_cache_budget_mb", "default_no_cache_file_max_mb", "update_change_gap_min", "db_backup_keep", "client_code_minutes", "client_poll_s"]) {
+  for (const k of ["automount_wait_s", "cache_max_gb", "default_no_cache_files", "default_no_cache_budget_mb", "default_no_cache_file_max_mb", "update_change_gap_min", "db_backup_keep", "client_code_minutes", "client_poll_s"]) {
     if (values[k] === null) delete values[k]; // required: an emptied field keeps the stored value
   }
   ctx.state.values = await patch("/settings", {
@@ -974,6 +1021,7 @@ async function save(ctx, form) {
     default_sync_windows: readWindows(form, "default"),
     default_verify: checked("setVerify"),
     default_eject_after: checked("setEject"),
+    default_stay_ready: form.querySelector("#set-default_stay_ready").checked,
     default_no_cache: checked("setCacheUse") === "without",
     snapshot_refresh: checked("setRefresh"),
     instance_name: form.querySelector("#set-instance_name").value.trim(),
@@ -1014,6 +1062,9 @@ export const actions = {
   },
   async clientsMdns(el) {
     await patch("/settings", { clients_mdns: el.checked });
+  },
+  async clientsRequests(el) {
+    await patch("/settings", { client_pair_requests: el.checked });
   },
   async clientAdd(el) {
     const root = el.closest("#content");
@@ -1182,6 +1233,22 @@ export const actions = {
       if (f) el.closest("form").querySelector("[data-sdtool]").innerHTML = String(sdtoolLine(f));
     } finally { el.disabled = false; }
   },
+  async downloadCompasApp(el) {
+    if (!await confirm({ title: t("set.compas_app_dl_title"), message: t("set.compas_app_dl_text"), ok: t("set.compas_app_download") })) return;
+    el.disabled = true;
+    try {
+      let job = await post("/settings/compas-app/download", {});
+      for (let i = 0; i < 600 && !job.finished_at; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        job = await get(`/jobs/${encodeURIComponent(job.id)}`);
+      }
+      if (job.status !== "succeeded") throw new Error(job.error || job.status);
+      toast(t("set.compas_app_done", { version: job.result?.version || "" }), "ok");
+      el.closest("form").querySelector("[data-compas-app]").innerHTML = String(compasAppLine(await get("/settings/compas-app")));
+    } catch (e) {
+      toast(e.message, "error");
+    } finally { el.disabled = false; }
+  },
   async runDiag(el) {
     el.disabled = true;
     try {
@@ -1333,4 +1400,7 @@ export const actions = {
   },
 };
 
-export function onEvent() {} // a form being edited is never redrawn
+// a form being edited is never redrawn; only the clients box follows new pairings
+export function onEvent(ev, ctx, root) {
+  if (/^client\.(pair_request|paired)$/.test(ev.type)) redrawClients(root);
+}

@@ -10,7 +10,11 @@ read as "fewer items", which would turn managed files into unknown ones.
 Appended tail: a later commit that changes only items (checkpoints, update syncs) appends an `append` marker line
 and then `item` lines (the last line for a key wins) and `delete` lines (`lib` + `item_id`) instead of rewriting the
 whole file. A torn last line after an `append` marker is dropped (the commit it belonged to did not finish); before
-the marker the rule above holds. The file is compacted (rewritten in full) when the tail grows past a quarter of the
+the marker the rule above holds.
+
+Backup: every write is repeated into `manifest.jsonl.bak` (the same bytes, after the manifest is on disk). When the
+manifest does not parse (damaged file system, torn write), `read` falls back to the backup with a warning; the next
+write rewrites the manifest in full. The file is compacted (rewritten in full) when the tail grows past a quarter of the
 items, when the header or the playlists change, and after a torn tail.
 
 The inflight list `/.syncmusic/inflight` holds relative paths written during a sync but not yet committed;
@@ -53,6 +57,8 @@ log = logging.getLogger(__name__)
 STATE_DIR = Path(".syncmusic")
 MANIFEST_PATH = STATE_DIR / "manifest.jsonl"
 INFLIGHT_PATH = STATE_DIR / "inflight"
+# a second copy of the manifest, written after it on other clusters: read when the manifest itself is damaged
+BACKUP_PATH = STATE_DIR / "manifest.jsonl.bak"
 
 
 class ManifestError(Exception):
@@ -464,7 +470,37 @@ def cached_counts() -> tuple[int, int]:
 
 
 def read(root: Path, *, allow_newer: bool = False) -> Manifest | None:
-    """The manifest under the device root, None if there is none (first sync / foreign device)."""
+    """The manifest under the device root, None if there is none (first sync / foreign device). A damaged
+    manifest falls back to its backup copy; ManifestError when both are unreadable."""
+    try:
+        main = _read_main(root, allow_newer=allow_newer)
+    except ManifestError as e:
+        backup = _read_backup(root, allow_newer=allow_newer)
+        if backup is None:
+            raise
+        log.warning("%s: %s; using the backup copy %s", root, e, BACKUP_PATH)
+        return backup
+    if main is None and (root / BACKUP_PATH).is_file():
+        backup = _read_backup(root, allow_newer=allow_newer)
+        if backup is not None:
+            log.warning("%s: the manifest is missing; using the backup copy %s", root, BACKUP_PATH)
+        return backup
+    return main
+
+
+def _read_backup(root: Path, *, allow_newer: bool) -> Manifest | None:
+    try:
+        raw = (root / BACKUP_PATH).read_bytes()
+    except OSError:
+        return None
+    try:
+        return loads(raw.decode("utf-8"), allow_newer=allow_newer)
+    except (UnicodeDecodeError, ManifestError) as e:
+        log.warning("%s: the manifest backup is damaged too: %s", root, e)
+        return None
+
+
+def _read_main(root: Path, *, allow_newer: bool) -> Manifest | None:
     path = root / MANIFEST_PATH
     try:
         with path.open("rb") as f:
@@ -496,7 +532,11 @@ def read_header(root: Path) -> ManifestHeader | None:
         with path.open("rb") as f:
             first = f.readline()
     except FileNotFoundError:
-        return None
+        try:
+            with (root / BACKUP_PATH).open("rb") as f:
+                first = f.readline()
+        except OSError:
+            return None
     try:
         row = json.loads(first.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -595,6 +635,7 @@ def write(root: Path, manifest: Manifest, *, compact: bool = False) -> None:
                 os.fsync(f.fileno())
             with path.open("rb") as f:
                 _remember(root, _key(f), manifest, base[1] + len(lines))
+            _mirror(root)
             return
     try:
         old = path.read_bytes()
@@ -606,14 +647,37 @@ def write(root: Path, manifest: Manifest, *, compact: bool = False) -> None:
     atomic_write(path, dumps(manifest).encode("utf-8"))
     with contextlib.suppress(OSError), path.open("rb") as f:
         _remember(root, _key(f), manifest, 0)
+    _mirror(root)
+
+
+def _mirror(root: Path) -> None:
+    """Copy the manifest as it is on disk now to the backup (best effort: a failed backup never fails a sync)."""
+    try:
+        atomic_write(root / BACKUP_PATH, (root / MANIFEST_PATH).read_bytes())
+    except OSError as e:
+        log.warning("%s: could not write the manifest backup: %s", root, e)
 
 
 def delete(root: Path) -> None:
     """Remove the manifest (and the state dir when nothing else is in it): the device is unmanaged again."""
     forget(root)
     (root / MANIFEST_PATH).unlink(missing_ok=True)
+    (root / BACKUP_PATH).unlink(missing_ok=True)
     with contextlib.suppress(OSError):  # not empty or not there
         (root / STATE_DIR).rmdir()
+
+
+def set_aside(root: Path) -> list[str]:
+    """Move an unreadable manifest and its backup aside (`*.damaged`, an older one is replaced): the device reads
+    as never synced, so the next sync is a first sync that can adopt the files on it. The names moved."""
+    forget(root)
+    moved = []
+    for rel in (MANIFEST_PATH, BACKUP_PATH):
+        path = root / rel
+        if path.is_file():
+            path.replace(path.with_name(path.name + ".damaged"))
+            moved.append(str(rel))
+    return moved
 
 
 # --- inflight list ---------------------------------------------------------------------------

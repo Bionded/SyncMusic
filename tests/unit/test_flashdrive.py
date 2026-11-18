@@ -517,3 +517,22 @@ async def test_format_without_serial_keeps_the_removable_check(tmp_path, monkeyp
     dev.block_path = "/dev/sda"
     with pytest.raises(GuardError, match="not removable"):
         await dev.format("NEW")
+
+
+def test_fuseblk_mount_reports_the_disk_file_system(tmp_path, monkeypatch):
+    """a disk the host OS mounted with ntfs-3g shows as 'fuseblk': the type on the disk is used instead,
+    so its path rules do not flip between the first sync and the later ones."""
+    import syncmusic.devices._filedevice as fd
+
+    mounts = tmp_path / "mounts"
+    mounts.write_text(f"/dev/sdz1 {tmp_path} fuseblk rw 0 0\n")
+    real = fd.Path
+
+    def fake_path(p, *a):
+        return real(mounts) if str(p) == "/proc/self/mounts" else real(p, *a)
+
+    monkeypatch.setattr(fd, "Path", fake_path)
+    monkeypatch.setattr(fd, "_blkdev_fstype", lambda src: "ntfs" if src == "/dev/sdz1" else None)
+    assert fstype_of(tmp_path / "x") == "ntfs"
+    monkeypatch.setattr(fd, "_blkdev_fstype", lambda src: None)
+    assert fstype_of(tmp_path) == "fuseblk"

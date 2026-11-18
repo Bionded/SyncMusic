@@ -71,6 +71,10 @@ class BlockdevError(RuntimeError):
     """A mount/format command failed."""
 
 
+class ForeignMountError(BlockdevError):
+    """The partition is mounted by another program and reusing that mount is not allowed."""
+
+
 class UnmountableError(BlockdevError):
     """The file system does not mount: blank, unknown, corrupt or a dirty NTFS volume."""
 
@@ -219,6 +223,8 @@ class MountEntry:
     dev: str  # major:minor of the mounted filesystem
     path: str
     source: str
+    fstype: str = ""
+    ro: bool = False
 
 
 _OCTAL_ESCAPE = re.compile(r"\\([0-7]{3})")
@@ -239,9 +245,34 @@ def mount_table() -> list[MountEntry]:
         sep = parts.index("-")
         out.append(
             MountEntry(
-                parts[2], unescape_mount_field(parts[4]), unescape_mount_field(parts[sep + 2])
+                parts[2],
+                unescape_mount_field(parts[4]),
+                unescape_mount_field(parts[sep + 2]),
+                parts[sep + 1],
+                "ro" in parts[5].split(","),
             )
         )
+    return out
+
+
+def mounts_of(dev_path: str, table: list[MountEntry] | None = None) -> list[MountEntry]:
+    """Every current mount of the block device `dev_path`, matched by major:minor (device names like /dev/sdX
+    are reused by the next disk). FUSE mounts (exfat-fuse, ntfs-3g: fstype `fuseblk`) carry an anonymous
+    major:minor, so they are matched by their source node instead."""
+    try:
+        rdev = os.stat(dev_path).st_rdev
+    except OSError:
+        return []
+    majmin = f"{os.major(rdev)}:{os.minor(rdev)}"
+    real = os.path.realpath(dev_path)
+    out = []
+    for e in mount_table() if table is None else table:
+        if e.dev == majmin and not is_stale(e):
+            out.append(e)
+        elif e.fstype.startswith("fuse") and e.source.startswith("/dev/"):
+            with contextlib.suppress(OSError):
+                if os.path.realpath(e.source) == real and os.stat(e.source).st_rdev == rdev:
+                    out.append(e)
     return out
 
 
@@ -331,8 +362,11 @@ async def mount(
     *,
     read_only: bool = False,
     registered: Iterable[str] | None = None,
+    reuse: bool = True,
 ) -> Mounted:
-    """Mount `dev_path` (a partition or a whole-disk filesystem) for `device_id`, or reuse its mountpoint."""
+    """Mount `dev_path` (a partition or a whole-disk filesystem) for `device_id`, or reuse its mountpoint. Never
+    a second mount next to an existing one (two writers damage a FAT volume): `reuse=False` refuses instead,
+    except for a mount at our own mountpoint (left by an earlier run)."""
     try:
         guard.check(dev_path, "mount", registered)
     except GuardError as e:
@@ -344,9 +378,31 @@ async def mount(
         await _settle_udev()
         guard.check(dev_path, "mount", registered)
     node = _node(dev_path, await asyncio.to_thread(scan_block_devices, False))
-    if node.mountpoints:
-        log.info("%s already mounted at %s: reusing it", dev_path, node.mountpoints[0])
-        return Mounted(Path(node.mountpoints[0]), dev_path, node.fstype, owned=False)
+    # lsblk and the kernel mount table (by major:minor, incl. FUSE mounts lsblk may miss)
+    entries = await asyncio.to_thread(mounts_of, dev_path)
+    paths = list(dict.fromkeys([*node.mountpoints, *(e.path for e in entries)]))
+    own = str(mount_root / device_id)
+    if not read_only and own in paths and any(e.ro for e in entries if e.path == own):
+        # our own read-only mount (a view's, possibly left by an earlier run): mount it writable instead
+        log.info("%s: replacing the read-only mount at %s with a writable one", dev_path, own)
+        await _flush(Path(own))
+        await _umount_retrying(Path(own))
+        paths = [p for p in paths if p != own]
+    if paths:
+        first = own if own in paths else paths[0]
+        if not reuse and first != own:
+            raise ForeignMountError(
+                f"{dev_path} is mounted by another program at {first}: unmount it, "
+                "or turn on 'Use an existing mount' for this device"
+            )
+        if not read_only and any(e.ro for e in entries if e.path == first):
+            raise ForeignMountError(
+                f"{dev_path} is mounted read-only by another program at {first}: SyncMusic cannot write "
+                "through it. Unmount it, or remount it writable"
+            )
+        # the file system type comes from lsblk/blkid (the real one, also behind a fuseblk mount)
+        log.info("%s already mounted at %s: using the existing mount", dev_path, first)
+        return Mounted(Path(first), dev_path, node.fstype, owned=False)
     if not node.fstype:
         # right after a format, a partition table re-read or a SCSI command, udev may still be re-probing the
         # partition and lsblk reports no file system yet: wait for udev once and look again
@@ -385,6 +441,52 @@ async def mount(
 # fstype -> fsck command that repairs without asking; exit 0 = clean, 1 = errors were corrected
 FSCK_COMMANDS = {"vfat": ["fsck.vfat", "-a"], "exfat": ["fsck.exfat", "-y"]}
 FSCK_TIMEOUT_S = 1800.0
+# fstype -> read-only check (never changes anything); exit 0 = clean
+FSCK_CHECK_COMMANDS = {"vfat": ["fsck.vfat", "-n"], "exfat": ["fsck.exfat", "-n"]}
+CHECK_TIMEOUT_S = 300.0
+
+
+class DamagedFilesystemError(BlockdevError):
+    """The read-only check right after the unmount found errors: the volume was damaged while it was mounted."""
+
+
+async def check_clean(dev_path: str, fstype: str | None) -> None:
+    """Read-only file system check of an unmounted volume (FAT/exFAT only; others pass). Errors found right after
+    our unmount mean the damage happened while the volume was mounted (a second writer, a failing card), so the
+    sync that caused it reports it instead of the next connect. A missing tool or a timeout only logs."""
+    cmd = FSCK_CHECK_COMMANDS.get(fstype or "")
+    if cmd is None or shutil.which(cmd[0]) is None:
+        return
+    argv = privileged([*cmd, dev_path])
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), CHECK_TIMEOUT_S)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        log.warning("%s %s timed out after %.0f s", cmd[0], dev_path, CHECK_TIMEOUT_S)
+        return
+    text = "\n".join(out.decode(errors="replace").strip().splitlines()[-20:])
+    if proc.returncode == 0:
+        log.info("file system check of %s after unmount: clean", dev_path)
+        return
+    kernel = await asyncio.to_thread(_kernel_messages, dev_path)
+    log.error(
+        "file system check of %s after unmount found errors (exit %s):\n%s\nkernel: %s",
+        dev_path,
+        proc.returncode,
+        text,
+        kernel[-10:],
+    )
+    raise DamagedFilesystemError(
+        f"{dev_path}: the file system has errors right after the sync ({text.splitlines()[-1] if text else proc.returncode}). "
+        "Repair it on the device page before using the player."
+    )
 
 
 @dataclass
@@ -500,6 +602,8 @@ async def eject(guard: Guard, disk_path: str, registered: Iterable[str] | None =
         for mp in n.mountpoints:
             await _flush(mp)
     await unmount_all(disk)
+    for n in (disk, *disk.children):
+        await check_clean(n.path, n.fstype)  # raises: the disk stays on so it can be repaired
     if shutil.which("udisksctl"):
         try:
             await run_cmd(["udisksctl", "power-off", "--no-user-interaction", "-b", disk.path])

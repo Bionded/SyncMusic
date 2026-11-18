@@ -39,6 +39,9 @@ FOOTER = """
   assets carry the licence texts of Compás Tools, the player and the libraries it bundles, and the exact source
   revisions (`compas-sdtool-notices.tar.gz`, `compas-sdtool-linux-<arch>.json`). SyncMusic only runs it as a
   separate process; `scripts/build-compas-sdtool.sh` builds it from source.
+- **Inter** (SIL Open Font License 1.1, (c) 2016 The Inter Project Authors, https://github.com/rsms/inter): the
+  screen font of the SyncMusic app for Compás players, pre-rendered into `clients/compas/inter.atlas.gz` by
+  `clients/compas/fontgen/` (licence in `clients/compas/FONT-LICENSE.txt`, shipped in the app's zip).
 - **Debian packages** in the Docker image (parted, dosfstools, exfatprogs, e2fsprogs, ntfs-3g, sg3-utils, smbclient,
   …): each under its own license, see `/usr/share/doc/*/copyright` in the image.
 

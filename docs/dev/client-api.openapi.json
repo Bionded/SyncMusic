@@ -334,6 +334,24 @@
         "title": "ClientInfo",
         "type": "object"
       },
+      "DiagnosticsRequest": {
+        "properties": {
+          "log": {
+            "default": "",
+            "maxLength": 524288,
+            "title": "Log",
+            "type": "string"
+          },
+          "summary": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Summary",
+            "type": "object"
+          }
+        },
+        "title": "DiagnosticsRequest",
+        "type": "object"
+      },
       "EventsRequest": {
         "properties": {
           "events": {
@@ -462,6 +480,24 @@
         "title": "InventoryItem",
         "type": "object"
       },
+      "PairAsk": {
+        "properties": {
+          "capabilities": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Capabilities",
+            "type": "object"
+          },
+          "client": {
+            "$ref": "#/components/schemas/ClientInfo"
+          }
+        },
+        "required": [
+          "client"
+        ],
+        "title": "PairAsk",
+        "type": "object"
+      },
       "PairRequest": {
         "properties": {
           "capabilities": {
@@ -532,6 +568,23 @@
         "title": "SyncRequest",
         "type": "object"
       },
+      "TemplatesRequest": {
+        "properties": {
+          "on": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "On",
+            "type": "array"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "title": "TemplatesRequest",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -596,6 +649,155 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/client/v1/app-update": {
+      "get": {
+        "description": "A newer release of the client's own app the server holds, or `available: false`. The client installs\nthe files itself (`url` relative to the client API).",
+        "operationId": "app_update_api_client_v1_app_update_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "app",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "title": "App",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response App Update Api Client V1 App Update Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "App Update"
+      }
+    },
+    "/api/client/v1/app-update/{app_name}/{version}/{name}": {
+      "get": {
+        "operationId": "app_update_file_api_client_v1_app_update__app_name___version___name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "app_name",
+            "required": true,
+            "schema": {
+              "title": "App Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "App Update File"
+      }
+    },
+    "/api/client/v1/diagnostics": {
+      "post": {
+        "description": "The user sent the app's log and state summary from the client (kept: the latest one).",
+        "operationId": "diagnostics_api_client_v1_diagnostics_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiagnosticsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Diagnostics Api Client V1 Diagnostics Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Diagnostics"
+      }
+    },
     "/api/client/v1/events": {
       "post": {
         "description": "Listening data up: stored (deduplicated by eid), handed to the libraries shortly after or by the next sync.",
@@ -833,6 +1035,85 @@
         "summary": "Pair"
       }
     },
+    "/api/client/v1/pair-requests": {
+      "post": {
+        "description": "Registration mode: ask the user to approve this client on the server.",
+        "operationId": "pair_request_api_client_v1_pair_requests_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairAsk"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pair Request Api Client V1 Pair Requests Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pair Request"
+      }
+    },
+    "/api/client/v1/pair-requests/{request_id}": {
+      "get": {
+        "description": "202 while the user has not answered, 200 with the token once approved (handed out once).",
+        "operationId": "pair_request_state_api_client_v1_pair_requests__request_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pair Request State"
+      }
+    },
     "/api/client/v1/status": {
       "get": {
         "operationId": "status_api_client_v1_status_get",
@@ -977,6 +1258,48 @@
         "summary": "Ack"
       }
     },
+    "/api/client/v1/sync/{session_id}/confirm": {
+      "post": {
+        "description": "The user confirmed on the client a plan that waits for confirmation (device setting).",
+        "operationId": "confirm_api_client_v1_sync__session_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Confirm Api Client V1 Sync  Session Id  Confirm Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm"
+      }
+    },
     "/api/client/v1/sync/{session_id}/finish": {
       "post": {
         "operationId": "finish_api_client_v1_sync__session_id__finish_post",
@@ -1102,6 +1425,66 @@
           }
         },
         "summary": "Plan Page"
+      }
+    },
+    "/api/client/v1/templates": {
+      "get": {
+        "description": "The server's templates and which of them this client's device uses (switches only, no editing).",
+        "operationId": "templates_api_client_v1_templates_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Templates Api Client V1 Templates Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Templates"
+      },
+      "put": {
+        "description": "Turn templates on and off for this client (the ids that are on; unknown ids are refused).",
+        "operationId": "set_templates_api_client_v1_templates_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplatesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Templates Api Client V1 Templates Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Templates"
       }
     }
   }

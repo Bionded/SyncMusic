@@ -1,7 +1,7 @@
-// The Sync behaviour part of the device's Settings tab (merged with Device settings): Automatic updates (on /
-// off, how often the libraries are checked, may updates remove), Full sync when connected (Ask me / Automatically /
-// Never = on_connect ask / auto / manual), Full sync schedule and safety (nightly time, verify after writing, the
-// delete threshold) and the type's other sync settings under Advanced. One Save / Discard bar for all of it.
+// The sync settings of the device's Settings tab, as cards for its groups: When to sync (automatic updates, full
+// sync when connected, schedule), After a sync and mounting (verify, eject, stay ready, existing mounts), Safety
+// (delete threshold, removals, safety margins, device database backups), Ratings and playlists, Writing (the
+// conversion cache) and the type's other sync settings under Advanced. One Save / Discard bar for all of it.
 import { html } from "../dom.js";
 import { t, addStrings } from "../i18n.js";
 import { helpTip } from "../help.js";
@@ -36,7 +36,11 @@ addStrings({
   "ds.when.auto_text": "Apply the plan unless it hits the delete threshold.",
   "ds.when.manual": "Never",
   "ds.when.manual_text": "Only the automatic update runs. Start a full sync from here when you want.",
-  "ds.safety_title": "Full sync schedule and safety",
+  "ds.schedule_title": "Schedule",
+  "ds.after_title": "After a sync and mounting",
+  "ds.after_text": "What happens once files are written, and how the device's disk is mounted.",
+  "ds.safety_title": "Safety",
+  "ds.listen_title": "Ratings and playlists",
   "ds.nightly": "Full sync every night while connected",
   "ds.nightly_time": "Nightly sync time",
   "ds.verify": "Verify after writing",
@@ -49,6 +53,8 @@ addStrings({
   "ds.eject.off": "No",
   "ds.eject.full": "Full syncs",
   "ds.eject.any": "All syncs",
+  "ds.ready": "Stay ready between syncs",
+  "ds.ready_sub": "Unmounted whenever no sync or view uses it, so unplugging it or switching the player off cannot damage its files. Syncs mount it again by themselves.",
   "ds.threshold": "Ask before removing more than",
   "ds.threshold_sub": "An automatic full sync that removes more of the items on the device waits for you.",
   "ds.threshold_label": "Delete threshold in percent",
@@ -72,24 +78,32 @@ const VERIFY = ["all", "sample", "off"];
 const EJECT = ["off", "full", "any"];
 // shown in their own cards: gentle write mode is in Device settings, verify above
 const NOCACHE = ["no_cache_files", "no_cache_budget_mb", "no_cache_file_max_mb"];
-const OWN = ["verify", "eject_after", "gentle_write", "gentle_batch_files", "gentle_pause_s", "gentle_rate_mb_s", "no_cache", ...NOCACHE];
+const OWN = ["verify", "eject_after", "stay_ready", "gentle_write", "gentle_batch_files", "gentle_pause_s", "gentle_rate_mb_s", "no_cache", ...NOCACHE];
 
 const radios = (name, values, current, label, text) => html`<div class="segr" role="radiogroup" aria-label="${label}">${values.map((v) =>
   html`<label><input type="radio" name="${name}" value="${v}" ${v === current ? "checked" : ""}><span>${text(v)}</span></label>`)}</div>`;
 
-/** The tab; `updateLine` is the device page's automatic update line with Update now. */
+// settings of the type's sync schema that join a group of their own; the rest goes to Advanced
+const MOUNT = ["use_existing_mount", "unmount_foreign"];
+const SAFETY = ["safety_margin_pct", "safety_margin_min_bytes", "safety_margin_max_bytes", "backup_device_db", "backup_keep"];
+const LISTEN = ["rating_priority", "playlist_conflicts"];
+
+/** The sync settings as cards per group of the device Settings tab ({when, after, safety, listen, writing,
+ * advanced}, each "" when the type has none); `updateLine` is the automatic update line with Update now. */
 export function syncTab(ctx, updateLine) {
   const { cfg, type } = ctx.state;
-  if (!type) return errorBox({ message: `unknown device type ${cfg.type}` }, "");
-  const advanced = schemaForm(type.sync_schema, cfg.sync, { prefix: "s-", skip: OWN });
+  if (!type) { const e = errorBox({ message: `unknown device type ${cfg.type}` }, ""); return { when: e, after: "", safety: "", listen: "", writing: "", advanced: "" }; }
   const props = type.sync_schema?.properties || {};
-  const nocache = "no_cache" in props
-    ? schemaForm(type.sync_schema, cfg.sync, { prefix: "s-", skip: Object.keys(props).filter((k) => !NOCACHE.includes(k)) }) : null;
-  ctx.state.syncForms = { advanced, nocache };
+  const part = (keys) => (keys.some((k) => k in props) ? schemaForm(type.sync_schema, cfg.sync, { prefix: "s-", only: keys }) : null);
+  const mount = part(MOUNT), safety = part(SAFETY), listen = part(LISTEN);
+  const rest = Object.keys(props).filter((k) => ![...OWN, ...MOUNT, ...SAFETY, ...LISTEN].includes(k));
+  const advanced = rest.length ? schemaForm(type.sync_schema, cfg.sync, { prefix: "s-", only: rest }) : null;
+  const nocache = "no_cache" in props ? part(NOCACHE) : null;
+  ctx.state.syncForms = { advanced, nocache, mount, safety, listen };
   const on = cfg.update_sync;
   const every = cfg.update_every_min === null ? "off" : String(cfg.update_every_min);
-  return html`<form class="dev-settings" data-sync-form>
-    <section class="card ds-card"><div><h2>${t("ds.upd_title")} ${helpTip("update_full")}</h2><p class="ds-sub">${t("ds.upd_text")}</p></div>
+  const disk = !cfg.mount_path && !type.network;
+  const when = html`<section class="card ds-card"><div><h2>${t("ds.upd_title")} ${helpTip("update_full")}</h2><p class="ds-sub">${t("ds.upd_text")}</p></div>
       <label class="ds-check"><input type="checkbox" id="dsUpd" ${on ? "checked" : ""}><span>${t("ds.upd_on")}</span></label>
       <div class="ds-row" data-needs-upd ${on ? "" : "data-off"}><span class="ds-label">${t("ds.every")}<small>${t("ds.every_sub")}</small></span>
         ${radios("dsEvery", EVERY.includes(every) ? EVERY : [...EVERY.slice(0, -1), every, "off"], every, t("ds.every_label"),
@@ -103,24 +117,33 @@ export function syncTab(ctx, updateLine) {
       <div class="ds-options" role="radiogroup" aria-label="${t("ds.full_title")}">${WHEN.map((w) =>
         html`<label class="option"><input type="radio" name="dsWhen" value="${w}" ${cfg.on_connect === w ? "checked" : ""}>
           <span><b>${t(`ds.when.${w}`)}</b><small>${t(`ds.when.${w}_text`)}</small></span></label>`)}</div></section>
-    <section class="card ds-card"><h2>${t("ds.safety_title")}</h2>
+    <section class="card ds-card" data-schedule-card><h2>${t("ds.schedule_title")}</h2>
       <div class="ds-row"><label class="ds-check ds-grow"><input type="checkbox" id="dsNightly" ${cfg.sync_at ? "checked" : ""}><span>${t("ds.nightly")}</span></label>
         <input type="time" id="s-sync_at" class="ds-time" value="${cfg.sync_at || "03:00"}" aria-label="${t("ds.nightly_time")}" ${cfg.sync_at ? "" : "disabled"}></div>
-      ${windowsEditor("dev", cfg.sync_windows || [])}
+      ${windowsEditor("dev", cfg.sync_windows || [])}</section>`;
+  const after = html`<section class="card ds-card" data-after-card><div><h2>${t("ds.after_title")}</h2><p class="ds-sub">${t("ds.after_text")}</p></div>
       <div class="ds-row"><span class="ds-label">${t("ds.verify")}<small>${t("ds.verify_sub")}</small></span>
         ${radios("dsVerify", VERIFY, cfg.sync.verify || "all", t("ds.verify"), (v) => t(`ds.verify.${v}`))}</div>
       ${cfg.mount_path || (type.network && !type.usb_mtp) ? "" : html`<div class="ds-row"><span class="ds-label">${t("ds.eject")}<small>${t("ds.eject_sub")}</small></span>
         ${radios("dsEject", EJECT, cfg.sync.eject_after || "off", t("ds.eject"), (v) => t(`ds.eject.${v}`))}</div>`}
+      ${disk ? html`<label class="ds-check"><input type="checkbox" id="dsReady" ${cfg.sync.stay_ready ? "checked" : ""}>
+        <span class="ds-label">${t("ds.ready")}<small>${t("ds.ready_sub")}</small></span></label>` : ""}
+      ${mount ? mount.html : ""}</section>`;
+  const safetyCard = html`<section class="card ds-card" data-safety-card><h2>${t("ds.safety_title")}</h2>
       <div class="ds-row"><span class="ds-label">${t("ds.threshold")}<small>${t("ds.threshold_sub")}</small></span>
         <span class="ds-num"><input id="dsThreshold" inputmode="numeric" value="${cfg.delete_threshold_pct}" aria-label="${t("ds.threshold_label")}">${t("ds.threshold_unit")}</span></div>
       <label class="ds-check"><input type="checkbox" id="dsDeleted" ${cfg.remove_deleted !== false ? "checked" : ""}>
         <span class="ds-label">${t("ds.deleted")}<small>${t("ds.deleted_sub")}</small></span></label>
-      <details class="ds-adv"><summary>${t("ds.advanced")}</summary>${advanced.html}</details></section>
-    ${nocache ? html`<section class="card ds-card" data-nocache><div><h2>${t("ds.nocache_title")} ${helpTip("cache")}</h2><p class="ds-sub">${t("ds.nocache_text")}</p></div>
+      ${safety ? safety.html : ""}</section>`;
+  return {
+    when, after, safety: safetyCard,
+    listen: listen ? html`<section class="card ds-card" data-listen-card><h2>${t("ds.listen_title")}</h2>${listen.html}</section>` : "",
+    writing: nocache ? html`<section class="card ds-card" data-nocache><div><h2>${t("ds.nocache_title")} ${helpTip("cache")}</h2><p class="ds-sub">${t("ds.nocache_text")}</p></div>
       <label class="ds-check"><input type="checkbox" id="dsNoCache" ${cfg.sync.no_cache ? "checked" : ""}>
         <span class="ds-label">${t("ds.nocache")}<small>${t("ds.nocache_sub")}</small></span></label>
-      <div data-nocache-fields ${cfg.sync.no_cache ? "" : "hidden"}>${nocache.html}</div></section>` : ""}
-  </form>`;
+      <div data-nocache-fields ${cfg.sync.no_cache ? "" : "hidden"}>${nocache.html}</div></section>` : "",
+    advanced: advanced ? html`<section class="card ds-card" data-advanced-card><details class="ds-adv"><summary>${t("ds.advanced")}</summary>${advanced.html}</details></section>` : "",
+  };
 }
 
 /** The dependent controls follow their switch (the Save / Discard bar is the merged Settings tab's). */
@@ -147,11 +170,11 @@ export function syncMounted(form, defaults) {
   });
 }
 
-// where a setting's value comes from: the app's default for new devices (Settings → Sync) or
+// where a setting's value comes from: the app's default for new devices (Settings → New devices) or
 // changed for this device, with Reset to default; [control id or radio name, kind, app setting]
 const ORIGIN = [["dsUpd", "check", "default_update_sync"], ["dsEvery", "radio", "default_update_every_min"],
   ["dsWhen", "radio", "default_on_connect"], ["dsVerify", "radio", "default_verify"], ["dsEject", "radio", "default_eject_after"],
-  ["dsNoCache", "check", "default_no_cache"]];
+  ["dsReady", "check", "default_stay_ready"], ["dsNoCache", "check", "default_no_cache"]];
 
 function defaultValue(defaults, key) {
   const v = defaults[key];
@@ -208,7 +231,8 @@ export function readSync(ctx, form) {
   if (!Number.isInteger(pct) || pct < 0 || pct > 100) { toast(t("ds.threshold_bad"), "error"); return null; }
   let adv;
   try {
-    adv = { ...forms.advanced.read(form), ...(forms.nocache ? forms.nocache.read(form) : {}) };
+    adv = {};
+    for (const f of [forms.advanced, forms.nocache, forms.mount, forms.safety, forms.listen]) if (f) Object.assign(adv, f.read(form));
   } catch (e) {
     if (e instanceof FormError) { toast(e.message, "error"); return null; }
     throw e;
@@ -226,6 +250,7 @@ export function readSync(ctx, form) {
     delete_threshold_pct: pct,
     sync: { ...cfg.sync, ...adv, verify: value("dsVerify"),
       ...(value("dsEject") ? { eject_after: value("dsEject") } : {}),
+      ...(form.querySelector("#dsReady") ? { stay_ready: form.querySelector("#dsReady").checked } : {}),
       ...(forms.nocache ? { no_cache: form.querySelector("#dsNoCache").checked } : {}) },
   };
 }

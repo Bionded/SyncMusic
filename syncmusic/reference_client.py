@@ -5,7 +5,7 @@ It shows the whole client protocol in one small file that only needs `httpx` and
 authors can read (or copy) it, and the server's tests drive it end to end. It is not a player: what it "plays" are
 events you record with `play`/`rate`/`favourite`/`position`.
 
-    python -m syncmusic.reference_client pair http://server:8765 ABCD-1234 ./phone
+    python -m syncmusic.reference_client pair http://server:8765 1234-5678 ./phone
     python -m syncmusic.reference_client sync ./phone
     python -m syncmusic.reference_client play ./phone <key> --completed
     python -m syncmusic.reference_client events ./phone
@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import platform
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -123,13 +124,55 @@ class ReferenceClient:
         self.save()
         return str(body["device_id"])
 
+    async def request_pairing(
+        self, server: str, name: str = "", on_code: Any = None, timeout_s: float = 600
+    ) -> str:
+        """Registration mode: ask the server's user to approve this client; returns the device id."""
+        self.state["server"] = server
+        info = {
+            "uid": self.state["uid"],
+            "name": name or platform.node()[:64] or "Reference client",
+            "os": platform.system()[:32],
+            "app": "syncmusic-reference-client",
+            "app_version": "1",
+        }
+        r = await self.http.post(
+            self._url("pair-requests"), json={"client": info, "capabilities": self.capabilities()}
+        )
+        ask = r.json()
+        if r.status_code != 202:
+            raise ClientProtocolError(r.status_code, ask)
+        if on_code:
+            on_code(ask["display_code"])
+        deadline = time.monotonic() + timeout_s
+        while True:
+            r = await self.http.get(
+                self._url(f"pair-requests/{ask['request_id']}"),
+                headers={"X-Pair-Secret": ask["secret"]},
+            )
+            body = r.json()
+            if r.status_code == 200:
+                break
+            if r.status_code != 202 or time.monotonic() > deadline:
+                raise ClientProtocolError(r.status_code, body)
+            await asyncio.sleep(body.get("poll_s", ask["poll_s"]))
+        self.state |= {"token": body["token"], "device_id": body["device_id"]}
+        self.save()
+        return str(body["device_id"])
+
     # --- sync ---------------------------------------------------------------------------------------
 
     def _files(self) -> dict[str, int]:
         out = {}
+        generated = set(self.state.get("generated_paths", []))
         for p in self.folder.rglob("*"):
             rel = p.relative_to(self.folder).as_posix()
-            if p.is_file() and not rel.startswith(STATE) and not rel.endswith(PART):
+            if (
+                p.is_file()
+                and not rel.startswith(STATE)
+                and not rel.endswith(PART)
+                and rel not in generated
+            ):
                 out[rel] = p.stat().st_size
         return out
 
@@ -200,7 +243,29 @@ class ReferenceClient:
         if part.stat().st_size != item["size"] or h.hexdigest() != item["fid"]:
             part.unlink()
             return False
+        if isinstance(item.get("mtime"), int):
+            os.utime(part, (item["mtime"], item["mtime"]))  # a player's database may compare them
         os.replace(part, dest)
+        return True
+
+    async def install_generated(self, gen: dict[str, Any]) -> bool:
+        """A set of server-built files: skipped when the commit file names this set already; otherwise every
+        file is downloaded and verified first, then all are moved in place, then the commit file is written.
+        True when a new set was installed."""
+        commit = self._target(gen["commit"])
+        if commit.is_file() and commit.read_text(encoding="utf-8").strip() == gen["set_id"]:
+            return False
+        staged = []
+        for f in gen["files"]:
+            item = f | {"path": f["path"] + ".new"}
+            if not await self.download(item):
+                raise ClientProtocolError(502, {"error": {"code": "io", "message": f["path"]}})
+            staged.append((self._target(item["path"]), self._target(f["path"])))
+        for src, dest in staged:
+            os.replace(src, dest)
+        commit.parent.mkdir(parents=True, exist_ok=True)
+        commit.write_text(gen["set_id"], encoding="utf-8")
+        self.state["generated_paths"] = sorted([f["path"] for f in gen["files"]] + [gen["commit"]])
         return True
 
     async def sync(self) -> dict[str, int]:
@@ -231,11 +296,16 @@ class ReferenceClient:
                 got += 1
             else:
                 failed += 1
+        installed = False
+        if view["plan"].get("generated") and not failed:
+            installed = await self.install_generated(view["plan"]["generated"])
+        if got or gone or installed:  # a player would now refresh or restart as the plan says
+            self.state["after_sync"] = view["plan"].get("after_sync", "none")
         status = "complete" if not failed else "partial"
         await self._call("POST", f"sync/{sid}/finish", json={"status": status})
         self.state["inventory"] = self._files()
         self.save()
-        return {"fetched": got, "deleted": len(gone), "failed": failed}
+        return {"fetched": got, "deleted": len(gone), "failed": failed, "generated": int(installed)}
 
     # --- events -------------------------------------------------------------------------------------
 
@@ -275,9 +345,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("pair", help="pair with a code from the server's UI")
     p.add_argument("server")
-    p.add_argument("code")
+    p.add_argument("code", help="the pairing code, or --request to ask for approval instead")
     p.add_argument("folder", type=Path)
     p.add_argument("--name", default="")
+    p.add_argument("--request", action="store_true", help="CODE is ignored: wait for approval")
     sub.add_parser("sync", help="sync the folder").add_argument("folder", type=Path)
     sub.add_parser("events", help="send unsent events").add_argument("folder", type=Path)
     for name in ("play", "rate", "favourite", "position"):
@@ -300,6 +371,9 @@ def main(argv: list[str] | None = None) -> int:
         c = ReferenceClient(a.folder)
         try:
             if a.cmd == "pair":
+                if a.request:
+                    shown = lambda code: print(f"approve the request with code {code}", flush=True)  # noqa: E731
+                    return {"device_id": await c.request_pairing(a.server, a.name, shown)}
                 return {"device_id": await c.pair(a.server, a.code, a.name)}
             if a.cmd == "sync":
                 return await c.sync()

@@ -28,6 +28,15 @@ jobs:
       - run: uv run ruff format --check
       - run: uv run mypy syncmusic/core syncmusic/base
 
+  compas-app:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: clients/compas/go.mod
+      - run: cd clients/compas && test -z "$(gofmt -l .)" && go vet ./... && go test ./... && ./build.sh
+
   test:
     strategy:
       fail-fast: false

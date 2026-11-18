@@ -101,6 +101,7 @@ from syncmusic.core.thumbs import file_cover
 from syncmusic.devices.HibyR1 import compas_sdtool
 from syncmusic.infra import (
     bundle,
+    client_apps,
     dbbackup,
     diagnostics,
     discovery,
@@ -2011,6 +2012,45 @@ class AppFacade:
             mode="json"
         )
 
+    async def compas_app(self) -> dict[str, Any]:
+        """Settings → Devices → Compás app: the newest app zip the server can hand to paired players."""
+        rel = await asyncio.to_thread(
+            client_apps.newest, "syncmusic-compas", self.app.config.data_dir
+        )
+        return {
+            "app": "syncmusic-compas",
+            "version": rel.version if rel else None,
+            "path": str(rel.zip) if rel else None,
+            "searched": [str(p) for p in client_apps.folders(self.app.config.data_dir)],
+        }
+
+    async def compas_app_download(self) -> dict[str, Any]:
+        """Settings → Devices: download the newest Compás app zip from SyncMusic's release, as a job; paired players
+        that run an older app are offered it on their next connection."""
+        repo = self.app.config.update_repo.strip()
+        if not repo or repo.lower() == "none":
+            raise SyncError("downloads are turned off (update_repo = none)", "invalid")
+
+        async def job(ctx: JobContext) -> dict[str, Any]:
+            ctx.progress(None, "downloading the Compás app")
+            try:
+                releases = await self.app.update_checker.releases(repo)
+            except (httpx.HTTPError, OSError, ValueError) as e:
+                raise SyncError(
+                    f"the releases cannot be read: {type(e).__name__}", "unavailable"
+                ) from e
+            try:
+                got = await client_apps.install(
+                    releases, "syncmusic-compas", self.app.config.data_dir
+                )
+            except client_apps.AppDownloadError as e:
+                raise SyncError(str(e), "invalid") from e
+            return {"path": str(got.zip), "version": got.version}
+
+        return self.app.jobs.submit("download", "download the Compás app", job).model_dump(
+            mode="json"
+        )
+
     async def diagnostics(self) -> list[dict[str, Any]]:
         """Settings → Maintenance → System check: the install's checks (doctor: versions,
         ffmpeg, space, folders, device access, udev, clock, Docker), library connections, USB devices, the Pi's
@@ -3028,6 +3068,9 @@ class AppFacade:
 
     async def repair_device(self, device_id: str) -> dict[str, Any]:
         return (await self.app.sync.repair(device_id)).model_dump(mode="json")
+
+    async def rebuild_manifest(self, device_id: str) -> dict[str, Any]:
+        return await self.app.sync.rebuild_manifest(device_id)
 
     async def integrity_fix(self, device_id: str) -> dict[str, Any]:
         return (await integrity_jobs.integrity_fix(self.app.sync, device_id)).model_dump(

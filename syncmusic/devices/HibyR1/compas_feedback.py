@@ -297,6 +297,8 @@ def merge_audiobook_positions(
         key, file = kf
         if key in index:
             p = lines[index[key]].split("\t")
+            if pos.finished and unquote(p[2]) > file:
+                continue  # a finished earlier chapter: the book already points at a later one
             if pos.duration_s:
                 p[4] = _secs(pos.duration_s)
             elif unquote(p[2]) != file:

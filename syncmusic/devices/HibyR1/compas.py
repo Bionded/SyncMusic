@@ -42,6 +42,7 @@ from syncmusic.core.models import (
     PreparedItem,
     Track,
 )
+from syncmusic.core.reverse import is_small_rewind
 from syncmusic.devices._filedevice import FileDeviceMixin
 from syncmusic.devices.HibyR1 import compas_feedback as cf
 from syncmusic.devices.HibyR1 import compas_sdtool as sd
@@ -379,8 +380,13 @@ class HibyCompas(FileDeviceMixin, Device):
                 )
                 if there is None and not (self.mount / state).is_file():
                     continue  # the plugin is gone (or never ran): nothing to put back
-                if there is None or (there[0] < pos - 1 and not (there[1] and not done)):
-                    # a plugin that kept its old state overwrote ours: not the listener's, ours goes back
+                if there is None or (
+                    is_small_rewind(there[0], pos)
+                    and there[0] < pos - 1
+                    and not (there[1] and not done)
+                ):
+                    # gone, or a slip back of less than REWIND_S (a plugin's old state included): ours goes
+                    # back; a rewind of REWIND_S or more is the listener's and wins
                     card.positions.pop(path, None)
                     self._rewrite[path] = (pos, done)
             return hiby_feedback(

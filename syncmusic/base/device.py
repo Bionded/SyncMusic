@@ -174,6 +174,10 @@ class Device(ABC):
         """Write the manifest alone, nothing else (a header change such as the home instance)."""
         await asyncio.to_thread(manifest_io.write, self.mount, manifest)
 
+    async def set_aside_manifest(self) -> list[str]:
+        """Move an unreadable manifest and its backup aside; the next sync is a first sync (adopt offered)."""
+        return await asyncio.to_thread(manifest_io.set_aside, self.mount)
+
     async def read_state(self, name: str) -> bytes | None:
         """A small file of the app's state folder on the device (`.syncmusic/<name>`), None when absent."""
         path = self.mount / manifest_io.STATE_DIR / name

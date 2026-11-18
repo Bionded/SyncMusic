@@ -65,7 +65,7 @@ def render() -> str:
     pages = (
         ("App settings (Settings page)", "settings.js", "export async function render"),
         (
-            "Per device (a device's Settings tab → Sync behaviour)",
+            "Per device (a device's Settings tab)",
             "devsync.js",
             "export function syncTab",
         ),

@@ -38,10 +38,20 @@ addStrings({
   "dev.cl_sync": "The client is syncing: file {done} of {total}, {bytes}",
   "dev.cl_planning": "The client asked to sync: the plan is being made.",
   "dev.cl_manage": "Rename or revoke",
+  "dev.cl_diag": "Diagnostics",
+  "dev.cl_diag_val": "sent {when}",
+  "dev.cl_diag_get": "Download",
   "devs.sub": "Players and drives SyncMusic writes to. USB devices appear when plugged in.",
   "devs.add_ftp": "Add network device",
   "devs.empty_title": "No devices yet",
   "devs.unknown_head": "Plugged in, not registered",
+  "devs.req_head": "Players that want to connect",
+  "devs.req_hint": "Approve only when the player shows the same code. A request expires after a few minutes.",
+  "devs.req_code": "Code on the player",
+  "devs.req_expires": "expires {when}",
+  "devs.req_approve": "Approve",
+  "devs.req_reject": "Reject",
+  "devs.req_approved": "{name} is paired. Choose what it gets on its device page.",
   "devs.registered_head": "Registered · {n}",
   "devs.unnamed": "Unnamed drive",
   "devs.looks_like": "Looks like: {type}",
@@ -93,8 +103,12 @@ addStrings({
   "dev.set_what_sub": "Templates and rules choose the music, podcasts and audiobooks for this device. Opens the Templates tab.",
   "dev.set_how": "How files are processed",
   "dev.set_how_sub": "Conversion, tags, covers and lyrics before files are written. Opens the Processors tab.",
-  "dev.set_part_sync": "Sync behaviour",
-  "dev.set_part_device": "Device",
+  "dev.set_part.general": "General",
+  "dev.set_part.when": "When to sync",
+  "dev.set_part.after": "After a sync and mounting",
+  "dev.set_part.safety": "Safety",
+  "dev.set_part.listen": "Listening data",
+  "dev.set_part.writing": "Writing",
   "dev.tab.history": "History",
   "hist.activity": "What it did",
   "dev.sync": "Sync",
@@ -106,6 +120,10 @@ addStrings({
   "dev.clock_text": "The iPod will be ready in a few seconds (at most 30 s). Sync and Player contents unlock then.",
   "dev.open_settings": "Open device settings",
   "dev.fs_damaged": "File system damaged",
+  "dev.manifest_damaged": "Sync records damaged",
+  "dev.manifest_damaged_text": "SyncMusic's list of what it put on this device and its backup copy cannot be read ({error}). Rebuild it from the files on the device: the next sync offers to adopt the files that match your libraries.",
+  "dev.manifest_rebuild": "Rebuild from files",
+  "dev.manifest_rebuilt": "Moved aside: the next sync starts as a first sync.",
   "dev.fs_damaged_text": "Reading or writing the device failed ({error}). Automatic syncs are paused until the file system is repaired, the device is wiped or reconnected.",
   "dev.repair": "Check and repair",
   "dev.repair_wipe": "Wipe…",
@@ -161,6 +179,7 @@ addStrings({
   "dev.left.lost_one": "{n} item left off · {bytes}",
   "dev.left.advice": "How to make it fit",
   "dev.space_offline": "Capacity is shown while the device is connected.",
+  "dev.space_records_damaged": "The split by media kind and library is back after the sync records are rebuilt.",
   "dev.last_full_sync": "Last full sync",
   "dev.books.head": "Audiobooks in progress",
   "dev.books.both_ways": "Positions sync both ways",
@@ -433,7 +452,8 @@ export async function render(ctx) {
 // Undo, Register), then the registered devices - status badge and update line, used space or the sync's progress,
 // the last sync, and one action by state (Progress / Review / Fix / Sync)
 async function renderList(ctx) {
-  const [devices, reports, jobs] = await Promise.all([get("/devices"), get("/sync-reports"), get("/jobs")]);
+  const [devices, reports, jobs, requests] = await Promise.all([get("/devices"), get("/sync-reports"), get("/jobs"),
+    get("/clients/requests").catch(() => [])]);
   const last = {};
   for (const r of reports) if (r.kind === "full" && !(r.device_id in last)) last[r.device_id] = r; // newest first
   const running = new Map(jobs.filter((j) => ["queued", "running"].includes(j.status)).map((j) => [j.id, j]));
@@ -446,17 +466,32 @@ async function renderList(ctx) {
   const ftp = html`<a class="btn" href="#/devices/register?target=network">${icon("ftp", { size: 16 })}${t("devs.add_ftp")}</a>`;
   const head = pageHead(t("nav.devices"), t("devs.sub"), html`${ftp}<a class="btn" href="#/devices/register">${t("devs.register")}</a>`);
   const ignoredLink = ignored.length ? html`<a class="btn ghost small" data-show-ignored href="#/devices${showIgnored ? "" : "?ignored=1"}">${t(showIgnored ? "devs.hide_ignored" : "devs.show_ignored", { n: ignored.length })}</a>` : "";
+  const reqs = requests.length ? pairRequests(requests) : "";
   if (!reg.length && !unknown.length) {
-    return html`${head}<div class="lib-empty" data-devs-empty><span class="tile">${icon("plug", { size: 26 })}</span><b>${t("devs.empty_title")}</b>
+    return html`${head}${reqs}<div class="lib-empty" data-devs-empty><span class="tile">${icon("plug", { size: 26 })}</span><b>${t("devs.empty_title")}</b>
       <p>${t("devs.none")}</p>${ftp}${ignoredLink}</div>`;
   }
-  return html`${head}
+  return html`${head}${reqs}
     ${unknown.length || ignoredLink ? html`<section class="dev-section" aria-labelledby="hUnknown">
       <div class="dev-section-head"><h2 id="hUnknown">${t("devs.unknown_head")}</h2>${ignoredLink}</div>
       ${unknown.map((u) => unknownRow(u, ignored.includes(u)))}</section>` : ""}
     ${reg.length ? html`<section class="dev-section" aria-labelledby="hReg">
       <div class="dev-section-head"><h2 id="hReg">${t("devs.registered_head", { n: reg.length })}</h2></div>
       <div class="panel">${reg.map((d, i) => deviceRow(d, last[d.id], d.busy ? running.get(d.busy) : null, space[i]))}</div></section>` : ""}`;
+}
+
+// Wi-Fi players asking to be paired without a code: compare the code, approve or reject
+function pairRequests(reqs) {
+  const info = (q) => [q.client?.model, q.client?.os, q.client?.app && `${q.client.app} ${q.client.app_version || ""}`.trim(), q.address].filter(Boolean).join(" · ");
+  return html`<section class="dev-section" aria-labelledby="hReq" data-client-requests role="status">
+    <div class="dev-section-head"><h2 id="hReq">${t("devs.req_head")}</h2></div>
+    <p class="muted dev-req-hint">${t("devs.req_hint")}</p>
+    <div class="panel set-io-list dev-req-list">${reqs.map((q) => html`<div class="set-io-row cl-req" data-request="${q.id}">
+      <span class="cl-req-text"><b class="cl-req-name">${q.client?.name || q.client?.model || q.address}</b>
+        <span class="cl-req-code">${badge("info", `${t("devs.req_code")}: ${q.display_code}`)}</span>
+        <small class="muted">${[info(q), q.expires_at ? t("devs.req_expires", { when: when(q.expires_at) }) : ""].filter(Boolean).join(" · ")}</small></span>
+      <div class="toolbar cl-actions"><button type="button" class="btn small primary" data-action="clientApprove" data-id="${q.id}">${t("devs.req_approve")}</button>
+        <button type="button" class="btn small danger" data-action="clientReject" data-id="${q.id}">${t("devs.req_reject")}</button></div></div>`)}</div></section>`;
 }
 
 const listIdle = (d) => d.connected && !d.busy && !d.ejecting && !d.ejected && !d.setting_clock && !d.no_medium;
@@ -606,6 +641,9 @@ async function renderDevice(ctx) {
     ${live?.fs_damaged ? problemBox({ title: t("dev.fs_damaged"), message: t("dev.fs_damaged_text", { error: live.fs_damaged }),
       action: html`<span data-fs-damaged><button type="button" class="btn small" data-action="repairFs" ${live.busy ? "disabled" : ""}>${t("dev.repair")}</button>
         <a class="btn small" href="#/devices/${id}/settings">${t("dev.repair_wipe")}</a></span>` })
+    : live?.manifest_damaged ? problemBox({ title: t("dev.manifest_damaged"), message: t("dev.manifest_damaged_text", { error: live.manifest_damaged }),
+      action: html`<span data-manifest-damaged><button type="button" class="btn small" data-action="rebuildManifest" ${live.busy ? "disabled" : ""}>${t("dev.manifest_rebuild")}</button>
+        <a class="btn small" href="#/devices/${id}/settings">${t("dev.repair_wipe")}</a></span>` })
     : live?.error ? problemBox({ message: live.error, action: tab === "settings" ? "" : html`<a class="btn small" href="#/devices/${id}/settings">${t("dev.open_settings")}</a>` }) : ""}
     <div class="tabs dev-tabs" role="tablist" aria-label="${t("dev.tabs")}">${TABS.map((x) => (clock && x === "contents"
       ? html`<span class="tab" role="tab" aria-selected="false" aria-disabled="true" title="${t("devs.clock_title")}">${t(`dev.tab.${x}`)}</span>`
@@ -637,6 +675,8 @@ function clientCard(c) {
   return html`<section class="card ds-card dev-client" data-client-card="${c.device_id}" aria-label="${t("dev.cl_title")}">
     ${c.revoked ? html`<p class="hint warn" data-client-revoked>${t("dev.cl_revoked")}</p>` : ""}
     <dl class="dev-client-facts">${rows.map(([k, v]) => html`<div><dt>${t(`dev.cl_${k}`)}</dt><dd>${v}</dd></div>`)}</dl>
+    ${c.diagnostics ? html`<p class="dev-client-diag" data-client-diag>${t("dev.cl_diag")}: ${t("dev.cl_diag_val", { when: when(c.diagnostics.received_at) })}
+      <a class="btn small ghost" href="/api/v1/clients/${encodeURIComponent(c.device_id)}/diagnostics" download>${t("dev.cl_diag_get")}</a></p>` : ""}
     <div class="dev-client-sync" data-client-sync aria-live="polite">${clientSession(c.session)}</div>
     <a class="btn small ghost" href="#/settings?q=${encodeURIComponent(t("dev.cl_title"))}">${t("dev.cl_manage")}</a></section>`;
 }
@@ -777,6 +817,7 @@ function storage(space, error, idle, connected, sync) {
   const parts = { music: k.music, audiobook: k.audiobook, podcast: k.podcast, video: k.video, others: k.others, other: k.other ?? space.used };
   return html`${capacityBar({ capacity: space.capacity || 0, parts, label: t("dev.capacity", { used: bytes(space.used), free: bytes(space.free), capacity: bytes(space.capacity) }), after: sync })}
     ${planned(space)}
+    ${space.manifest_damaged ? html`<p class="muted" data-space-records-damaged>${t("dev.space_records_damaged")}</p>` : ""}
     ${space.db ? html`<div>${dbSizeLine(space.db.size, space.db.limit, space.db.level)}</div>` : ""}
     ${spaceMap(space)}${leftOff(space.left_off)}`;
 }
@@ -999,11 +1040,8 @@ async function renderDeviceSettings(ctx) {
       <a class="card ds-card ds-link" href="#/devices/${id}/rules"><b>${t("dev.set_what")}</b><small>${t("dev.set_what_sub")}</small></a>
       <a class="card ds-card ds-link" href="#/devices/${id}/processors"><b>${t("dev.set_how")}</b><small>${t("dev.set_how_sub")}</small></a>
       ${hasTips(cfg.type) ? html`<a class="card ds-card ds-link" href="#/devices/${id}/overview" data-tips-link><b>${t("tips.link")}</b><small>${t("tips.link_sub")}</small></a>` : ""}</div>
-    <div data-devset>
-    <h2 class="ds-part" id="dsPartSync">${t("dev.set_part_sync")}</h2>
-    ${sync}
-    <h2 class="ds-part" id="dsPartDevice">${t("dev.set_part_device")}</h2>
-    <form class="dev-settings" data-settings-form>
+    <form class="dev-settings" data-devset data-settings-form data-sync-form>
+    <h2 class="ds-part" id="dsPart_general">${t("dev.set_part.general")}</h2>
     <section class="card ds-card" id="nameCard"><h2>${t("dev.set_name")}</h2>
       <div class="field"><label for="dsName">${t("dev.set_name_label")}</label><input id="dsName" value="${cfg.name}" maxlength="64" autocomplete="off"></div>
       ${renamable ? html`<label class="ds-check"><input type="checkbox" id="dsRename" ${idle ? "" : "disabled"}>
@@ -1016,15 +1054,26 @@ async function renderDeviceSettings(ctx) {
         <span class="ds-test" data-ftp-result role="status"></span></div>` : ""}</section>` : ""}
     ${hasFiles ? html`<section class="card ds-card" id="filesCard"><div><h2>${t("dev.settings_device")}</h2><p class="ds-sub">${t("dev.set_files_sub")}</p></div>${settings.html}
       ${type.type === "flashdrive" && (cfg.mount_path || live?.mounted_at) && idle ? pickerButton("dev-flash", { mount: cfg.mount_path || live.mounted_at }) : ""}</section>` : ""}
+    <h2 class="ds-part" id="dsPart_when">${t("dev.set_part.when")}</h2>
+    ${sync.when}
+    <h2 class="ds-part" id="dsPart_after">${t("dev.set_part.after")}</h2>
+    ${sync.after}
+    <h2 class="ds-part" id="dsPart_safety">${t("dev.set_part.safety")}</h2>
+    ${sync.safety}
+    <h2 class="ds-part" id="dsPart_listen">${t("dev.set_part.listen")}</h2>
+    <section class="card ds-card" id="reverseCard"><h2>${t("dev.settings_reverse")} ${helpTip("reverse")}</h2>
+      ${reverse ? reverse.html : html`<p class="muted" data-no-reverse="${noReverse}">${t(`dev.reverse_none_${noReverse}`)}</p>`}</section>
+    ${sync.listen}
+    ${accountsCard(cfg, accounts)}
+    ${gentle || sync.writing ? html`<h2 class="ds-part" id="dsPart_writing">${t("dev.set_part.writing")}</h2>` : ""}
     ${gentle ? html`<section class="card ds-card" id="gentleCard" aria-labelledby="hGentle">
       <label class="ds-check ds-switch"><span class="ds-label"><b id="hGentle">${t("dev.set_gentle")}</b><small>${t("dev.set_gentle_sub")}</small></span>
         <input type="checkbox" id="dsGentle" ${cfg.sync.gentle_write ? "checked" : ""}></label>
       ${suggest ? html`<div class="ds-hint" data-gentle-suggest>${icon("info", { size: 14 })}${t("dev.set_gentle_suggest")}</div>` : ""}
       <div data-gentle-fields ${cfg.sync.gentle_write ? "" : "hidden"}>${gentle.html}<p class="ds-sub">${t("dev.set_gentle_estimate")}</p></div></section>` : ""}
-    <section class="card ds-card" id="reverseCard"><h2>${t("dev.settings_reverse")} ${helpTip("reverse")}</h2>
-      ${reverse ? reverse.html : html`<p class="muted" data-no-reverse="${noReverse}">${t(`dev.reverse_none_${noReverse}`)}</p>`}</section>
-    ${accountsCard(cfg, accounts)}
-  </form></div>
+    ${sync.writing}
+    ${sync.advanced}
+  </form>
   <div class="dev-settings ds-after">
     ${profileCard(profile)}
     <section class="card ds-card" id="orphansCard"><div><h2>${t("dev.orphans")}</h2><p class="ds-sub">${t("dev.orphans_help")}</p></div>
@@ -1308,7 +1357,7 @@ export function mounted(ctx, root) {
   }
   const settings = ctx.params.tab === "settings" && root.querySelector("[data-settings-form]");
   if (settings) { // one Save / Discard bar for Sync behaviour and Device (632.2); gentle write mode's values show while it is on
-    const syncForm = root.querySelector("[data-sync-form]"), both = root.querySelector("[data-devset]");
+    const both = settings, syncForm = ctx.state.syncForms ? settings : null; // one form holds every group
     if (syncForm) syncMounted(syncForm, ctx.state.appDefaults);
     settings.addEventListener("change", (e) => {
       if (e.target.id === "dsGentle") settings.querySelector("[data-gentle-fields]").hidden = !e.target.checked;
@@ -1351,8 +1400,9 @@ function filterCards(root, query) {
     any ||= !card.hidden;
   }
   for (const h of root.querySelectorAll(".ds-part")) {
-    let n = h.nextElementSibling;
-    h.hidden = !!words.length && !(n && n.querySelector(":is(.ds-card, #profileCard, .dangerzone):not([hidden])"));
+    let shown = false; // a group heading stays while one of its cards (up to the next heading) does
+    for (let n = h.nextElementSibling; n && !n.matches(".ds-part"); n = n.nextElementSibling) shown ||= !n.hidden;
+    h.hidden = !!words.length && !shown;
   }
   root.querySelector("[data-ds-none]").hidden = any;
   if (!globalThis.CSS?.highlights) return;
@@ -1420,6 +1470,22 @@ function readForm(form, root) {
 }
 
 export const actions = {
+  async clientApprove(el, ctx) {
+    el.disabled = true;
+    try {
+      const r = await post(`/clients/requests/${encodeURIComponent(el.dataset.id)}/approve`);
+      const p = r.device_id && await get(`/clients/${encodeURIComponent(r.device_id)}`).catch(() => null);
+      toast(t("devs.req_approved", { name: p?.name || r.client?.name || "" }), "ok");
+    } catch (e) { toast(e.message, "error"); }
+    refreshSidebar();
+    ctx.rerender();
+  },
+  async clientReject(el, ctx) {
+    el.disabled = true;
+    await post(`/clients/requests/${encodeURIComponent(el.dataset.id)}/reject`).catch((e) => toast(e.message, "error"));
+    refreshSidebar();
+    ctx.rerender();
+  },
   ...pickerActions, // the flash drive's base folder
   gentleOn: (el, ctx) => progressActions.gentleOn(el, ctx),
   async heldUnstars(el, ctx) { // favourites a suspected database reset held back: removed on purpose after all
@@ -1470,6 +1536,14 @@ export const actions = {
     el.disabled = true;
     await post(`/devices/${encodeURIComponent(ctx.state.cfg.id)}/integrity/fix`);
     toast(t("dev.integrity_fixing"));
+  },
+  async rebuildManifest(el, ctx) { // move the unreadable manifest aside; the next plan is a first sync
+    el.disabled = true;
+    try {
+      await post(`/devices/${encodeURIComponent(ctx.state.cfg.id)}/manifest/rebuild`);
+      toast(t("dev.manifest_rebuilt"), "ok");
+      ctx.rerender();
+    } finally { el.disabled = false; }
   },
   async repairFs(el, ctx) { // fsck on the data partition; the job view shows what it fixed
     const { cfg } = ctx.state;
@@ -1663,7 +1737,7 @@ function refreshOrphans(ctx, id) {
 export function onEvent(ev, ctx, root) {
   const id = ctx.params.id;
   if (!id) {
-    if (/^(device\.|sync\.|job\.(started|finished)|live\.)/.test(ev.type)) ctx.rerender();
+    if (/^(device\.|sync\.|job\.(started|finished)|live\.|client\.(pair_request|paired))/.test(ev.type)) ctx.rerender();
     return;
   }
   const tab = ctx.params.tab || "overview";
@@ -1696,6 +1770,8 @@ export function onEvent(ev, ctx, root) {
     return;
   }
   if (!["overview", "history"].includes(tab)) return;
+  // stay ready: the idle unmount must not re-render the page, whose storage load would mount it again
+  if (ev.type === "device.unmounted" && ev.data?.ready) return;
   if (/^(device\.|sync\.|update\.|job\.(started|finished)|reverse\.|live\.)/.test(ev.type)) ctx.rerender();
 }
 

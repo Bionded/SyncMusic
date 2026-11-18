@@ -14,6 +14,7 @@ listened to back. This guide is for people who use SyncMusic; developer notes ar
 7. [Command line and API reference](07-cli-api.md)
 8. [Settings reference](08-settings-reference.md) - every setting with its explanation (generated)
 9. [Recipes](09-recipes.md) - rotating a changing selection of music
+10. [SyncMusic app for Compás players](10-compas-app.md) - Wi-Fi sync on a HiBy R1 with Compás
 
 For contributors: [architecture](dev/architecture.md), [add a device](dev/add-a-device.md),
 [add a library](dev/add-a-library.md), [add a processor](dev/add-a-processor.md), the

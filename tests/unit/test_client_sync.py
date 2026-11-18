@@ -12,9 +12,10 @@ from syncmusic.api.server import create_api
 from syncmusic.app import Application
 from syncmusic.core.models import RuleSet
 from syncmusic.core.rules.templates import own_template_id
+from syncmusic.devices.client import ClientDevice
 from syncmusic.facade import AppFacade
 from tests.media import make_music
-from tests.unit.test_clients import C, allow, bearer, new_code, pair
+from tests.unit.test_clients import C, allow, bearer, client, new_code, pair
 
 ALL_RULES = [{"id": "all", "name": "Everything", "criteria": {"all": []}}]
 CAPS = {"formats": ["mp3"], "storage": {"total": 10**9, "free": 10**9}}
@@ -79,6 +80,19 @@ async def test_pairing_creates_the_client_device(phone):
     assert [d["id"] for d in devices] == [device_id]
     dev = await app.client_sessions.device(device_id)
     assert dev.state.capabilities == {"formats": ["mp3"]}
+
+
+async def test_a_compas_player_gets_its_database_built_on_the_server(phone):
+    app, c, device_id, _ = phone
+    assert (await app.store.device(device_id)).settings == {}  # a plain client: nothing generated
+    player = dict(uid="22222222-aaaa-4bbb-8ccc-000000000002", name="Player")
+    r = await c.post(
+        f"{C}/pair",
+        json={"code": (await new_code(c))["code"], "client": {**client(**player), "os": "Compas"}},
+    )
+    assert r.status_code == 201, r.text
+    cfg = await app.store.device(r.json()["device_id"])
+    assert cfg.settings == {"player_database": "compas", "after_sync": "restart"}
 
 
 async def test_first_sync_plans_into_the_outbox(phone):
@@ -237,6 +251,58 @@ async def test_track_gone_from_the_library_is_deleted_on_the_client(phone, music
     left = held([f for f in view["plan"]["fetch"] if f["path"] not in gone])
     last = await sync(c, h, {"capabilities": CAPS, "inventory": {"items": left}})
     assert last["plan"]["delete"] == [] and last["plan"]["fetch"] == []
+
+
+async def test_the_client_may_confirm_removals_when_the_device_allows_it(phone, music):
+    app, c, device_id, h = phone
+    view = await sync(c, h)
+    await deliver(c, h, view)
+    (music / "A" / "02 Two.mp3").unlink()  # 1 of 2 tracks: over the default delete threshold
+    await c.post("/api/v1/libraries/music/refresh")
+    body = {"capabilities": CAPS, "inventory": {"items": held(view["plan"]["fetch"])}}
+    cfg = await app.store.device(device_id)
+    cfg.settings = {**cfg.settings, "client_may_confirm": False}  # the user forbids it
+    await app.store.put_device(cfg)
+    nxt = await sync(c, h, body)
+    assert nxt["status"] == "needs_review" and nxt["may_confirm"] is False, nxt
+    r = await c.post(f"{C}/sync/{nxt['session_id']}/confirm", headers=h)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "confirm_not_allowed"
+
+    cfg.settings = {
+        k: v for k, v in cfg.settings.items() if k != "client_may_confirm"
+    }  # default: allowed
+    await app.store.put_device(cfg)
+    nxt = await sync(c, h, body)
+    assert nxt["status"] == "needs_review" and nxt["may_confirm"] is True, nxt
+    assert nxt["review"]["delete_count"] == 1 and nxt["review"]["skipped_for_space"] == 0, nxt
+    r = await c.post(f"{C}/sync/{nxt['session_id']}/confirm", headers=h)
+    assert r.status_code == 200 and r.json()["status"] == "planning", r.text
+    for _ in range(200):
+        view2 = (await c.get(f"{C}/sync/{nxt['session_id']}", headers=h)).json()
+        if view2["status"] != "planning":
+            break
+        await asyncio.sleep(0.05)
+    assert view2["status"] == "ready", view2
+    assert any(d["path"].endswith("Two.mp3") for d in view2["plan"]["delete"]), view2["plan"]
+    assert device_id not in app.sync._waiting  # the web UI no longer asks
+    r = await c.post(f"{C}/sync/{nxt['session_id']}/confirm", headers=h)
+    assert r.status_code == 409  # only once
+
+
+async def test_a_compas_app_may_confirm_on_the_player(phone):
+    app, c, _, _ = phone
+    code = (await new_code(c))["code"]
+    r = await c.post(
+        f"{C}/pair",
+        json={
+            "code": code,
+            "client": {"uid": "33333333-aaaa-4bbb-8ccc-000000000003", "os": "Compas"},
+        },
+    )
+    assert r.status_code == 201, r.text
+    cfg = await app.store.device(r.json()["device_id"])
+    assert "client_may_confirm" not in cfg.settings  # the default allows it for every client
+    assert ClientDevice.Settings.model_validate(cfg.settings).client_may_confirm is True
 
 
 async def test_flac_is_converted_for_a_client_that_cannot_play_it(config, tmp_path):
@@ -450,3 +516,209 @@ async def test_a_download_ticket_works_without_the_token_for_its_session_only(ph
     assert (await c.get(f"{C}/files/{item['fid']}?ticket=wrong")).status_code == 404
     await c.post(f"{C}/sync/{sid}/finish", json={"status": "partial"}, headers=h)
     assert (await c.get(f"{C}/{item['url']}")).status_code == 404  # the session is closed
+
+
+async def test_plan_carries_mtimes_a_generated_set_and_the_after_sync_hint(
+    phone, tmp_path, monkeypatch
+):
+    from syncmusic.devices.client import ClientDevice, GeneratedFile, GeneratedSet
+
+    app, c, device_id, h = phone
+    built = tmp_path / "built" / "index.db"
+    built.parent.mkdir()
+    built.write_bytes(b"index of the files")
+
+    def generated(self, manifest):
+        return GeneratedSet(
+            set_id="gen-1",
+            commit=".db/commit",
+            files=[GeneratedFile(path=".db/index.db", source=built)],
+        )
+
+    monkeypatch.setattr(ClientDevice, "generated_files", generated)
+    cfg = await app.store.device(device_id)
+    cfg.settings = {**cfg.settings, "after_sync": "restart"}
+    await app.store.put_device(cfg)
+    view = await sync(c, h)
+    plan = view["plan"]
+    assert all(isinstance(f["mtime"], int) and f["mtime"] > 0 for f in plan["fetch"])
+    assert plan["after_sync"] == "restart"
+    gen = plan["generated"]
+    assert gen["set_id"] == "gen-1" and gen["commit"] == ".db/commit"
+    (g,) = gen["files"]
+    assert g["path"] == ".db/index.db" and g["size"] == built.stat().st_size
+    assert await download(c, h, g) == b"index of the files"
+    r = await c.get(f"{C}/{g['url']}")
+    assert r.status_code == 200 and r.content == b"index of the files"
+
+
+async def test_an_update_without_changes_still_names_the_after_sync_action(phone):
+    app, c, device_id, h = phone
+    cfg = await app.store.device(device_id)
+    cfg.settings = {**cfg.settings, "after_sync": "refresh"}
+    await app.store.put_device(cfg)
+    view = await sync(c, h)
+    await deliver(c, h, view)
+    view = await sync(c, h, {"mode": "update"})
+    assert view["plan"]["fetch"] == [] and view["plan"]["generated"] is None
+    assert (
+        view["plan"]["after_sync"] == "refresh"
+    )  # the client acts on it only when something changed
+
+
+def test_listening_state_has_finished_for_spoken_word():
+    from syncmusic.core.client_sessions import listening_state
+    from syncmusic.core.models import MediaKind, Track
+
+    book = Track.model_construct(
+        kind=MediaKind.AUDIOBOOK,
+        rating=None,
+        starred=False,
+        play_count=0,
+        position_s=12.5,
+        finished=True,
+    )
+    song = Track.model_construct(
+        kind=MediaKind.MUSIC, rating=3, starred=True, play_count=2, position_s=None, finished=False
+    )
+    assert listening_state("b", book) == {
+        "key": "b",
+        "rating": None,
+        "favourite": False,
+        "play_count": 0,
+        "position_s": 12.5,
+        "finished": True,
+    }
+    assert "finished" not in listening_state("s", song)
+
+
+def test_podcast_meta_has_show_and_publication_date():
+    import datetime as dt
+
+    from syncmusic.core.client_sessions import track_meta
+    from syncmusic.core.models import ItemRef, MediaKind, Track
+
+    ep = Track(
+        ref=ItemRef(library_id="l", item_id="e"),
+        title="Ep",
+        kind=MediaKind.PODCAST,
+        series="Show",
+        published=dt.datetime(2024, 5, 1, tzinfo=dt.UTC),
+        position_s=3.0,
+    )
+    meta = track_meta(ep)
+    assert meta["series"] == "Show" and meta["published"].startswith("2024-05-01")
+    assert meta["position_s"] == 3.0 and meta["finished"] is False
+    song = Track(ref=ItemRef(library_id="l", item_id="s"), title="S", kind=MediaKind.MUSIC)
+    assert "published" not in track_meta(song)
+
+
+async def test_a_playlist_edit_named_by_its_file_maps_to_the_library_playlist(phone):
+    from syncmusic.devices.client import ClientEvent
+
+    app, c, device_id, h = phone
+    view = await sync(c, h)
+    await deliver(c, h, view)
+    dev = await app.client_sessions.device(device_id)
+    m = await dev.read_manifest()
+    one, two = sorted(m.items, key=lambda k: m.items[k].path)
+    m.playlists = ["Тест: Вибране"]
+    m.playlist_refs = {"Тест: Вибране": [one]}
+    m.playlist_paths = {"Тест: Вибране": "Playlists/Тест - Вибране.m3u8"}
+    dev.add_events(
+        [
+            ClientEvent(
+                eid="p1",
+                seq=1,
+                type="playlist_edit",
+                clock="ntp",
+                name="Тест - Вибране",  # the client knows the playlist by its file
+                ops=[{"op": "add", "key": two}],
+            )
+        ]
+    )
+    lists = await dev.read_playlists(m)
+    assert lists == {"Тест: Вибране": [m.items[one].path, m.items[two].path]}
+
+
+async def test_diagnostics_upload_is_kept_redacted_and_offered_on_the_device_page(phone):
+    app, c, device_id, h = phone
+    token = h["Authorization"].removeprefix("Bearer ")
+    assert (await c.get(f"/api/v1/clients/{device_id}/diagnostics")).status_code == 404
+    log = f"start\nGET /me Authorization: Bearer {token}\nsync done\n"
+    body = {"log": log, "summary": {"version": "1.0", "token": token, "files": 12}}
+    r = await c.post(f"{C}/diagnostics", json=body, headers=h)
+    assert r.status_code == 202 and r.json()["size"] > 0, r.text
+    doc = (await c.get(f"/api/v1/clients/{device_id}/diagnostics")).json()
+    assert token not in str(doc) and "sync done" in doc["log"] and doc["summary"]["files"] == 12
+    card = (await c.get(f"/api/v1/clients/{device_id}")).json()
+    assert card["diagnostics"]["received_at"] == doc["received_at"]
+    too_big = {"log": "x" * (512 * 1024 + 1)}
+    assert (await c.post(f"{C}/diagnostics", json=too_big, headers=h)).status_code == 400
+    assert (await c.post(f"{C}/diagnostics", json=body)).status_code == 401
+
+
+async def test_a_client_switches_templates_on_and_off(phone):
+    app, c, device_id, h = phone
+    r = await c.get(f"{C}/templates", headers=h)
+    assert r.status_code == 200, r.text
+    before = r.json()["templates"]
+    on = [t["id"] for t in before if t["on"]]
+    extra = (await c.post("/api/v1/templates", json={"name": "Аудіокниги", "rules": []})).json()[
+        "id"
+    ]
+    r = await c.put(f"{C}/templates", json={"on": [*on, extra]}, headers=h)
+    assert r.status_code == 200, r.text
+    got = {t["id"]: t["on"] for t in r.json()["templates"]}
+    assert got[extra] is True and all(got[i] for i in on)
+    cfg = await app.store.device(device_id)
+    assert cfg.rule_set.template_ids == [
+        *on,
+        extra,
+    ]  # the device's order stays, new ones at the end
+    r = await c.put(f"{C}/templates", json={"on": []}, headers=h)
+    assert not any(t["on"] for t in r.json()["templates"])
+    assert (await app.store.device(device_id)).rule_set.template_ids == []
+    r = await c.put(f"{C}/templates", json={"on": ["nope"]}, headers=h)
+    assert r.status_code == 404 and r.json()["error"]["code"] == "not_found"
+    assert (await c.get(f"{C}/templates")).status_code == 401
+
+
+def _app_zip(folder, version: str, files: dict[str, bytes]) -> None:
+    import zipfile
+
+    folder.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(folder / f"syncmusic-compas-{version}.zip", "w") as z:
+        for name, data in files.items():
+            z.writestr(f"syncmusic/{name}", data)
+
+
+async def test_a_client_app_gets_the_newer_release_the_server_holds(phone, monkeypatch):
+    import hashlib
+
+    from syncmusic.infra import client_apps
+
+    app, c, device_id, h = phone
+    monkeypatch.setattr(client_apps, "running_binary", lambda: None)
+    tools = app.config.data_dir / "tools"
+    q = {"app": "syncmusic-compas", "version": "1.2.0"}
+    r = await c.get(f"{C}/app-update", params=q, headers=h)
+    assert r.status_code == 200 and r.json() == {"available": False}, r.text
+    _app_zip(tools, "1.1.0", {"syncmusic-compas": b"old"})
+    _app_zip(tools, "1.3.0-4", {"syncmusic-compas": b"\x7fELF new", "app.json": b"{}"})
+    _app_zip(tools, "1.4.0", {"../evil": b"x"})  # unsafe names: never offered
+    doc = (await c.get(f"{C}/app-update", params=q, headers=h)).json()
+    assert doc["available"] and doc["version"] == "1.3.0-4", doc
+    files = {f["path"]: f for f in doc["files"]}
+    assert set(files) == {"syncmusic-compas", "app.json"}
+    f = files["syncmusic-compas"]
+    body = (await c.get(f"{C}/{f['url']}", headers=h)).content
+    assert body == b"\x7fELF new" and hashlib.sha256(body).hexdigest() == f["sha256"]
+    assert f["size"] == len(body)
+    assert (await c.get(f"{C}/{f['url']}")).status_code == 401
+    gone = f"{C}/app-update/syncmusic-compas/1.1.0/syncmusic-compas"
+    assert (await c.get(gone, headers=h)).status_code == 404
+    same = {"app": "syncmusic-compas", "version": "1.3.0-4"}
+    assert (await c.get(f"{C}/app-update", params=same, headers=h)).json() == {"available": False}
+    other = {"app": "something-else", "version": "0.1"}
+    assert (await c.get(f"{C}/app-update", params=other, headers=h)).json() == {"available": False}

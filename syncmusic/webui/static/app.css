@@ -66,6 +66,12 @@ a:hover { color: var(--tx); }
 .ico { width: 18px; flex: none; display: grid; place-items: center; }
 .nav .count { margin-left: auto; font-size: 11.5px; font-weight: 700; color: var(--ac-tx); background: var(--ac-bg); border-radius: 999px; padding: 2px 7px; font-variant-numeric: tabular-nums; }
 .nav a[aria-current="page"] .count { background: var(--s1); }
+.nav .count.warn, .nav a[aria-current="page"] .count.warn { color: #1a1300; background: #f5b942; }
+.dev-req-hint { margin: 0 0 8px; }
+.dev-req-list { padding: 12px 14px; gap: 12px; }
+.dev-req-list .cl-req + .cl-req { border-top: 1px solid var(--line); padding-top: 12px; }
+.cl-req-text { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+@media (max-width: 759px) { .dev-req-list .set-io-row.cl-req { grid-template-columns: minmax(0, 1fr); } .dev-req-list .set-io-row.cl-req > .toolbar { justify-self: start; } }
 .side-bottom { margin-top: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; } /* a long card line never widens the column */
 .side-head-row { display: flex; align-items: center; justify-content: space-between; }
 .side-head-row .btn { padding: 2px 6px; min-height: 0; }
@@ -1539,6 +1545,10 @@ button.dev-chip { cursor: pointer; font: inherit; font-size: 12px; font-weight: 
 .set-io-row > span:last-child { min-width: 0; overflow-wrap: anywhere; }
 .set-io-row.set-dbb { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
 .set-io-row.set-dbb > .toolbar { justify-self: end; flex-wrap: nowrap; }
+.set-io-row.cl-req { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+.set-io-row.cl-req > .toolbar { justify-self: end; flex-wrap: nowrap; }
+.set-io-row.cl-req small { display: block; }
+[data-client-requests] { margin-bottom: 12px; }
 .set-notes { margin: 0; padding: 10px 12px 10px 28px; border-radius: 10px; background: var(--s2); font-size: 13px; color: var(--tx2); display: flex; flex-direction: column; gap: 4px; }
 .set-notes li { overflow-wrap: anywhere; }
 /* Storage health */

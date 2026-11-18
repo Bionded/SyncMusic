@@ -1,0 +1,9 @@
+{
+  "protocol": 1,
+  "id": "syncmusic",
+  "name": "SyncMusic",
+  "version": "0.1.0",
+  "exec": "syncmusic-compas",
+  "icon": "icon.png",
+  "boards": ["r1"]
+}

@@ -146,7 +146,7 @@ A sync that changed favourites or ratings in a library can be taken back: *Undo 
 entry sends the previous values to the library with the next sync, and the player follows.
 
 While a device stays connected, SyncMusic runs **updates** by itself: on plug-in, when a library changes (at most
-every 15 minutes by default) and on a schedule (*Settings → Sync*); *Update now* runs one at once.
+every 15 minutes by default) and on a schedule (the device's *Settings* tab → *When to sync*); *Update now* runs one at once.
 
 *Device → History* lists every full sync and update with its result (*succeeded*, *partial*, *failed*),
 what was sent back to the libraries (the *Sent back* filter shows only those reports, and in them only what went to the libraries), the errors and a link to the **full report**.

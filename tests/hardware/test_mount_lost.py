@@ -73,7 +73,9 @@ async def mount_lost_scenario(tmp_path, part, guard, serial):
         dev.put_track = put
         snap = await library.snapshot()
         plan = plan_sync(dev.config, {"lib": snap}, before, dev.effective_capabilities(), Chain([]))
-        check = SyncService._mount_check(types.SimpleNamespace(_mounts={"dev": m}), dev.config)  # type: ignore[arg-type]
+        svc = types.SimpleNamespace(_mounts={"dev": m}, _errors={})
+        svc._second_mount = lambda cfg, mm: SyncService._second_mount(svc, cfg, mm)  # type: ignore[arg-type]
+        check = SyncService._mount_check(svc, dev.config)  # type: ignore[arg-type]
         with pytest.raises(DeviceLostError, match="unmounted during the sync"):
             await Applier(dev, {"lib": library}, Chain([]), preparer, check_device=check).apply(
                 plan

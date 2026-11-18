@@ -70,6 +70,7 @@ addStrings({
   "nav.devices_syncing": "{n} devices syncing",
   "nav.devices_syncing_one": "{n} device syncing",
   "nav.devices_one": "{name}: {pct}%",
+  "nav.devices_requests": "{n} player(s) want to connect",
   "nav.needs": "{n} device problems need you - the Dashboard lists them and everything else",
   "side.collapse": "Collapse the sidebar",
   "side.expand": "Expand the sidebar",
@@ -96,9 +97,13 @@ export const resultOf = (kind, status, outcome) =>
 // space: device id -> {capacity, free} of an idle connected device (null: unknown, not shown); dropped after its
 // jobs and device events so the next render asks again
 // planning: device id -> progress of its plan being made ("Planning… 40 %")
-const state = { active: null, path: "/", libs: null, libsOpen: false, devices: [], jobs: new Map(), results: new Map(), space: new Map(), planning: new Map() };
+const state = { active: null, path: "/", libs: null, libsOpen: false, devices: [], jobs: new Map(), results: new Map(), space: new Map(), planning: new Map(), requests: 0 };
 
 function devicesBadge() {
+  if (state.requests) { // players waiting for approval come first: they time out
+    const text = t("nav.devices_requests", { n: state.requests });
+    return html`<span class="count warn" data-devices-badge data-requests-badge title="${text}" aria-label="${text}">${state.requests}</span>`;
+  }
   const busy = state.devices.filter((d) => d.busy && !d.ejecting && d.update?.state !== "running"); // an update is no sync
   if (!busy.length) return "";
   if (busy.length > 1) {
@@ -268,6 +273,7 @@ async function loadResults() {
 
 async function loadDevices() {
   try { state.devices = (await get("/devices")).registered; } catch { return; }
+  state.requests = (await get("/clients/requests").catch(() => [])).length;
   for (const id of state.space.keys()) if (!state.devices.some((d) => d.id === id && idle(d))) state.space.delete(id);
   // a job that started before this page was opened: its progress so far
   await Promise.all(state.devices.filter((d) => d.busy && !state.jobs.has(d.busy)).map((d) =>
@@ -387,6 +393,8 @@ export function initSidebar() {
       const prev = state.jobs.get(ev.data.job_id);
       state.jobs.set(ev.data.job_id, { ...prev, ...ev.data });
       if (state.devices.some((d) => d.busy === ev.data.job_id)) renderNav();
+    } else if (ev.type === "client.pair_request" || ev.type === "client.paired") {
+      loadDevices();
     } else if (ev.type.startsWith("device.") || ev.type.startsWith("sync.") || ev.type.startsWith("job.")) {
       if (ev.type === "job.created") state.jobs.set(ev.data.job_id, { ...ev.data, status: "queued", progress: 0 });
       if (ev.type === "job.started") state.jobs.set(ev.data.job_id, { ...state.jobs.get(ev.data.job_id), status: "running" });

@@ -19,7 +19,7 @@ def test_groups_explanations_search(web_server, chrome, width):
     page = open_page(chrome, url + "/#/settings", width)
     page.wait_for_selector("#content[data-route='/settings']")
     assert page.locator("[data-set-section]").evaluate_all("els => els.map(e => e.dataset.setSection)") == [
-        "sync", "libs", "storage", "notif", "system", "about"]  # fmt: skip
+        "basics", "sync", "disks", "libs", "clients", "tools", "storage", "notif", "updates", "maint", "about"]  # fmt: skip
     assert page.evaluate(MISSING) == []
     assert page.locator("[data-set-row]").count() > 25
 

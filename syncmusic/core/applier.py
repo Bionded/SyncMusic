@@ -32,7 +32,7 @@ import math
 import sys
 import time
 import uuid
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -79,6 +79,15 @@ YIELD_EVERY = 500  # loop items between two yields to the event loop in long in-
 # a library that does not answer a download pauses for these delays, one per failed retry, then its remaining
 # items are postponed to the next sync
 RETRY_DELAYS_S = (5.0, 15.0, 60.0, 120.0, 180.0)
+
+
+def replace_reasons(plan: SyncPlan) -> dict[str, int]:
+    """How many files the plan replaces, by reason (without the per-item details)."""
+    out: Counter[str] = Counter()
+    for a in plan.actions:
+        if a.kind is ActionKind.REPLACE:
+            out[a.reason.split(" - ")[0].split(":")[0].strip()] += 1
+    return dict(out)
 
 
 class Cancelled(Exception):
@@ -426,6 +435,9 @@ class Applier:
             raise
         counts["keep"] = plan.count(ActionKind.KEEP)
         report.counts = counts
+        report.replace_reasons = replace_reasons(plan)
+        if report.replace_reasons:
+            log.info("%s: replaced files by reason: %s", self.device.id, report.replace_reasons)
         report.finished_at = utcnow()
         if cancelled:
             report.status = "cancelled"
@@ -968,19 +980,23 @@ class Applier:
         """A podcast/audiobook listened further elsewhere: move the device's bookmark to the library's position,
         unless the device moved it too (its change was pushed and wins)."""
         pos = a.item.track.position_s if a.item else None
+        finished = a.item.track.finished if a.item else False
         if (
             self.device_positions is None
             or entry.kind is MediaKind.MUSIC
             or pos is None
             or a.ref.key() in self.device_positions
-            or not position_changed(pos, entry.last_position_s)  # none == 0:00
+            # none == 0:00; a library that only marked the item finished moves the bookmark too
+            or not (
+                position_changed(pos, entry.last_position_s)
+                or (finished and not entry.last_finished)
+            )
         ):
             return False
         await self.check_device()
         try:
-            finished = a.item.track.finished if a.item else False
             if await self.device.set_position(s, track_ref(entry), pos, finished):
-                entry.last_position_s = pos
+                entry.last_position_s, entry.last_finished = pos, finished
                 return True
         except Exception as e:  # noqa: BLE001
             self._fail(report, a, "position", e, f"position: {e}", entry.path)

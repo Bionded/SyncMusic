@@ -1,8 +1,8 @@
 # 6. Troubleshooting and FAQ
 
-**Reporting a bug:** attach the zip from *Settings → System → Collect diagnostics* (or `syncmusic diagnostics`); secrets are masked.
+**Reporting a bug:** attach the zip from *Settings → Maintenance → Collect diagnostics* (or `syncmusic diagnostics`); secrets are masked.
 
-**First stop:** `syncmusic doctor` (or *Settings → System → System check*) checks the install and says how to fix each problem. The device page shows the last error, *Device → History* shows every job with its log and report, and
+**First stop:** `syncmusic doctor` (or *Settings → Maintenance → System check*) checks the install and says how to fix each problem. The device page shows the last error, *Device → History* shows every job with its log and report, and
 `syncmusic logs` (or `journalctl -u syncmusic -f` for the service) shows the application log. *Settings →
 System* switches the log to `DEBUG` without a restart.
 
@@ -32,6 +32,13 @@ next sync rewrites any file that was cut off. If the errors come back, the playe
 An **NTFS** drive unplugged without *Eject* may not mount ("volume is dirty"): repair it in Windows (`chkdsk /f`) or
 format it.
 
+## "Sync records damaged"
+SyncMusic keeps a list of what it put on a player (`.syncmusic/manifest.jsonl`) and a second copy next to it. If both
+cannot be read, the device page shows *Sync records damaged*. **Rebuild from files** moves both copies aside
+(`*.damaged`) and the next sync starts as a first sync: choose **Adopt** to take over the files that match your
+libraries by path and tags, so nothing is copied again. Wiping the device is the other way out. Players reached over
+the network or MTP cannot be rebuilt this way.
+
 ## "Also mounted by another program" / "unmount it first"
 Some systems mount every USB drive they see on their own (Umbrel's external storage, a desktop's automount through
 udisks or GNOME, `usbmount`). The player is then mounted twice: once by SyncMusic and once by the system. Check and
@@ -48,6 +55,12 @@ the system's automount off for your players: on Umbrel unmount or ignore the dri
 "mount removable drives automatically" (or a udisks rule with `UDISKS_AUTO=0` / `UDISKS_IGNORE=1`), and remove
 `usbmount` if it is installed. Over the API: `GET /api/v1/devices/{id}/mounts` and
 `POST /api/v1/devices/{id}/unmount-all` (`?lazy=true` to detach busy mounts).
+
+SyncMusic itself never mounts a player a second time. If another program mounted it first (also through FUSE:
+exfat-fuse, ntfs-3g), SyncMusic writes through that mount (**Use an existing mount**, on by default) or, with that
+setting off, refuses with "mounted by another program". A read-only mount by another program is refused for syncs.
+If a second mount appears while SyncMusic is writing (an automounter that came late), the sync stops before its next
+write with "mounted a second time by another program"; unmount the other mount, then sync again.
 
 ## It does not fit
 The plan shows the space after the sync. Choose what to leave off in the plan, add limits to your rules (*At most*
@@ -89,7 +102,7 @@ The device was registered with a device type this version of SyncMusic does not 
 entry is damaged). Its page shows only this message and **Delete**: remove the device and register the player again.
 
 ## Running out of disk space on the computer
-The processing cache keeps converted files (*Settings → Storage*, 20 GB by default). Lower the limit, or turn
+The processing cache keeps converted files (*Settings → Storage & backups*, 20 GB by default). Lower the limit, or turn
 on **no-cache mode** for a device. SyncMusic warns when the disk gets low (`disk_warn_gb`).
 
 ## The desktop window does not open

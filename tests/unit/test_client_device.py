@@ -168,3 +168,27 @@ async def test_a_consumed_event_sent_again_is_ignored(tmp_path):
         "duplicates": 1,
     }
     assert (await again.read_feedback(m)).is_empty()
+
+
+async def test_unchanged_playlist_is_not_sent_again(tmp_path):
+    dev = _client(tmp_path)
+    _, _, m = await _put(dev, tmp_path, "One")
+    rel = "Playlists/Mix.m3u8"
+    m.playlists, m.playlist_paths = ["Mix"], {"Mix": rel}
+
+    async def write(text: str) -> None:
+        s = await dev.begin()
+        (dev.mount / "Playlists").mkdir(exist_ok=True)
+        (dev.mount / rel).write_text(text)
+        s.data["playlist_paths"] = {"Mix": rel}
+        await dev.commit(s, m)
+
+    await write("#EXTM3U\none.mp3\n")
+    assert rel in dev.outbox()
+    dev.delivered(rel)
+    await write("#EXTM3U\none.mp3\n")  # the same content again
+    assert rel not in dev.outbox()
+    await write("#EXTM3U\none.mp3\ntwo.mp3\n")  # changed: sent
+    assert rel in dev.outbox()
+    dev.deleted(rel)
+    assert rel not in dev.state.playlist_hashes
