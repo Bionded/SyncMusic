@@ -345,13 +345,18 @@ class Clients:
             del self._requests[request_id]  # the answer is handed out once
         return req
 
-    async def answer_request(self, request_id: str, approve: bool) -> PairRequestState | None:
-        """Approve (issues the token, kept for the client's next poll) or reject a pending request."""
+    async def answer_request(
+        self, request_id: str, approve: bool, name: str = ""
+    ) -> PairRequestState | None:
+        """Approve (issues the token, kept for the client's next poll) or reject a pending request; `name`
+        replaces the name the client asked with."""
         self._drop_old_requests()
         req = self._requests.get(request_id)
         if req is None or req.status != "pending":
             return None
         if approve:
+            if name.strip():
+                req.client = req.client.model_copy(update={"name": name.strip()[:64]})
             req.device_id, req.token, req.continued = await self._issue(
                 req.client, req.capabilities, req.address
             )

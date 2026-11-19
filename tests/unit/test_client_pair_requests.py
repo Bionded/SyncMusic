@@ -130,3 +130,59 @@ def test_at_most_two_pairing_attempts_per_second_per_address(monkeypatch):
         c.throttle("192.0.2.1")
     assert e.value.status == 429 and e.value.code == "rate_limited" and e.value.retry_after_s == 1
     c.throttle("192.0.2.2")  # another address has its own budget
+
+
+async def test_names_follow_the_server(setup):
+    """The name given when approving wins; a rename on the device page, through the clients API or from
+    the app keeps the pairing and the device in step, and the app learns it from its status poll."""
+    app, c = setup
+    await allow(c)
+    req = await ask(c, name="HiBy R1 - Compás")
+    r = await c.post(
+        f"/api/v1/clients/requests/{req['request_id']}/approve", json={"name": "  Плеєр  "}
+    )
+    assert r.status_code == 200, r.text
+    body = (await poll(c, req)).json()
+    did, tok = body["device_id"], bearer(body["token"])
+    assert (await c.get(f"{C}/me", headers=tok)).json()["name"] == "Плеєр"
+    assert (await c.get(f"/api/v1/devices/{did}")).json()["config"]["name"] == "Плеєр"
+
+    r = await c.patch(f"/api/v1/devices/{did}", json={"name": "Kitchen"})
+    assert r.status_code == 200, r.text
+    assert (await c.get(f"{C}/me", headers=tok)).json()["name"] == "Kitchen"
+    assert (await c.get(f"{C}/status", headers=tok)).json()["name"] == "Kitchen"
+
+    r = await c.patch(f"{C}/me", headers=tok, json={"name": "Garden"})
+    assert r.json()["name"] == "Garden"
+    assert (await c.get(f"/api/v1/devices/{did}")).json()["config"]["name"] == "Garden"
+
+    r = await c.patch(f"/api/v1/clients/{did}", json={"name": "Hall"})
+    assert r.status_code == 200
+    assert (await c.get(f"/api/v1/devices/{did}")).json()["config"]["name"] == "Hall"
+    assert (await c.get(f"{C}/status", headers=tok)).json()["name"] == "Hall"
+
+
+async def test_a_new_player_waits_for_its_registration(setup):
+    """A first pairing leaves the device 'registration pending': the client is told so and cannot sync until the
+    user finishes the setup (or picks templates on the device page); a re-pair of the same install continues."""
+    app, c = setup
+    await allow(c)
+    req = await ask(c, name="Player", uid="install-1")
+    await c.post(f"/api/v1/clients/requests/{req['request_id']}/approve")
+    body = (await poll(c, req)).json()
+    did, tok = body["device_id"], bearer(body["token"])
+    assert (await c.get(f"{C}/me", headers=tok)).json()["registration"] == "pending"
+    assert (await c.get(f"{C}/status", headers=tok)).json()["registration"] == "pending"
+    r = await c.post(f"{C}/sync", headers=tok, json={"capabilities": {"formats": ["mp3"]}})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "registration_pending"
+    listed = {d["id"]: d for d in (await c.get("/api/v1/devices")).json()["registered"]}
+    assert listed[did]["registration_pending"] is True
+
+    r = await c.patch(f"/api/v1/devices/{did}", json={"rule_set": {"template_ids": []}})
+    assert r.status_code == 200, r.text
+    assert (await c.get(f"{C}/status", headers=tok)).json()["registration"] == "done"
+
+    again = await ask(c, name="Player", uid="install-1")  # the same install pairs again
+    r = await c.post(f"/api/v1/clients/requests/{again['request_id']}/approve")
+    assert r.json()["continued"] is True and r.json()["device_id"] == did
+    assert (await c.get(f"/api/v1/devices/{did}")).json()["config"]["registration_pending"] is False

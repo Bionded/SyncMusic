@@ -51,7 +51,9 @@ def test_pair_rename_revoke(chrome, web_server, width):
     device_id = _pair(url, code, "Телефон Олени")
     page.locator("[data-cl-done]").wait_for(timeout=10_000)
     assert "Телефон Олени" in page.locator("[data-cl-done]").inner_text()
-    page.get_by_role("button", name="Close", exact=True).last.click()
+    # a new player's registration opens by itself; leaving it keeps the player paired, its setup pending
+    page.locator(f"form[data-client='{device_id}']").wait_for(timeout=10_000)
+    page.goto(f"{url}/#/settings")
     row = page.locator(f"[data-client='{device_id}']")
     row.wait_for()
     assert "Android 15" in row.inner_text()
@@ -142,6 +144,9 @@ def test_pairing_requests_approve_and_reject(chrome, web_server, width):
     assert no_horizontal_scroll(page)
     shot(page, f"clients-requests-{width}")
 
+    name = row.locator(".cl-req-name")
+    assert name.input_value() == "Плеєр у вітальні"
+    name.fill("Кухня")  # named on the server before approving
     row.locator("[data-action=clientApprove]").click()
     poll(
         page,
@@ -154,7 +159,14 @@ def test_pairing_requests_approve_and_reject(chrome, web_server, width):
         ),
         what="request approved",
     )
-    page.locator("#content", has_text="Плеєр у вітальні").locator("a").first.wait_for()
+    form = page.locator("form[data-client]")  # a new player's registration opens
+    form.wait_for(timeout=10_000)
+    assert page.locator("#regName").input_value() == "Кухня"
+    page.goto(f"{url}/#/devices")  # left unfinished: the list offers to finish it
+    page.locator("#content a", has_text="Finish setup").first.wait_for()
+    page.locator("#content a", has_text="Finish setup").first.click()  # back to the setup
+    page.locator("form[data-client]").wait_for()
+    page.goto(f"{url}/#/devices")
 
     page.locator(f"[data-request='{second['request_id']}'] [data-action=clientReject]").click()
     page.locator(f"[data-request='{second['request_id']}']").wait_for(state="detached")
@@ -397,4 +409,70 @@ def test_transfer_card_shows_speed_and_time_left_of_a_live_session(
     assert no_horizontal_scroll(page)
     shot(page, f"client-transfer-{width}")
     httpx.post(f"{url}/api/client/v1/sync/{sid}/finish", json={"status": "partial"}, headers=h)
+    assert page.errors == []
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_approved_player_is_registered_in_the_wizard(chrome, web_server, tmp_path, width):
+    """Approving a pairing request opens the registration wizard; until it is finished the player is told to
+    wait (and cannot sync); Register stores the name, templates and processors and lets it sync."""
+    url, _ = web_server
+    httpx.patch(f"{url}/api/v1/settings", json={"clients_allowed": True}).raise_for_status()
+    (tmp_path / "music").mkdir()
+    httpx.post(
+        f"{url}/api/v1/libraries",
+        json={
+            "id": f"w{width}",
+            "type": "folder",
+            "name": "Music",
+            "settings": {"root": str(tmp_path / "music")},
+        },
+    ).raise_for_status()
+    tpl = httpx.post(
+        f"{url}/api/v1/templates",
+        json={
+            "name": "Everything",
+            "rules": [{"id": "all", "name": "All", "criteria": {"all": []}}],
+        },
+    )
+    tpl.raise_for_status()
+    page = open_page(chrome, f"{url}/#/devices", width=width)
+    page.locator("#content h1").wait_for()
+    req = _ask(url, "HiBy R1 - Compás")
+    row = page.locator(f"[data-request='{req['request_id']}']")
+    row.wait_for(timeout=10_000)
+    row.locator(".cl-req-name").fill("Плеєр Олени")
+    row.locator("[data-action=clientApprove]").click()
+    form = page.locator("form[data-client]")
+    form.wait_for(timeout=10_000)
+    device_id = form.get_attribute("data-client")
+    token = httpx.get(
+        f"{url}/api/client/v1/pair-requests/{req['request_id']}",
+        headers={"x-pair-secret": req["secret"]},
+    ).json()["token"]
+    auth = {"authorization": f"Bearer {token}"}
+    status = httpx.get(f"{url}/api/client/v1/status", headers=auth).json()
+    assert status["registration"] == "pending" and status["name"] == "Плеєр Олени"
+    assert page.locator("#regName").input_value() == "Плеєр Олени"
+    assert no_horizontal_scroll(page)
+    shot(page, f"clients-register-{width}")
+
+    def step() -> None:  # step by step or all steps on one page
+        if page.locator("[data-reg-next]").is_visible():
+            page.locator("[data-reg-next]").click()
+
+    step()
+    page.locator("label.chip", has=page.locator(f"input[value='{tpl.json()['id']}']")).click()
+    step()
+    page.locator("input[name=procMode][value=device]").check()
+    step()
+    if page.locator("#regSummary").is_visible():
+        assert "Плеєр Олени" in page.locator("#regSummary").inner_text()
+    shot(page, f"clients-register-summary-{width}")
+    page.locator("form[data-client] button[type=submit]").click()
+    page.wait_for_url(f"**/#/devices/{device_id}/overview", timeout=10_000)
+    status = httpx.get(f"{url}/api/client/v1/status", headers=auth).json()
+    assert status["registration"] == "done"
+    cfg = httpx.get(f"{url}/api/v1/devices/{device_id}").json()["config"]
+    assert cfg["rule_set"]["template_ids"] == [tpl.json()["id"]] and not cfg["registration_pending"]
     assert page.errors == []

@@ -4,10 +4,12 @@ A native external app for players running the Compás firmware (HiBy R1): it pai
 Wi-Fi and syncs music, audiobooks, podcasts and playlists onto the SD card, and sends plays, hearts, positions
 and playlist edits back. It speaks the generic Wi-Fi client protocol (`docs/` → Wi-Fi clients).
 
-- Language: Go, built as static little-endian MIPS32 ELFs (no cgo): `syncmusic-compas` uses the FPU and starts
-  `syncmusic-compas-softfloat` instead when `/proc/cpuinfo` reports no FPU.
-- `./build.sh [VERSION]` → `out/syncmusic-compas-VERSION.zip`, which holds the `syncmusic/` folder to copy into
-  `<SD card>/.apps/` (app.json, both binaries, icon, LICENSE, NOTICE, FONT-LICENSE.txt). Release builds attach this zip.
+- Language: Go, built as static little-endian MIPS32 ELFs (no cgo) in two builds: hard float (uses the FPU,
+  recommended) and soft float (floats in software, the fallback). Each runs as `syncmusic-compas` and asks the
+  server for updates of its own build.
+- `./build.sh [VERSION]` → `out/syncmusic-compas-VERSION-hard.zip` and `-soft.zip`, each holding the `syncmusic/`
+  folder to copy into `<SD card>/.apps/` (app.json, the program, icon, LICENSE, NOTICE, FONT-LICENSE.txt);
+  `./smoke.sh` starts both under qemu-mipsel. Release builds attach both zips.
 - `go test ./...` runs the unit tests on any host.
 
 Third-party: the Inter typeface (Latin + Cyrillic), (c) 2016 The Inter Project Authors, SIL Open Font License 1.1

@@ -49,7 +49,7 @@ func (c *Client) CheckUpdate() (appUpdate, error) {
 	if version == "dev" || c.st.Token == "" {
 		return u, nil
 	}
-	q := url.Values{"app": {appName}, "version": {version}}
+	q := url.Values{"app": {appName}, "version": {version}, "variant": {floatABI}}
 	err := c.call("GET", "app-update?"+q.Encode(), nil, &u)
 	if err == nil && u.Available && len(u.Files) == 0 {
 		u.Available = false
@@ -84,11 +84,6 @@ func (c *Client) InstallUpdate(u appUpdate) error {
 			return err
 		}
 		if err := os.Rename(src, dst); err != nil {
-			return err
-		}
-	}
-	if _, err := os.Stat(filepath.Join(dir, softBinary)); err == nil {
-		if err := os.Chmod(filepath.Join(dir, softBinary), 0o755); err != nil {
 			return err
 		}
 	}

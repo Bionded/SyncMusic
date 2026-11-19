@@ -764,7 +764,8 @@ func (s *screen) drawPage(p page, sel int, status string) []rect {
 		top := y
 		n := j - i
 		rh := 56
-		add(0, -1, func(yy int) { s.fillRound(uiPad, yy, W, n*rh, 16, colCard) })
+		// the card behind the rows: its real height (for the off-screen check), the rows advance y
+		items = append(items, item{y: y, h: n * rh, btn: -1, draw: func(yy int) { s.fillRound(uiPad, yy, W, n*rh, 16, colCard) }})
 		for k := i; k < j; k++ {
 			k := k
 			add(rh, k, func(yy int) {

@@ -44,6 +44,7 @@ addStrings({
   "dev.state.error": "Needs attention",
   "dev.state.review": "Waiting for review",
   "dev.state.no_libraries": "No templates",
+  "dev.state.setup_pending": "Setup not finished",
   "dev.state.connected": "Connected",
   "dev.state.offline": "Not connected",
   "reg.sg.copy": "Suggested: copies as is - all {files} play natively{fit}.",
@@ -74,6 +75,7 @@ export function deviceState(d) {
   if (d.busy && d.update?.state === "running") return ["busy", t("dev.state.updating")];
   if (d.busy) return ["busy", t(isCheck(d.busy_kind) ? "dev.state.checking" : "dev.state.syncing")];
   if (d.error) return ["error", t("dev.state.error")];
+  if (d.registration_pending) return ["warn", t("dev.state.setup_pending")];
   if (d.no_libraries) return ["warn", t("dev.state.no_libraries")];
   if (d.waiting && d.connected) return ["warn", t("dev.state.review")];
   if (d.connected && d.ready) return ["ok", t("dev.state.ready")];

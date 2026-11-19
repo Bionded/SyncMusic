@@ -19,15 +19,23 @@ by itself until everything is on the card.
   [HiBy R1 (Compás)](04-devices.md#hiby-r1-compás)); without it the player indexes the new files itself.
 
 ## Install
-1. Download `syncmusic-compas-<version>.zip` from the release page (next to the server downloads).
+1. Download the app from the [latest release](https://github.com/Bionded/SyncMusic/releases/latest) (next to the
+   server downloads). There are two builds of it:
+   - `syncmusic-compas-<version>-hard.zip` — **use this one**: it uses the player's floating-point unit and draws faster;
+   - `syncmusic-compas-<version>-soft.zip` — the fallback: if the hard-float app closes at once or does not start
+     on your player, use this one instead.
 2. Connect the player by USB (storage mode) and unzip the file into the `.apps/` folder of the SD card, so that
    the card has `.apps/syncmusic/`. Eject and unplug the player.
-3. Open *Apps* on the player and start **SyncMusic**. Compás asks once to approve the app; it asks again after
+
+   Both builds are the same app (same pairing and data): to switch, replace the `.apps/syncmusic/` folder with the
+   other zip's folder. Updates from your server keep the build the player runs.
+3. Open *Apps* on the player and start **SyncMusic**. If the player says *Could not start the app* right after
+   the copy, restart the player and try again. Compás asks once to approve the app; it asks again after
    each update of the app, because the program file changed.
 
 ### Updates
 The app can update itself from your server. In **Settings → Devices → Compás app updates**, **Download newest**
-fetches the newest app from SyncMusic's release on GitHub after you confirm (its checksum is checked). Or put the new `syncmusic-compas-<version>.zip` (unchanged, as
+fetches the newest app (both builds) from SyncMusic's release on GitHub after you confirm (its checksum is checked). Or put the new `syncmusic-compas-<version>-hard.zip` and/or `-soft.zip` (unchanged, as
 downloaded) into the `tools/` folder of the server's data directory, or next to the `syncmusic` program. The next
 time the app opens and reaches the server, it asks: *The server has SyncMusic app X, this player runs Y. Update
 now?* **Update** installs it; **Later** keeps your version (the home page keeps an **Update the app to …** button)
@@ -56,10 +64,12 @@ The first start shows **Not paired yet**.
   code is open on that server). Pick yours.
 - **Enter the address** opens a keyboard for the server's address, for example `http://192.0.2.20:8080`.
 
-Then choose how to connect:
+Then choose how to connect. The player asks as *HiBy R1 - Compás*; you give it its name on the server, in the
+request card or in the setup that opens after **Approve**. The app shows that name and takes every later rename on
+the device page (Settings → **Name** on the player only shows it).
 
 - **Connect without a code**: the server shows *Players that want to connect* at the top of the **Devices** page
-  (with a count on the Devices menu item and a notice on every other page). Check that the code there is the one the player shows, then **Approve**. The player
+  (with a count on the Devices menu item and a notice on every other page). Check that the code there is the one the player shows (you can change the player's name in the request), then **Approve**. The player
   continues by itself. **Reject** turns it down. A request is valid as long as a pairing code would be (1 minute
   by default); the server setting **Allow pairing requests** turns this way off.
 - **Enter a pairing code**: on the server, **Settings → Wi-Fi clients → Add client** shows an 8-digit code (valid
@@ -69,8 +79,13 @@ Then choose how to connect:
 
 ![Waiting for approval](img/compas-app-waiting.png)
 
-After pairing, the player appears on the server as a device (*HiBy R1 - Compás*): add templates on its
-**Templates** tab to choose what it gets. **Settings → Server → Forget this server** on the player removes the
+After pairing, the server opens the player's setup (the same steps as registering a USB player: name, what it
+gets, processors); meanwhile the player shows *Finish setting up this player on the server* and continues by itself
+when you press **Register**. If you leave the setup, the Devices page offers **Finish setup** for the player.
+
+![Finish the setup on the server](img/compas-app-setup.png)
+
+**Settings → Server → Forget this server** on the player removes the
 pairing; the music on the card stays. (Writing `<server address> <code>` into `.apps-data/syncmusic/pair.txt`
 over USB also pairs the app on its next start.)
 
@@ -126,6 +141,7 @@ The app's setting **After sync** can do this without asking (restart or power of
 | Min. battery (not charging) | 20 % | a sync does not start below it (ignored on a charger); a running sync stops at the next safe point below 10 % |
 | Sync when the app opens | no | starts a sync right away (without the preview, unless the server asks for a confirmation) |
 | What to sync | | the server's templates with on/off: select one to switch it (they are edited in the web UI) |
+| Name | | the player's name on the server; renaming the device on the server changes it here too (the server's name wins) |
 | Server | | change or forget the server |
 | About | | app version, server, device id, where the log is; *History* lists the last 10 syncs; *Send diagnostics* uploads the log to the server |
 | Exit the app | | closes the app |

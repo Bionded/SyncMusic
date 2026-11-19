@@ -208,8 +208,12 @@ prepares the files (with the device's processors) and the app downloads them whe
    the app finds the server by itself).
 2. **Add client** shows a QR code, the server address and an 8-digit pairing code (valid for 1 minute by default, single
    use). Scan the code in the app or type the address and code there. The dialog says when the app has paired.
-3. The client appears as a device: link templates on its **Templates** tab like for any other player. It takes
-   what is new the next time it checks in (every 5 minutes by default) or when you sync it in the app.
+   (Or let the player ask to connect without a code: it appears at the top of the **Devices** page, where you can
+   change its name and **Approve** it.)
+3. The player's setup opens: its name, what it gets (templates) and processors, the same steps as registering a USB
+   player. The app waits until you press **Register** (leave it, and the Devices page offers **Finish setup**).
+   Choosing templates on the device's **Templates** tab also finishes it. The player takes what is new the next time
+   it checks in (every 5 minutes by default) or when you sync it in the app.
 
 The device page shows what the app reported (app, system, formats it plays, free space, last seen) and the
 progress of the whole sync while the app downloads. The server prepares (converts, retags) each file just before

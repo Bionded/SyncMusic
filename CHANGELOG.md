@@ -6,6 +6,10 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- Wi-Fi clients: approving a player (or pairing it with a code) opens its setup right away — name, what it gets and processors, the same steps as registering a USB player. Until it is finished the player waits instead of failing its first sync, and the Devices page offers **Finish setup**.
+- Wi-Fi clients: a player asking to connect can be given its name on the Devices page before you approve it, and renaming a paired player on its device page (or in its app) renames it everywhere; the app shows the server's name. The player's name is set only on the server (in the request card or the setup after approving); the Compás app shows it and no longer asks for one.
+- Compás app: released as two downloads — `syncmusic-compas-<version>-hard.zip` (recommended, faster) and `-soft.zip` (use it if the hard-float app does not start on your player). Updates from the server keep the build a player runs; install steps and links are in the README and the release notes.
+- Every release page (stable and beta) starts with a downloads table: server and desktop binaries per architecture, the Docker image, both Compás app builds and compas-sdtool, each with who it is for and how to install it.
 - Compás app: a short press of Power switches the screen off and on; with the screen off the app now only turns the backlight off and keeps the player awake, so the Wi-Fi connection stays up.
 - Compás app: when the server holds a newer app, the app asks right after it connects (Update / Later) instead of only showing a button; an app newer than the server says so. The device page shows the app version the player runs and the answer.
 - Wi-Fi clients: the SyncMusic app for Compás players gets a whole sync in one go: the server prepares each file just before the app downloads it instead of preparing 2 GB parts in advance, so a large library needs almost no disk on the server, and stopping a sync continues where it stopped next time.
@@ -31,6 +35,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 - If both copies of SyncMusic's sync record on a player are damaged, the device page offers **Rebuild from files**: the damaged copies are moved aside and the next sync starts as a first sync that can adopt the files already on the player, instead of wiping it.
 
 ### Fixed
+- The SyncMusic app for Compás players from the beta build closed at once on the HiBy R1: it is built with the Go version that runs there again, and the build now checks that the app starts.
 - Wi-Fi sync in the Compás app no longer fails with "ack: EOF" when a connection to the server was dropped: the app retries such calls, and the server keeps idle connections open longer.
 - Wi-Fi clients: a sync larger than the server's outbox budget shows its progress, size and time left for the whole sync (all windows), on the device page and in the Compás app, instead of restarting the count for every part.
 - A Wi-Fi client's sync that waits for your confirmation (too many removals, does not fit) or failed now says so on its device page, with a Review plan button, instead of showing that the plan is being made.

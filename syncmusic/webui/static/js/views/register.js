@@ -6,7 +6,7 @@
 // processors of this device only. Nothing is preselected: the user picks both.
 import { html, bytes, setHtml } from "../dom.js";
 import { t, addStrings } from "../i18n.js";
-import { get, post } from "../api.js";
+import { get, post, patch } from "../api.js";
 import { toast, errorBox } from "../ui.js";
 import { schemaForm, FormError } from "../forms.js";
 import { icon, typeIcon } from "../icons.js";
@@ -115,6 +115,11 @@ addStrings({
   "reg.choose_copy": "Tick the templates to copy first.",
   "reg.choose_procs": "Choose the processors: a template, a new template or only this device's processors.",
   "reg.done": "{name} registered.",
+  "reg.client_title": "Set up a Wi-Fi player",
+  "reg.client_sub": "Paired just now: choose its name and what it gets. The player waits until you finish.",
+  "reg.client_what": "A Wi-Fi player (SyncMusic app)",
+  "reg.client_gone": "This player is not waiting for its setup (already registered or removed).",
+  "reg.step_summary_client": "4 · Summary",
   "reg.gone": "{disk} is not connected any more.",
 });
 
@@ -136,6 +141,8 @@ export async function render(ctx) {
   ctx.state.types = types.filter((x) => !x.paired); // Wi-Fi clients come from pairing
   Object.assign(ctx.state, { libraries, templates, libTypes });
   ctx.state.procTemplates = procTemplates;
+  const clientId = ctx.query.get("client");
+  if (clientId) return renderClient(ctx, clientId, types);
   ctx.state.unknown = devices.unknown;
   const wanted = ctx.query.get("disk");
   const selected = devices.unknown.find((u) => u.disk === wanted) || (wanted ? null : devices.unknown[0]) || null;
@@ -174,6 +181,38 @@ export async function render(ctx) {
           <span><b>${t(`reg.first.${v}`)}</b><small>${t(`reg.first.${v}_text`)}</small></span></label>`)}</div></div>
         <div id="regFormatRow" ${formatOffered(ctx) ? "" : "hidden"}>${formatRow(ctx)}</div></div></div>
       <div class="card" data-step="4" data-reg-summary-card><div class="card-head"><h2>${t("reg.step_summary")}</h2></div><div class="card-body"><dl class="reg-summary" id="regSummary"></dl></div></div>
+      <div class="reg-actions"><button class="btn ghost reg-all" type="button" data-reg-all>${t("reg.all_steps")}</button><span class="grow"></span><a class="btn" href="#/devices">${t("common.cancel")}</a>
+        <button class="btn" type="button" data-reg-back>${t("reg.back")}</button><button class="btn primary" type="button" data-reg-next>${t("reg.next")}</button><button class="btn primary" type="submit">${t("reg.submit")}</button></div>
+    </form>`;
+}
+
+/** A paired Wi-Fi player's registration (opened when it is approved or paired by code): its name, templates and
+ * processors; Register saves them on the device made at pairing and lets the player sync. */
+async function renderClient(ctx, id, types) {
+  let cfg = null;
+  try { cfg = (await get(`/devices/${encodeURIComponent(id)}`)).config; } catch { cfg = null; }
+  if (!cfg || cfg.type !== "client" || !cfg.registration_pending) {
+    return html`<div class="ed-head reg-head"><a class="iconbtn" href="#/devices" aria-label="${t("nav.devices")}" title="${t("nav.devices")}">${icon("left", { size: 18 })}</a>
+      <div><h1>${t("reg.client_title")}</h1></div></div>${errorBox({ message: t("reg.client_gone") }, "")}`;
+  }
+  Object.assign(ctx.state, { client: cfg, type: "client", selected: "", types });
+  const steps = ["step_device", "step_what", "step_procs", "step_summary_client"];
+  return html`<div class="ed-head reg-head"><a class="iconbtn" href="#/devices" aria-label="${t("nav.devices")}" title="${t("nav.devices")}">${icon("left", { size: 18 })}</a>
+      <div><h1>${t("reg.client_title")}</h1><div class="reg-drive" data-reg-drive>${t("reg.client_sub")}</div></div></div>
+    <ol class="reg-steps" data-reg-steps>${steps.map((k, i) => html`<li><button type="button" data-reg-goto="${i}">${t(`reg.${k}`)}</button></li>`)}</ol>
+    <form class="grid" data-action="register" data-change="regChanged" data-client="${cfg.id}" style="max-width:860px">
+      <div class="card" data-step="0"><div class="card-head"><h2>${t("reg.step_device")}</h2></div><div class="card-body">
+        <div class="row"><span class="tile">${typeIcon("client")}</span><div class="meta"><b>${t("reg.client_what")}</b><small class="mono">${cfg.id}</small></div></div>
+        <div class="field"><label for="regName">${t("reg.name")} *</label><input id="regName" required maxlength="64" value="${cfg.name}" autocomplete="off"></div>
+        <input type="hidden" id="regPath" value="">
+      </div></div>
+      <div class="card" data-step="1"><div class="card-head"><h2>${t("reg.step_what")}</h2><span class="muted" data-reg-count>${t("reg.none_selected")}</span></div><div class="card-body">
+        <p class="muted" style="margin-top:0">${t("reg.what_help")}</p>
+        <div id="regTemplates">${templateChips(ctx)}</div>
+        <label class="checkrow reg-copy"><input type="checkbox" id="regCopy"> <span>${t("reg.copy")}<small class="muted" style="display:block">${t("reg.copy_help")}</small></span></label>
+      </div></div>
+      <div class="card" data-step="2"><div class="card-head"><h2>${t("reg.step_procs")}</h2></div><div class="card-body"><p class="muted" id="regBackupProcs" hidden></p><div id="regProcs">${processors(ctx)}</div></div></div>
+      <div class="card" data-step="3" data-reg-summary-card><div class="card-head"><h2>${t("reg.step_summary_client")}</h2></div><div class="card-body"><dl class="reg-summary" id="regSummary"></dl></div></div>
       <div class="reg-actions"><button class="btn ghost reg-all" type="button" data-reg-all>${t("reg.all_steps")}</button><span class="grow"></span><a class="btn" href="#/devices">${t("common.cancel")}</a>
         <button class="btn" type="button" data-reg-back>${t("reg.back")}</button><button class="btn primary" type="button" data-reg-next>${t("reg.next")}</button><button class="btn primary" type="submit">${t("reg.submit")}</button></div>
     </form>`;
@@ -323,7 +362,7 @@ function summary(form, ctx) {
   const type = ctx.state.types.find((x) => x.type === ctx.state.type);
   const backup = checked("regPurpose")?.value === "backup";
   const tpls = ctx.state.templates.filter((tp) => ctx.state.picked?.has(tp.id)).map((tp) => tp.name);
-  const target = ctx.state.selected === NETWORK ? t("reg.network") : ctx.state.selected || val("#regPath");
+  const target = ctx.state.client ? t("reg.client_what") : ctx.state.selected === NETWORK ? t("reg.network") : ctx.state.selected || val("#regPath");
   const mode = checked("procMode");
   const procs = backup ? t("reg.sum.as_is")
     : mode?.value === "template" ? form.querySelector("#regProcTemplate")?.selectedOptions?.[0]?.textContent || ""
@@ -335,7 +374,7 @@ function summary(form, ctx) {
     form.querySelector("#regBaseFolder") ? ["reg.sum.folder", val("#regBaseFolder") || "/"] : null,
     ["reg.sum.what", tpls.join(", ")],
     ["reg.sum.procs", procs],
-    ["reg.sum.first", label(checked("continuity") || checked("firstSync"))],
+    ctx.state.client ? null : ["reg.sum.first", label(checked("continuity") || checked("firstSync"))],
   ].filter(Boolean);
   return html`${rows.map(([k, v]) => html`<dt>${t(k)}</dt><dd>${v || t("reg.sum.none")}</dd>`)}`;
 }
@@ -452,7 +491,8 @@ function modeChoice(name, value, label, help, checked = false) {
 
 function processors(ctx) {
   const tp = ctx.state.types.find((x) => x.type === ctx.state.type);
-  const slots = tp ? tp.suggested_processors : [];
+  // a paired player: the chain suggested for what it reported it plays
+  const slots = ctx.state.client ? ctx.state.client.processors : tp ? tp.suggested_processors : [];
   ctx.state.slots = slots;
   // templates made for this device type (the built-in one first) or for any type
   const offered = ctx.state.procTemplates.filter((x) => !x.device_type || x.device_type === ctx.state.type);
@@ -515,7 +555,7 @@ async function suggestProcs(form, ctx) {
   if (!type || network || !form.querySelector("#regSuggest")) return;
   const my = (ctx.state.suggesting = {});
   const body = { type, template_ids: [...ctx.state.picked], name: form.querySelector("#regName")?.value.trim() || "" };
-  if (ctx.state.selected) body.disk = ctx.state.selected;
+  if (ctx.state.client) { /* a paired player: no disk to look at */ } else if (ctx.state.selected) body.disk = ctx.state.selected;
   else if (form.querySelector("#regPath").value.trim()) body.mount_path = form.querySelector("#regPath").value.trim();
   let r;
   try { r = await post("/devices/suggest-processor-template", body); } catch { return; }
@@ -638,7 +678,8 @@ export const actions = {
     }
   },
   async register(form, ctx) {
-    const name = form.querySelector("#regName").value.trim();
+    const name = form.querySelector("#regName").value.split(/\s+/).filter(Boolean).join(" ");
+    if (ctx.state.client) return registerClient(form, ctx, name);
     const network = ctx.state.selected === NETWORK;
     const disk = network ? "" : ctx.state.selected;
     const path = form.querySelector("#regPath").value.trim();
@@ -714,3 +755,45 @@ export const actions = {
     goFrom(ctx, `/devices/${encodeURIComponent(cfg.id)}/${format ? "settings?format=1" : "overview"}`);
   },
 };
+
+/** Finish a paired player's registration: name, templates and processors on its device; the player then syncs. */
+async function registerClient(form, ctx, name) {
+  if (!name) { toast(t("reg.missing"), "error"); return; }
+  const picked = [...ctx.state.picked];
+  const copy = form.querySelector("#regCopy").checked;
+  if (copy && !picked.length) { toast(t("reg.choose_copy"), "error"); return; }
+  if (!procsChosen(form)) { toast(t("reg.choose_procs"), "error"); return; }
+  const procMode = form.querySelector('input[name="procMode"]:checked')?.value;
+  const chosen = new Set([...form.querySelectorAll('input[name="proc"]:checked')].map((x) => Number(x.value)));
+  let slots = ctx.state.slots.map((s, i) => ({ ...s, enabled: chosen.has(i) }));
+  if (procMode === "variant") {
+    const v = ctx.state.variants?.[Number(form.querySelector('input[name="regVariant"]:checked')?.value)];
+    if (!v) { toast(t("reg.choose_procs"), "error"); return; }
+    slots = v.processors;
+  }
+  const submit = form.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  const id = ctx.state.client.id;
+  try {
+    let templateIds = picked;
+    if (copy) {
+      const drafts = await Promise.all(picked.map((x) => post(`/templates/${encodeURIComponent(x)}/copy`, { name })));
+      const libs = drafts.some((d) => !d.library_ids.length) ? [] : [...new Set(drafts.flatMap((d) => d.library_ids))];
+      templateIds = [(await post("/templates", { name, library_ids: libs, rules: drafts.flatMap((d) => d.rules), excludes: drafts.flatMap((d) => d.excludes) })).id];
+    }
+    let procTemplate = procMode === "template" ? form.querySelector("#regProcTemplate").value : null;
+    if (procTemplate === "__draft__") procTemplate = (await post("/processor-templates", ctx.state.draft)).id;
+    if (procMode === "new") procTemplate = (await post("/processor-templates", { name, device_type: "client", processors: slots })).id;
+    await patch(`/devices/${encodeURIComponent(id)}`, {
+      name,
+      rule_set: { ...ctx.state.client.rule_set, template_ids: templateIds },
+      ...(procTemplate ? { processor_template_id: procTemplate } : { processors: slots, processor_template_id: null }),
+      registration_pending: false,
+    });
+  } catch (e) {
+    toast(e.message, "error");
+    return;
+  } finally { submit.disabled = false; }
+  toast(t("reg.done", { name }));
+  goFrom(ctx, `/devices/${encodeURIComponent(id)}/overview`);
+}

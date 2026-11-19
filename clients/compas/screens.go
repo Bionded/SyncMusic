@@ -589,11 +589,20 @@ func (a *App) settings() page {
 		{label: T("set.after", T("after."+s.AfterSync)), act: func() { s.AfterSync = next(afterChoices, s.AfterSync); save() }, group: T("set.g_sync")},
 		{label: T("set.min_battery", s.MinBattery), act: func() { s.MinBattery = next(batteryChoices, s.MinBattery); save() }, group: T("set.g_sync")},
 		{label: T("set.templates"), act: a.openTemplates, group: T("set.g_sync")},
+		{label: T("set.name", a.shownName()), act: func() { a.go_(a.message(T("set.name_where"), T("set.name_hint"), false)) }, group: T("set.g_server")},
 		{label: T("set.server", serverOnly(a.c.st.Server)), act: func() { a.go_(a.pairMenu) }, group: T("set.g_server")},
 		{label: T("btn.about"), act: func() { a.go_(a.about) }, group: T("set.g_server")},
 		{label: T("btn.exit_app"), act: func() { a.quit = true }, group: T("set.g_server")},
 		{label: T("btn.back"), kind: btnBack, act: func() { a.go_(a.home) }},
 	}}
+}
+
+// shownName: this player's name on the server (an install paired before names were kept: the default).
+func (a *App) shownName() string {
+	if a.c.st.Name != "" {
+		return a.c.st.Name
+	}
+	return playerName
 }
 
 func serverOnly(url string) string {
@@ -733,6 +742,10 @@ func (a *App) finish(sd syncDone) {
 	var pe *ProtoError
 	if errors.As(err, &pe) && pe.Code == "no_templates" {
 		a.go_(a.message(T("nothing.title"), T("nothing.text"), false))
+		return
+	}
+	if errors.As(err, &pe) && pe.Code == "registration_pending" { // not set up on the server yet: wait for it
+		a.waitRegistration(a.home)
 		return
 	}
 	if errors.Is(err, errDeclined) {
@@ -980,11 +993,20 @@ func (a *App) listen() {
 	lp := &Client{st: State{Server: a.c.st.Server, Token: a.c.st.Token}, http: newHTTPClient(40 * time.Second)}
 	for {
 		var st struct {
-			Requested bool `json:"requested"`
+			Requested bool   `json:"requested"`
+			Name      string `json:"name"`
 		}
 		if err := lp.call("GET", "status?wait=25", nil, &st); err != nil {
 			time.Sleep(15 * time.Second) // offline or the server restarts: try again later
 			continue
+		}
+		if st.Name != "" {
+			a.later <- func() { // renamed on the server: the server's name wins
+				if a.c.st.Name != st.Name {
+					a.c.st.Name = st.Name
+					_ = a.c.save()
+				}
+			}
 		}
 		if st.Requested {
 			started := make(chan bool, 1)
@@ -1120,7 +1142,49 @@ func (a *App) pairWithCode(url, code string) {
 
 func (a *App) paired() {
 	a.online.Store(ptr(T("home.online")))
-	a.go_(a.message(T("pair.done"), T("pair.done_text"), false))
+	a.waitRegistration(a.message(T("pair.done"), T("pair.done_text"), false))
+}
+
+// waitRegistration: while the server says this player's setup is not finished there (name, what it gets), show
+// "finish setting up on the server" and poll; then go on to `after`. Never an error for this state.
+func (a *App) waitRegistration(after func() page) {
+	a.gen++
+	gen := a.gen
+	name := a.shownName()
+	a.go_(func() page {
+		_, addr := serverName(a.c.st.Server)
+		return page{title: T("reg.title"), lines: []line{
+			{text: T("reg.text"), col: colSoft},
+			{text: T("reg.where", name), col: colTeal2, box: boxNote}, {text: addr, col: colNoteTxt, size: sizeSmall, box: boxNote},
+			{text: T("reg.waits"), col: colDim}},
+			buttons: []button{{label: T("btn.exit"), act: func() { a.quit = true }}}}
+	})
+	lp := &Client{st: State{Server: a.c.st.Server, Token: a.c.st.Token}, http: newHTTPClient(15 * time.Second)}
+	go func() {
+		for {
+			var st struct {
+				Registration string `json:"registration"`
+				Name         string `json:"name"`
+			}
+			err := lp.call("GET", "status", nil, &st)
+			if err == nil && st.Registration != "pending" {
+				a.later <- func() {
+					if st.Name != "" && st.Name != a.c.st.Name {
+						a.c.st.Name = st.Name
+						_ = a.c.save()
+					}
+					if gen == a.gen {
+						a.go_(after)
+					}
+				}
+				return
+			}
+			time.Sleep(3 * time.Second)
+			if a.genNow() != gen {
+				return
+			}
+		}
+	}()
 }
 
 func (a *App) pairError(err error) func() page {

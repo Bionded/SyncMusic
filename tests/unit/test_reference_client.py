@@ -52,6 +52,7 @@ async def server(config, tmp_path):
             cfg.library_ids = ["music"]
             cfg.rule_set = RuleSet(template_ids=[template])
             cfg.delete_threshold_pct = 100
+            cfg.registration_pending = False  # registered on the server
             await app.store.put_device(cfg)
             return rc
 
@@ -125,7 +126,12 @@ async def test_client_without_templates_gets_a_reason_and_no_traceback(server, t
     http = (await paired(tmp_path / "other")).http
     rc = ReferenceClient(tmp_path / "phone", http=http)
     rc.formats = ["mp3"]
-    await rc.pair("http://t/", (await new_code(http))["code"], "New")
+    device_id = await rc.pair("http://t/", (await new_code(http))["code"], "New")
+    with pytest.raises(ClientProtocolError, match="registration_pending"):
+        await rc.start()  # paired, not registered yet: the app waits instead of syncing nothing
+    cfg = await app.store.device(device_id)
+    cfg.registration_pending = False  # registered without a template
+    await app.store.put_device(cfg)
     caplog.set_level(logging.WARNING)
     with pytest.raises(ClientProtocolError, match="no templates"):
         await rc.start()
@@ -207,6 +213,7 @@ async def test_windowed_delivery_keeps_the_outbox_small_and_resumes(server, tmp_
     device_id = rc.state["device_id"]
     cfg = await app.store.device(device_id)
     cfg.settings = {**cfg.settings, "outbox_budget_mb": 1}
+    cfg.registration_pending = False  # registered on the server
     await app.store.put_device(cfg)
     monkeypatch.setattr(client_sessions, "MB", 1)  # one byte: one file per window
     dev = await app.client_sessions.device(device_id)

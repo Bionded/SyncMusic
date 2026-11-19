@@ -2021,13 +2021,17 @@ class AppFacade:
 
     async def compas_app(self) -> dict[str, Any]:
         """Settings → Devices → Compás app: the newest app zip the server can hand to paired players."""
-        rel = await asyncio.to_thread(
-            client_apps.newest, "syncmusic-compas", self.app.config.data_dir
-        )
+        data_dir = self.app.config.data_dir
+        builds = {
+            v: await asyncio.to_thread(client_apps.newest, "syncmusic-compas", data_dir, v)
+            for v in client_apps.VARIANTS
+        }
+        rel = builds[client_apps.VARIANTS[0]]
         return {
             "app": "syncmusic-compas",
             "version": rel.version if rel else None,
             "path": str(rel.zip) if rel else None,
+            "builds": {v: r.version if r else None for v, r in builds.items()},
             "searched": [str(p) for p in client_apps.folders(self.app.config.data_dir)],
         }
 
@@ -2046,13 +2050,17 @@ class AppFacade:
                 raise SyncError(
                     f"the releases cannot be read: {type(e).__name__}", "unavailable"
                 ) from e
-            try:
-                got = await client_apps.install(
-                    releases, "syncmusic-compas", self.app.config.data_dir
-                )
-            except client_apps.AppDownloadError as e:
-                raise SyncError(str(e), "invalid") from e
-            return {"path": str(got.zip), "version": got.version}
+            got: list[client_apps.AppRelease] = []
+            for variant in client_apps.VARIANTS:  # every build: each player keeps its own
+                try:
+                    rel = await client_apps.install(
+                        releases, "syncmusic-compas", self.app.config.data_dir, variant=variant
+                    )
+                except client_apps.AppDownloadError as e:
+                    raise SyncError(str(e), "invalid") from e
+                if all(r.zip != rel.zip for r in got):
+                    got.append(rel)
+            return {"path": str(got[0].zip), "version": got[0].version}
 
         return self.app.jobs.submit("download", "download the Compás app", job).model_dump(
             mode="json"
@@ -2667,8 +2675,19 @@ class AppFacade:
         ):  # the same player with the other firmware: carry over what the new type understands
             settings, dropped = sibling_settings(cfg.type, new_type, cfg.settings)
             changes = {**changes, "settings": settings}
+        if (
+            cfg.registration_pending
+            and "rule_set" in changes
+            and "registration_pending" not in changes
+        ):
+            # what the paired player gets was chosen on its device page: its setup is done
+            changes = {**changes, "registration_pending": False}
         merged = {**cfg.model_dump(mode="json"), **changes}
         saved = await self.app.sync.update_device(DeviceConfig.model_validate(merged))
+        if (
+            saved.type == "client" and saved.name != cfg.name
+        ):  # the paired app shows it on its next poll
+            await self.app.clients.rename(device_id, saved.name)
         out = _public_device(saved)
         if dropped:
             out["dropped_settings"] = dropped
@@ -3094,6 +3113,8 @@ class AppFacade:
         if preview:
             return await self.app.sync.rename_preview(device_id, name)
         cfg, label = await self.app.sync.rename(device_id, name)
+        if cfg.type == "client":  # the paired app learns the name from its pairing
+            await self.app.clients.rename(device_id, cfg.name)
         return {"config": _public_device(cfg), "name": cfg.name, "label": label}
 
     async def play_log(self, device_id: str) -> dict[str, Any]:

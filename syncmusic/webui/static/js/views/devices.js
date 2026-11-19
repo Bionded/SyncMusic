@@ -68,8 +68,11 @@ addStrings({
   "devs.req_code": "Code on the player",
   "devs.req_expires": "expires {when}",
   "devs.req_approve": "Approve",
+  "devs.finish_setup": "Finish setup",
+  "devs.finish_setup_title": "Choose what this player gets: it waits until its setup is finished.",
+  "devs.req_name": "Player name (you can change it before approving)",
   "devs.req_reject": "Reject",
-  "devs.req_approved": "{name} is paired. Choose what it gets on its device page.",
+  "devs.req_approved": "{name} is paired. Now choose what it gets.",
   "devs.registered_head": "Registered · {n}",
   "devs.unnamed": "Unnamed drive",
   "devs.looks_like": "Looks like: {type}",
@@ -402,6 +405,7 @@ addStrings({
   "dev.delete_text": "SyncMusic forgets the device and its settings. Nothing on the device itself is deleted.",
   "dev.deleted": "{name} was deleted.",
   "dev.no_libraries": "No template takes media from a library yet, so there is nothing to sync.",
+  "dev.setup_pending": "This player waits until its setup is finished: choose what it gets.",
   "dev.attach": "Choose templates",
   "dev.history_empty": "No syncs yet.",
   "hist.show": "Show",
@@ -507,7 +511,7 @@ function pairRequests(reqs) {
     <div class="dev-section-head"><h2 id="hReq">${t("devs.req_head")}</h2></div>
     <p class="muted dev-req-hint">${t("devs.req_hint")}</p>
     <div class="panel set-io-list dev-req-list">${reqs.map((q) => html`<div class="set-io-row cl-req" data-request="${q.id}">
-      <span class="cl-req-text"><b class="cl-req-name">${q.client?.name || q.client?.model || q.address}</b>
+      <span class="cl-req-text"><input class="cl-req-name" maxlength="64" aria-label="${t("devs.req_name")}" title="${t("devs.req_name")}" value="${q.client?.name || q.client?.model || ""}" placeholder="${q.address}">
         <span class="cl-req-code">${badge("info", `${t("devs.req_code")}: ${q.display_code}`)}</span>
         <small class="muted">${[info(q), q.expires_at ? t("devs.req_expires", { when: when(q.expires_at) }) : ""].filter(Boolean).join(" · ")}</small></span>
       <div class="toolbar cl-actions"><button type="button" class="btn small primary" data-action="clientApprove" data-id="${q.id}">${t("devs.req_approve")}</button>
@@ -543,7 +547,8 @@ function deviceRow(d, report, job, space) {
     : d.offline_since ? t("devs.offline_since", { when: shortWhen(d.offline_since) }) //
     : d.setting_clock ? t("devs.clock_soon") : d.no_medium ? t("side.no_medium") : d.connected ? "" : t("devs.not_connected");
   // one action by state: the running sync's progress, a plan waiting for review, an error, else Sync
-  const [label, href, title] = syncing ? [t("devs.progress"), `#/devices/${id}/sync/${encodeURIComponent(d.busy)}`, ""]
+  const [label, href, title] = d.registration_pending ? [t("devs.finish_setup"), `#/devices/register?client=${id}`, t("devs.finish_setup_title")]
+    : syncing ? [t("devs.progress"), `#/devices/${id}/sync/${encodeURIComponent(d.busy)}`, ""]
     : d.waiting && d.connected ? [t("devs.review"), `#/devices/${id}/plan${d.waiting.plan_id ? `/${encodeURIComponent(d.waiting.plan_id)}` : ""}`, ""]
     : d.error ? [t("devs.fix"), `#/devices/${id}`, d.error]
     : d.no_libraries && d.connected ? [t("devs.choose_templates"), `#/devices/${id}/rules`, ""]
@@ -812,7 +817,8 @@ async function renderOverview(ctx) {
   const sync = !canSync ? "" : cfg.type === "client" // the app on the player starts a client's sync
     ? html`<button type="button" class="btn primary" data-action="clientSync" data-cap-sync>${t("dev.sync")}</button>`
     : html`<a class="btn primary" href="#/devices/${id}/plan" data-cap-sync>${t("dev.sync")}</a>`;
-  return html`${libs.length ? "" : html`<div class="callout" data-no-libraries style="margin-bottom:16px">${t("dev.no_libraries")} <a href="#/devices/${id}/rules">${t("dev.attach")}</a></div>`}
+  return html`${cfg.registration_pending ? html`<div class="callout" data-setup-pending style="margin-bottom:16px">${t("dev.setup_pending")} <a href="#/devices/register?client=${id}">${t("devs.finish_setup")}</a></div>`
+    : libs.length ? "" : html`<div class="callout" data-no-libraries style="margin-bottom:16px">${t("dev.no_libraries")} <a href="#/devices/${id}/rules">${t("dev.attach")}</a></div>`}
     <section class="card dev-cap" aria-labelledby="hCap"><div class="dev-cap-head"><h2 id="hCap">${t("dev.capacity_head")}</h2>
       ${space && !space.unknown ? html`<span class="dev-cap-line" data-cap-line>${t("dev.capacity", { used: bytes(space.used), free: bytes(space.free), capacity: bytes(space.capacity) })}</span>` : ""}</div>
       ${storage(space, spaceError, idle, connected, sync)}</section>
@@ -1514,9 +1520,16 @@ export const actions = {
   async clientApprove(el, ctx) {
     el.disabled = true;
     try {
-      const r = await post(`/clients/requests/${encodeURIComponent(el.dataset.id)}/approve`);
+      const input = el.closest("[data-request]")?.querySelector(".cl-req-name");
+      const name = (input?.value || "").split(/\s+/).filter(Boolean).join(" ");
+      const r = await post(`/clients/requests/${encodeURIComponent(el.dataset.id)}/approve`, name ? { name } : undefined);
       const p = r.device_id && await get(`/clients/${encodeURIComponent(r.device_id)}`).catch(() => null);
       toast(t("devs.req_approved", { name: p?.name || r.client?.name || "" }), "ok");
+      if (r.device_id && !r.continued) { // a new player: its registration (what it gets) right away
+        refreshSidebar();
+        goFrom(ctx, `/devices/register?client=${encodeURIComponent(r.device_id)}`);
+        return;
+      }
     } catch (e) { toast(e.message, "error"); }
     refreshSidebar();
     ctx.rerender();

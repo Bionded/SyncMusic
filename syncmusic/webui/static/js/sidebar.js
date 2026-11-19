@@ -58,6 +58,7 @@ addStrings({
   "side.clock": "Setting the clock…",
   "side.waiting": "Waits for you",
   "side.no_libraries": "No templates",
+  "side.setup_pending": "Finish setup",
   "side.space": "{used} / {capacity} used",
   "side.space_label": "Used space on {name}",
   "side.error": "Error",
@@ -192,6 +193,7 @@ function deviceCard(d) {
   else if (d.erased && !d.no_libraries) [st, cls, label, glyph] = ["erased", "neutral", t(`side.${d.erased.how}`), null];
   else if (result === "failed") [st, cls, label, glyph] = ["failed", "error", t("side.failed"), null];
   // nothing to sync yet; before "synced": a device without templates is not in sync with anything (275)
+  else if (d.registration_pending) [st, cls, label, glyph] = ["no-libraries", "warn", t("side.setup_pending"), null];
   else if (d.no_libraries) [st, cls, label, glyph] = ["no-libraries", "warn", t("side.no_libraries"), null];
   else if (result === "partial") [st, cls, label, glyph] = ["partial", "warn", t("side.partial"), null];
   else if (result === "succeeded") [st, cls, label, glyph] = ["done", "ok", t("side.synced"), null];

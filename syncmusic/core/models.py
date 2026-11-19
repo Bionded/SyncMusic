@@ -708,6 +708,9 @@ class DeviceConfig(BaseModel):
     # what the user chose for the first sync (keep / adopt / wipe), stored when it was applied: the
     # plan review preselects it when a first sync has to be planned again (e.g. after an interrupted one)
     first_sync_choice: Literal["keep", "adopt", "wipe"] | None = None
+    # a device made by pairing a Wi-Fi client: True until the user finished its registration (what goes on it,
+    # processors) on the server; the client waits for that instead of syncing with nothing chosen
+    registration_pending: bool = False
     # an update sync may remove what no rule selects any more; off: removals wait for a full sync
     update_removals: bool = False
     # ...except items played, finished or rated on this device that no rule selects any more because of it (a played

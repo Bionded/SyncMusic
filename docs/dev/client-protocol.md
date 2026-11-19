@@ -46,6 +46,7 @@ Act on `code`, show `message`. Codes in v1:
 | `request_rejected` | 403 | the user rejected the pairing request |
 | `not_found` | 404 | no such file in an open sync session |
 | `not_in_plan` | 409 | an ack names something the session's plan does not contain |
+| `registration_pending` | 409 | the player is paired but the user has not finished its setup on the server yet: show *continue on the server* and poll `status` until `registration` is `done` |
 | `inventory_required` | 409 | a delta inventory's `since` is unknown: send a full inventory |
 | `session_expired` | 410 | the sync session is gone (expired or the server restarted): start a new one |
 | `not_ready` | 409 | the plan is not ready yet: poll `GET sync/{session_id}` first |
@@ -100,7 +101,8 @@ server.
 `202 {"request_id": "…", "secret": "…", "display_code": "4821", "expires_at": "…", "poll_s": 3, "instance": {…}}`
 
 Show `display_code` on the player: the server's web UI lists the request with the same code (Settings → Clients),
-so the user approves the right player. Then poll `GET pair-requests/{request_id}` with the header
+so the user approves the right player (the user may change the player's name there before approving: the
+client then gets the server's name from `me` and `status`). Then poll `GET pair-requests/{request_id}` with the header
 `X-Pair-Secret: <secret>` every `poll_s` seconds:
 - `202 {"status": "pending"}` — the user has not answered yet;
 - `200 {"status": "approved", "device_id": …, "token": …, "instance": …, "poll_s": …, "continued": …,
@@ -110,7 +112,12 @@ so the user approves the right player. Then poll `GET pair-requests/{request_id}
 The same install asking again replaces its earlier request. Requests live in the server's memory: a restart drops
 them (`request_expired`).
 
-Other routes for a paired client: `GET me` (`device_id`, `name`, `instance`, `poll_s`), `PATCH me {"name": "…"}`,
+After pairing, the server opens the player's registration for the user (name, what it gets, processors). Until it
+is finished, `me` and `status` report `"registration": "pending"` and starting a sync answers `registration_pending`;
+a client shows a page like *Finish setting up this player on the server* and polls `status`. A player that paired
+before (the same `uid`) continues its device and is `done` at once.
+
+Other routes for a paired client: `GET me` (`device_id`, `name`, `registration`, `instance`, `poll_s`), `PATCH me {"name": "…"}`,
 `POST me/token/rotate` → `{"token": "…"}` (the old token stays valid until the new one is first used, or for 24 h,
 so a client that crashes between the two calls keeps working).
 
@@ -155,10 +162,11 @@ the connection may drop between any two requests.
 - **Templates** (any time): `GET templates` → `{"templates": [{"id", "name", "on"}]}` lists the server's
   templates and which of them the client's device uses; `PUT templates {"on": [ids]}` switches them (switches only:
   templates are edited in the web UI; `404 not_found` for an unknown id). The next sync follows.
-- **App update** (any time, e.g. at start): `GET app-update?app=<app>&version=<running version>` →
+- **App update** (any time, e.g. at start): `GET app-update?app=<app>&version=<running version>[&variant=<build>]` →
   `{"available": false}`, or `{"available": true, "app", "version", "files": [{"path", "size", "sha256", "url"}]}`
-  when the server holds a newer release zip of that app (`<app>-<version>.zip` next to the SyncMusic binary or in
-  the data directory's `tools/` folder). `url` is relative to the client API and needs the bearer token. The client
+  when the server holds a newer release zip of that app (`<app>-<version>[-<variant>].zip` next to the SyncMusic binary or in
+  the data directory's `tools/` folder). `variant` names the client's build (`hard` or `soft` float for the Compás
+  app; missing or unknown = `hard`): the client is only offered zips of its own build or zips without a variant. `url` is relative to the client API and needs the bearer token. The client
   checks size and SHA-256 of every file before it replaces anything, and replaces its program file last. Every
   answer also carries `server_version` (the newest release the server holds, or `null`) and `client_newer` (the
   running version is newer than that: tell the user to update the server). The server shows the running version on
@@ -254,8 +262,11 @@ for the next window, until it is `false`. A client that does not stays correct: 
 Call `GET status` every `poll_s` seconds (from `pair`/`me`; default 300) while on a suitable network →
 ```json
 {"sync_wanted": "none" | "full", "reason": "files are waiting for the client", "requested": false, "plan_ready": false,
- "poll_s": 300, "server_time": "2026-11-13T08:00:00+00:00"}
+ "poll_s": 300, "server_time": "2026-11-13T08:00:00+00:00", "registration": "done",
+ "name": "Kitchen player"}
 ```
+`name` is the player's name on the server. The server's name wins: when the user renames the player there, show the
+new name. The name is set on the server only; `PATCH me` stays for older apps that rename from the player.
 `full` means start a sync (the user pressed *Sync* on the server, or prepared files are waiting). The client may
 also sync whenever the user asks. `"requested": true` means the user pressed *Sync now* on the server: an app that is
 open starts the sync at once. To learn that without delay, an open app keeps a **long poll** running:

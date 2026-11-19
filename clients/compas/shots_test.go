@@ -58,6 +58,13 @@ func TestScreenshots(t *testing.T) {
 	pages["keypad"] = kp()
 	pages["preview"] = a.previewPage(Preview{Totals: Totals{FetchCount: 120, FetchBytes: 2.3e9, DeleteCount: 84},
 		Playlists: 3, Confirm: true, Reason: "removes 84 of 270 items (more than 20 %)"}, nil)()
+	a.c.st.Name = "Плеєр у вітальні"
+	a.waitRegistration(func() page { return page{} }) // its poll goroutine fails against the test address
+	pages["setup"] = a.build()
+	a.c.st.Name = ""
+	a.c.st.Name = "Плеєр у вітальні"
+	pages["settings-name"] = a.settings()
+	a.c.st.Name = ""
 	pages["keyboard"] = a.keyboard(T("pair.address"), addressKeys, "http://192.0.2.", func(string) {})()
 	pages["waiting"] = page{title: T("pair.waiting"), lines: []line{{text: T("pair.approve_on_server"), col: colSoft},
 		{text: "4821", col: colTeal2, size: sizeCode, box: boxNote}, {text: "192.0.2.10:8080", col: colNoteTxt, size: sizeSmall, box: boxNote}},

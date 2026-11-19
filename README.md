@@ -28,6 +28,7 @@ window, and a command line client. It runs on Linux (x86_64 and arm64, e.g. a Ra
 ## Contents
 - [Supported libraries](#supported-libraries)
 - [Supported devices](#supported-devices)
+- [SyncMusic app for Compás (HiBy R1)](#syncmusic-app-for-compás-hiby-r1)
 - [Requirements](#requirements)
 - [Installation](#installation) - one-line service install, single-file binary, Docker, from source
 - [Quick start](#quick-start)
@@ -69,6 +70,16 @@ USB drives, FTP/SMB folders and Android players have no listening data to send b
 | Android players and phones (MTP) | **beta** | tested on an Android handheld only; no Android DAP was available for testing yet |
 
 Details per device: [docs/04-devices.md](docs/04-devices.md).
+
+## SyncMusic app for Compás (HiBy R1)
+Players with the Compás firmware can sync over Wi-Fi with the SyncMusic app. Download it from the
+[latest release](https://github.com/Bionded/SyncMusic/releases/latest):
+- `syncmusic-compas-<version>-hard.zip` — **use this one** (faster);
+- `syncmusic-compas-<version>-soft.zip` — if the hard-float app closes at once or does not start, use this one.
+
+Install: connect the player by USB, unzip the file into the `.apps/` folder of the SD card (so the card has
+`.apps/syncmusic/`), eject, then open *Apps* → **SyncMusic** and approve the first start. If the player says
+*Could not start the app* right after the copy, restart the player. Full guide: [docs/10-compas-app.md](docs/10-compas-app.md).
 
 ## Requirements
 - Linux with udev, glibc ≥ 2.28. Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/) for a source install (the

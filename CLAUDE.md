@@ -39,8 +39,8 @@ and video from **libraries** through a per-device chain of **processors** onto *
 | `syncmusic/cli/` | the `syncmusic` command |
 | `tests/` | `unit/`, `contracts/` (shared suites every implementation must pass), `integration/`, `webui/`, `hardware/`; fakes of the servers in `tests/fake_*.py` |
 | `packaging/` | single-file builds (`build-web`, `build-desktop`), Docker, systemd unit and installers |
-| `clients/compas/` | the SyncMusic app for Compás players (Go, static MIPS binary; `build.sh`, released as `syncmusic-compas-<version>.zip`) |
-| `scripts/` | `release.sh` (+ `changelog-section.sh`, `beta-notes.sh`), `test-cleanup.sh`, generators for the settings reference and THIRD-PARTY.md |
+| `clients/compas/` | the SyncMusic app for Compás players (Go, static MIPS binary; `build.sh`, released as `syncmusic-compas-<version>-hard.zip` and `-soft.zip`) |
+| `scripts/` | `release.sh` (+ `changelog-section.sh`, `beta-notes.sh`, `release-downloads.sh`: the downloads table that starts every release page), `test-cleanup.sh`, generators for the settings reference and THIRD-PARTY.md |
 | `docs/` | user guide; `docs/dev/` architecture and how to add a device/library/processor |
 | `.github/workflows/` | CI, nightly, mutation and release workflows |
 

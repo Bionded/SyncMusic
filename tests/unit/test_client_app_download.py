@@ -71,6 +71,28 @@ def test_the_newest_app_zip_of_any_release_is_installed(tmp_path, monkeypatch):
     assert client_apps.offer("syncmusic-compas", "1.1.0", tmp_path) is not None
 
 
+def test_each_build_gets_its_own_zip(tmp_path, monkeypatch):
+    monkeypatch.setattr(client_apps, "running_binary", lambda: None)
+    rels = {
+        "0.5.0": {"syncmusic-compas-1.3.0-hard.zip": GOOD, "syncmusic-compas-1.3.0-soft.zip": GOOD},
+        "0.4.0": {"syncmusic-compas-1.2.0.zip": GOOD},
+    }
+    releases, transport = _releases(rels)
+    soft = asyncio.run(
+        client_apps.install(releases, "syncmusic-compas", tmp_path, transport, "soft")
+    )
+    assert soft.zip.name == "syncmusic-compas-1.3.0-soft.zip" and soft.variant == "soft"
+    assert client_apps.newest("syncmusic-compas", tmp_path, "soft").variant == "soft"
+    # no hard zip here: a hard (or unknown) client is never handed the soft build
+    assert client_apps.newest("syncmusic-compas", tmp_path, "hard") is None
+    assert client_apps.newest("syncmusic-compas", tmp_path) is None
+    # an older zip without a variant fits every build
+    old = asyncio.run(client_apps.install(releases[1:], "syncmusic-compas", tmp_path, transport))
+    assert old.zip.name == "syncmusic-compas-1.2.0.zip" and old.variant is None
+    assert client_apps.newest("syncmusic-compas", tmp_path, "hard").version == "1.2.0"
+    assert client_apps.newest("syncmusic-compas", tmp_path, "soft").version == "1.3.0"
+
+
 @pytest.mark.parametrize(
     ("body", "sums_for", "error"),
     [
@@ -99,7 +121,8 @@ async def test_settings_api_status_and_download(env, monkeypatch):  # noqa: F811
     monkeypatch.setattr(client_apps, "running_binary", lambda: None)
     got = (await c.get("/api/v1/settings/compas-app")).json()
     assert got["version"] is None and got["app"] == "syncmusic-compas"
-    releases, transport = _releases({"0.4.0": {"syncmusic-compas-1.2.0.zip": GOOD}})
+    zips = {"syncmusic-compas-1.2.0-hard.zip": GOOD, "syncmusic-compas-1.2.0-soft.zip": GOOD}
+    releases, transport = _releases({"0.4.0": zips})
 
     async def fake_releases(repo):
         return releases
@@ -107,7 +130,9 @@ async def test_settings_api_status_and_download(env, monkeypatch):  # noqa: F811
     real = client_apps.install
     monkeypatch.setattr(app.update_checker, "releases", fake_releases)
     monkeypatch.setattr(
-        client_apps, "install", lambda rel, name, data: real(rel, name, data, transport)
+        client_apps,
+        "install",
+        lambda rel, name, data, variant: real(rel, name, data, transport, variant),
     )
     r = await c.post("/api/v1/settings/compas-app/download")
     assert r.status_code == 400 and "turned off" in r.json()["message"]
@@ -118,4 +143,5 @@ async def test_settings_api_status_and_download(env, monkeypatch):  # noqa: F811
     assert job.status == "succeeded", job.error
     assert job.result["version"] == "1.2.0"
     got = (await c.get("/api/v1/settings/compas-app")).json()
-    assert got["version"] == "1.2.0" and got["path"].endswith("syncmusic-compas-1.2.0.zip")
+    assert got["version"] == "1.2.0" and got["path"].endswith("syncmusic-compas-1.2.0-hard.zip")
+    assert got["builds"] == {"hard": "1.2.0", "soft": "1.2.0"}

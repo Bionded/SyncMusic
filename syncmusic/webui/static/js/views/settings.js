@@ -39,8 +39,8 @@ const STRINGS = {
   "set.cl_code": "Pairing code",
   "set.cl_expires": "Valid for {time}",
   "set.cl_expired": "The code has expired.",
-  "set.cl_paired": "{name} is paired. Choose what it gets on its device page.",
-  "set.cl_open_device": "Open device",
+  "set.cl_paired": "{name} is paired. Now choose what it gets.",
+  "set.cl_setup_device": "Set it up",
   "set.cl_need_allow": "Allow Wi-Fi clients first.",
   "set.cl_none": "No clients are paired yet.",
   "set.cl_req": "Allow pairing requests",
@@ -1087,8 +1087,10 @@ export const actions = {
         paired = fresh;
         clearInterval(timer);
         setHtml(back.querySelector("[data-cl-pair]"), html`<p role="status" data-cl-done>${t("set.cl_paired", { name: fresh.name })}</p>
-          <a class="btn primary" href="#/devices/${encodeURIComponent(fresh.device_id)}" data-cl-open>${t("set.cl_open_device")}</a>`);
+          <a class="btn primary" href="#/devices/register?client=${encodeURIComponent(fresh.device_id)}" data-cl-open>${t("set.cl_setup_device")}</a>`);
         back.querySelector("[data-cl-open]").addEventListener("click", () => back.querySelector("[data-v='__close']")?.click());
+        // a new player: its registration (what it gets) opens right away, as after approving a request
+        setTimeout(() => back.querySelector("[data-cl-open]")?.click(), 1200);
         return;
       }
       line.textContent = left ? t("set.cl_expires", { time: mmss(left) }) : t("set.cl_expired");

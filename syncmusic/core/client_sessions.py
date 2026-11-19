@@ -347,7 +347,13 @@ class ClientSessions:
         cfg = await self.sync.store.device(device_id)
         new = cfg is None
         if cfg is None:
-            cfg = DeviceConfig(id=device_id, type="client", name=name, on_connect="manual")
+            cfg = DeviceConfig(
+                id=device_id,
+                type="client",
+                name=name,
+                on_connect="manual",
+                registration_pending=True,  # the user chooses what it gets in the registration wizard
+            )
             if client_os.lower() == "compas":  # reads its database only at start
                 cfg.settings = {"player_database": "compas", "after_sync": "restart"}
         outbox = self._outbox_root(device_id)
@@ -394,6 +400,10 @@ class ClientSessions:
     async def start(self, device_id: str, req: SyncRequest) -> ClientSession:
         """Take the client's report and plan; an open session of the device is replaced (the client started over)."""
         dev = await self.device(device_id)
+        if dev.config.registration_pending:
+            raise ClientError(
+                "registration_pending", "finish setting up this player on the server first", 409
+            )
         inv = req.inventory
         if inv.kind == "delta" and inv.since != str(dev.state.inventory_cursor):
             raise ClientError(
@@ -855,6 +865,8 @@ class ClientSessions:
             "plan_ready": open_ is not None and open_.status == "ready",
             "poll_s": poll_s,
             "server_time": _now().isoformat(),
+            "registration": "pending" if dev.config.registration_pending else "done",
+            "name": dev.config.name,  # the server's name wins: a renamed player shows it on the next poll
         }
 
     # --- delivery -------------------------------------------------------------------------------

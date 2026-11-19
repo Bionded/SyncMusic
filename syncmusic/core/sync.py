@@ -979,6 +979,8 @@ class SyncService:
                     # outside its sync windows: when automatic syncs may start again
                     "window_wait": self._window_wait(cfg) if connected else None,
                     "no_libraries": not libs,
+                    # a paired Wi-Fi player whose registration the user has not finished
+                    "registration_pending": cfg.registration_pending,
                     # wiped / formatted, not synced since
                     "erased": await self.erased(cfg),
                     "libraries": libs,

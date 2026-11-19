@@ -93,6 +93,10 @@ class RenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
 
 
+class ApproveRequest(BaseModel):
+    name: str = Field(default="", max_length=64)  # empty: the name the client asked with
+
+
 def base_url(request: Request) -> str:
     """The URL a client should store: as the browser reached us (a reverse proxy's scheme via X-Forwarded-Proto)."""
     proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
@@ -132,6 +136,19 @@ def pairing_url(request: Request) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
+async def set_name(app: Any, device_id: str, name: str) -> bool:
+    """Rename a client: its pairing and its device (the name the app shows comes from the server)."""
+    if not await app.clients.rename(device_id, name):
+        return False
+    cfg = await app.store.device(device_id)
+    clean = " ".join(name.split())[:64]
+    if cfg is not None and clean and cfg.name != clean:
+        await app.store.put_device(cfg.model_copy(update={"name": clean}))
+        await app.sync.load()
+    app.bus.publish("client.changed", device_id=device_id)
+    return True
+
+
 def client_router(facade: AppFacade) -> APIRouter:
     r = APIRouter(prefix=PREFIX)
     app = facade.app
@@ -162,9 +179,11 @@ def client_router(facade: AppFacade) -> APIRouter:
 
     async def me_view(device_id: str) -> dict[str, Any]:
         p = await app.clients.get(device_id)
+        cfg = await app.store.device(device_id)
         return {
             "device_id": device_id,
             "name": p.name if p else "",
+            "registration": "pending" if cfg is not None and cfg.registration_pending else "done",
             "instance": instance(),
             "home": instance(),
             "poll_s": app.client_settings.client_poll_s,
@@ -261,8 +280,7 @@ def client_router(facade: AppFacade) -> APIRouter:
 
     @r.patch("/me")
     async def rename(body: RenameRequest, device_id: str = Depends(device)) -> dict[str, Any]:
-        await app.clients.rename(device_id, body.name)
-        app.bus.publish("client.changed", device_id=device_id)
+        await set_name(app, device_id, body.name)
         return await me_view(device_id)
 
     @r.get("/status")
@@ -356,17 +374,20 @@ def client_router(facade: AppFacade) -> APIRouter:
     async def app_update(
         app_name: Annotated[str, Query(alias="app", max_length=64)],
         version: Annotated[str, Query(max_length=64)],
+        variant: Annotated[str | None, Query(max_length=16)] = None,
         device_id: str = Depends(device),
     ) -> dict[str, Any]:
-        """A newer release of the client's own app the server holds, or `available: false`. The client installs
-        the files itself (`url` relative to the client API)."""
-        newest = await asyncio.to_thread(client_apps.newest, app_name, app.config.data_dir)
+        """A newer release of the client's own app (and its own build, `variant`, e.g. hard/soft float) the server
+        holds, or `available: false`. The client installs the files itself (`url` relative to the client API)."""
+        variant = client_apps.variant_of(variant)
+        newest = await asyncio.to_thread(client_apps.newest, app_name, app.config.data_dir, variant)
         offer = newest if newest is not None and is_newer(newest.version, version) else None
         client_newer = newest is not None and is_newer(version, newest.version)
         await app.clients.update_client(
             device_id,
             {
                 "app_version": version,
+                "app_variant": variant,
                 "update_offer": {"version": offer.version, "state": "offered", "at": _now_iso()}
                 if offer is not None
                 else None,
@@ -390,7 +411,8 @@ def client_router(facade: AppFacade) -> APIRouter:
                     "path": f.name,
                     "size": f.size,
                     "sha256": f.sha256,
-                    "url": f"app-update/{quote(offer.app)}/{quote(offer.version)}/{quote(f.name)}",
+                    "url": f"app-update/{quote(offer.app)}/{quote(offer.version)}/{quote(f.name)}"
+                    f"?variant={variant}",
                 }
                 for f in offer.files
             ],
@@ -411,9 +433,15 @@ def client_router(facade: AppFacade) -> APIRouter:
 
     @r.get("/app-update/{app_name}/{version}/{name:path}", response_model=None)
     async def app_update_file(
-        app_name: str, version: str, name: str, device_id: str = Depends(device)
+        app_name: str,
+        version: str,
+        name: str,
+        variant: Annotated[str | None, Query(max_length=16)] = None,
+        device_id: str = Depends(device),
     ) -> Response:
-        rel = await asyncio.to_thread(client_apps.newest, app_name, app.config.data_dir)
+        rel = await asyncio.to_thread(
+            client_apps.newest, app_name, app.config.data_dir, client_apps.variant_of(variant)
+        )
         data = None
         if rel is not None and rel.version == version:
             data = await asyncio.to_thread(rel.read, name)
@@ -520,12 +548,16 @@ def admin_router(facade: AppFacade) -> APIRouter:
         return [q.view() for q in app.clients.requests()]
 
     @r.post("/requests/{request_id}/{answer}", response_model=None)
-    async def answer_request(request_id: str, answer: str) -> JSONResponse | dict[str, Any]:
+    async def answer_request(
+        request_id: str, answer: str, body: ApproveRequest | None = None
+    ) -> JSONResponse | dict[str, Any]:
         if answer not in ("approve", "reject"):
             return JSONResponse(
                 {"error": "not_found", "message": "approve or reject"}, status_code=404
             )
-        req = await app.clients.answer_request(request_id, answer == "approve")
+        req = await app.clients.answer_request(
+            request_id, answer == "approve", body.name if body else ""
+        )
         if req is None:
             return JSONResponse(
                 {"error": "not_found", "message": "no such pairing request (expired?)"},
@@ -542,7 +574,7 @@ def admin_router(facade: AppFacade) -> APIRouter:
             app.bus.publish("client.paired", device_id=req.device_id, continued=req.continued)
         else:
             app.bus.publish("client.pair_request", request_id=req.id, status=req.status)
-        return req.view() | {"device_id": req.device_id}
+        return req.view() | {"device_id": req.device_id, "continued": req.continued}
 
     @r.get("/{device_id}", response_model=None)
     async def one_client(device_id: str) -> JSONResponse | dict[str, Any]:
@@ -623,11 +655,10 @@ def admin_router(facade: AppFacade) -> APIRouter:
 
     @r.patch("/{device_id}", response_model=None)
     async def rename(device_id: str, body: RenameRequest) -> JSONResponse | dict[str, Any]:
-        if not await app.clients.rename(device_id, body.name):
+        if not await set_name(app, device_id, body.name):
             return JSONResponse(
                 {"error": "not_found", "message": "no such client"}, status_code=404
             )
-        app.bus.publish("client.changed", device_id=device_id)
         p = await app.clients.get(device_id)
         return p.model_dump(mode="json") if p else {}
 

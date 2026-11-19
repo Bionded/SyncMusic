@@ -225,6 +225,7 @@ func normalizeServer(s string) string {
 type pairAsk struct {
 	ID, Secret, DisplayCode string
 	PollS                   int
+	name                    string // the name this player asked with
 }
 
 func (c *Client) clientInfo(name string) map[string]any {
@@ -241,7 +242,7 @@ func (c *Client) RequestPair(server, name string) (pairAsk, error) {
 		PollS       int    `json:"poll_s"`
 	}
 	err := c.call("POST", "pair-requests", map[string]any{"client": c.clientInfo(name), "capabilities": c.capabilities()}, &out)
-	return pairAsk{out.RequestID, out.Secret, out.DisplayCode, max(out.PollS, 1)}, err
+	return pairAsk{out.RequestID, out.Secret, out.DisplayCode, max(out.PollS, 1), name}, err
 }
 
 // PollPair: true once approved (the token is saved); a rejected or expired request is a ProtoError.
@@ -257,8 +258,19 @@ func (c *Client) PollPair(q pairAsk) (bool, error) {
 	if out.Status != "approved" || out.Token == "" {
 		return false, nil
 	}
-	c.st.Token, c.st.DeviceID = out.Token, out.DeviceID
+	c.st.Token, c.st.DeviceID, c.st.Name = out.Token, out.DeviceID, q.name
+	c.refreshName() // the user may have named it when approving
 	return true, c.save()
+}
+
+// refreshName takes this player's name from the server (best effort).
+func (c *Client) refreshName() {
+	var out struct {
+		Name string `json:"name"`
+	}
+	if c.call("GET", "me", nil, &out) == nil && out.Name != "" {
+		c.st.Name = out.Name
+	}
 }
 
 // Forget drops the pairing (server, token, device id, unsent events); the files on the card stay.

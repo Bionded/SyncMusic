@@ -3,8 +3,8 @@
 
 Client authors run it to see what a server answers (and to compare their own client with it); the server's tests run
 it to keep the protocol stable. It pairs a throwaway client with a fresh pairing code, so the server must allow
-Wi-Fi clients. Checks that need something to download are skipped until the paired client has rules that select at
-least one item; give the paired device rules in the web UI and run it again with `--folder` of the first run.
+Wi-Fi clients. Checks that need something to download are skipped until the paired client is registered on the server with rules
+that select at least one item; finish its registration in the web UI and run it again with `--folder` of the first run.
 
     python -m syncmusic.client_conformance http://server:8765 1234-5678 ./conformance-client
     python -m syncmusic.client_conformance http://server:8765 - ./conformance-client   # reuse that pairing
@@ -116,7 +116,7 @@ class Conformance:
         try:
             self.view = await self.c.start(poll_s=1)
         except ClientProtocolError as e:
-            if e.code != "failed":
+            if e.code not in ("failed", "registration_pending"):
                 raise
             raise Skip(f"the server cannot plan for this client yet: {e}") from e
         plan = self.view["plan"]

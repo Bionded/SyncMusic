@@ -674,7 +674,7 @@
   "paths": {
     "/api/client/v1/app-update": {
       "get": {
-        "description": "A newer release of the client's own app the server holds, or `available: false`. The client installs\nthe files itself (`url` relative to the client API).",
+        "description": "A newer release of the client's own app (and its own build, `variant`, e.g. hard/soft float) the server\nholds, or `available: false`. The client installs the files itself (`url` relative to the client API).",
         "operationId": "app_update_api_client_v1_app_update_get",
         "parameters": [
           {
@@ -695,6 +695,23 @@
               "maxLength": 64,
               "title": "Version",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "variant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Variant"
             }
           }
         ],
@@ -795,6 +812,23 @@
             "schema": {
               "title": "Name",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "variant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Variant"
             }
           }
         ],

@@ -71,6 +71,8 @@ a:hover { color: var(--tx); }
 .dev-req-list { padding: 12px 14px; gap: 12px; }
 .dev-req-list .cl-req + .cl-req { border-top: 1px solid var(--line); padding-top: 12px; }
 .cl-req-text { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.cl-req-text .cl-req-name { font-weight: 600; width: min(100%, 22rem); min-height: 36px; border: 1px solid var(--ln2); border-radius: var(--r-ctl); background: var(--bg); color: inherit; padding: 6px 10px; font-size: 14px; }
+.cl-req-text .cl-req-name:focus { border-color: var(--ac); box-shadow: 0 0 0 3px var(--ac-bg); outline: none; }
 @media (max-width: 759px) { .dev-req-list .set-io-row.cl-req { grid-template-columns: minmax(0, 1fr); } .dev-req-list .set-io-row.cl-req > .toolbar { justify-self: start; } }
 .side-bottom { margin-top: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; } /* a long card line never widens the column */
 .side-head-row { display: flex; align-items: center; justify-content: space-between; }

@@ -264,3 +264,74 @@ func TestTemplatesSwitch(t *testing.T) {
 		t.Fatalf("%v %v", put, err)
 	}
 }
+
+func TestPairingSendsTheDefaultNameAndTakesTheServerName(t *testing.T) {
+	sentName := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api/client/v1/pair-requests":
+			var body map[string]map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			sentName, _ = body["client"]["name"].(string)
+			w.WriteHeader(202)
+			_, _ = w.Write([]byte(`{"request_id":"r1","secret":"s","display_code":"1234","poll_s":1}`))
+		case r.URL.Path == "/api/client/v1/pair-requests/r1":
+			_, _ = w.Write([]byte(`{"status":"approved","device_id":"d","token":"smc_x"}`))
+		case r.Method == "GET" && r.URL.Path == "/api/client/v1/me": // named on the server when approved
+			_, _ = w.Write([]byte(`{"name":"Kitchen"}`))
+		}
+	}))
+	defer srv.Close()
+	a := &App{c: &Client{data: t.TempDir(), http: srv.Client(), st: State{UID: "u"}}}
+	if a.shownName() != playerName {
+		t.Fatal("default name")
+	}
+	q, err := a.c.RequestPair(srv.URL, playerName)
+	if err != nil || sentName != playerName {
+		t.Fatalf("sent %q %v", sentName, err)
+	}
+	if ok, err := a.c.PollPair(q); !ok || err != nil || a.shownName() != "Kitchen" {
+		t.Fatalf("server name after approval: %q %v", a.c.st.Name, err)
+	}
+	for _, b := range a.settings().buttons { // the name row only explains where to rename
+		if strings.HasPrefix(b.label, "Name:") {
+			b.act()
+			if p := a.build(); p.title != "Player name" {
+				t.Fatalf("name row opened %q", p.title)
+			}
+		}
+	}
+}
+
+func TestWaitsForTheRegistrationOnTheServer(t *testing.T) {
+	polls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/client/v1/status" || r.Header.Get("Authorization") != "Bearer smc_x" {
+			w.WriteHeader(404)
+			return
+		}
+		if polls++; polls < 2 {
+			_, _ = w.Write([]byte(`{"registration":"pending","name":"HiBy R1 - Compás"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"registration":"done","name":"Kitchen"}`))
+	}))
+	defer srv.Close()
+	a := &App{c: &Client{data: t.TempDir(), st: State{Server: srv.URL + "/", Token: "smc_x"}}, later: make(chan func(), 4)}
+	a.waitRegistration(func() page { return page{title: "Home"} })
+	if p := a.build(); p.title != T("reg.title") || !strings.Contains(p.lines[1].text, "HiBy R1 - Compás") {
+		t.Fatalf("waiting page: %+v", p)
+	}
+	deadline := time.After(15 * time.Second)
+	for a.build().title != "Home" {
+		select {
+		case f := <-a.later:
+			f()
+		case <-deadline:
+			t.Fatalf("still waiting after %d polls", polls)
+		}
+	}
+	if a.c.st.Name != "Kitchen" {
+		t.Fatalf("server name not taken: %q", a.c.st.Name)
+	}
+}

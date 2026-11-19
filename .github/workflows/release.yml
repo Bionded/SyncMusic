@@ -45,7 +45,7 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             [ "${GITHUB_REF_NAME#v}" = "$version" ] || { echo "::error::tag $GITHUB_REF_NAME but pyproject says $version"; exit 1; }
             tag="$GITHUB_REF_NAME" build="" prerelease=false
-            scripts/changelog-section.sh "$version" > notes.md ||
+            scripts/changelog-section.sh "$version" > body.md ||
               { echo "::error::CHANGELOG.md has no [$version] section"; exit 1; }
           else
             if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
@@ -54,8 +54,10 @@ jobs:
             fi
             build="$GITHUB_RUN_NUMBER" tag="v$version-$GITHUB_RUN_NUMBER" prerelease=true
             last="$(git tag --list 'v[0-9]*' | grep -v -- '-' | sort -V | tail -1 || true)"
-            scripts/beta-notes.sh "$build" "$last" > notes.md
+            scripts/beta-notes.sh "$build" "$last" > body.md
           fi
+          # every release page starts with the downloads table (links to this release's assets)
+          { scripts/release-downloads.sh "$GITHUB_REPOSITORY" "$tag"; cat body.md; } > notes.md
           { echo "tag=$tag"; echo "version=$version"; echo "build=$build"; echo "prerelease=$prerelease"; } >> "$GITHUB_OUTPUT"
           cat notes.md
       - uses: actions/upload-artifact@v7
@@ -114,7 +116,7 @@ jobs:
             dist/compas-sdtool-notices.tar.gz
           if-no-files-found: error
 
-  # the SyncMusic app for Compás players: one static MIPS binary, zipped as the folder that goes to <SD>/.apps/
+  # the SyncMusic app for Compás players: hard- and soft-float builds, each zipped as the folder that goes to <SD>/.apps/
   compas-app:
     needs: meta
     runs-on: ubuntu-24.04
@@ -123,7 +125,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
-          go-version-file: clients/compas/go.mod
+          # pinned with -buildvcs=false in build.sh: the same source gives the same binary as a local build checked on a player
+          go-version: "1.24.4"
       - name: Unit tests
         run: cd clients/compas && go test ./...
       - name: Build the app folder
@@ -131,6 +134,8 @@ jobs:
           v="${{ needs.meta.outputs.tag }}"
           clients/compas/build.sh "${v#v}"
           mkdir -p dist && cp clients/compas/out/syncmusic-compas-*.zip dist/
+      - name: Start the built binaries under qemu
+        run: sudo apt-get update && sudo apt-get install -y qemu-user && clients/compas/smoke.sh
       - uses: actions/upload-artifact@v7
         with:
           name: compas-app
@@ -190,6 +195,8 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: notes
+      - name: Every link of the downloads table names a file of this release
+        run: scripts/release-downloads.sh --check notes.md dist
       - name: Publish the release
         run: |
           if [ "$PRERELEASE" = true ]; then

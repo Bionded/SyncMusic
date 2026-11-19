@@ -55,6 +55,7 @@ async def phone(config, music):
         cfg = await app.store.device(device_id)
         assert cfg is not None and cfg.type == "client"
         cfg.rule_set = RuleSet(template_ids=[r.json()["id"]])
+        cfg.registration_pending = False  # registered on the server
         await app.store.put_device(cfg)
         yield app, c, device_id, bearer(token)
     await app.stop()
@@ -237,6 +238,7 @@ async def test_track_gone_from_the_library_is_deleted_on_the_client(phone, music
     app, c, device_id, h = phone
     cfg = await app.store.device(device_id)
     cfg.delete_threshold_pct = 100  # 1 of 2 tracks would ask the user first
+    cfg.registration_pending = False  # registered on the server
     await app.store.put_device(cfg)
     view = await sync(c, h)
     await deliver(c, h, view)
@@ -262,6 +264,7 @@ async def test_the_client_may_confirm_removals_when_the_device_allows_it(phone, 
     body = {"capabilities": CAPS, "inventory": {"items": held(view["plan"]["fetch"])}}
     cfg = await app.store.device(device_id)
     cfg.settings = {**cfg.settings, "client_may_confirm": False}  # the user forbids it
+    cfg.registration_pending = False  # registered on the server
     await app.store.put_device(cfg)
     nxt = await sync(c, h, body)
     assert nxt["status"] == "needs_review" and nxt["may_confirm"] is False, nxt
@@ -271,6 +274,7 @@ async def test_the_client_may_confirm_removals_when_the_device_allows_it(phone, 
     cfg.settings = {
         k: v for k, v in cfg.settings.items() if k != "client_may_confirm"
     }  # default: allowed
+    cfg.registration_pending = False  # registered on the server
     await app.store.put_device(cfg)
     nxt = await sync(c, h, body)
     assert nxt["status"] == "needs_review" and nxt["may_confirm"] is True, nxt
@@ -322,6 +326,7 @@ async def test_flac_is_converted_for_a_client_that_cannot_play_it(config, tmp_pa
             )
             cfg = await app.store.device(device_id)
             cfg.library_ids, cfg.rule_set = ["m"], RuleSet(template_ids=[r.json()["id"]])
+            cfg.registration_pending = False  # registered on the server
             await app.store.put_device(cfg)
             view = await sync(c, bearer(token))
             assert view["status"] == "ready", view
@@ -418,6 +423,7 @@ async def test_deleted_by_user_stays_off_the_client(phone):
     track = next(f for f in view["plan"]["fetch"] if f["role"] == "track")
     cfg = await app.store.device(device_id)
     cfg.delete_threshold_pct = 100  # one of two tracks leaves: no review for this test
+    cfg.registration_pending = False  # registered on the server
     await app.store.put_device(cfg)
     ev = {"eid": "d1", "seq": 1, "type": "deleted_by_user", "key": track["key"]}
     r = await c.post(f"{C}/events", json={"events": [ev]}, headers=h)
@@ -538,6 +544,7 @@ async def test_plan_carries_mtimes_a_generated_set_and_the_after_sync_hint(
     monkeypatch.setattr(ClientDevice, "generated_files", generated)
     cfg = await app.store.device(device_id)
     cfg.settings = {**cfg.settings, "after_sync": "restart"}
+    cfg.registration_pending = False  # registered on the server
     await app.store.put_device(cfg)
     view = await sync(c, h)
     plan = view["plan"]
@@ -556,6 +563,7 @@ async def test_an_update_without_changes_still_names_the_after_sync_action(phone
     app, c, device_id, h = phone
     cfg = await app.store.device(device_id)
     cfg.settings = {**cfg.settings, "after_sync": "refresh"}
+    cfg.registration_pending = False  # registered on the server
     await app.store.put_device(cfg)
     view = await sync(c, h)
     await deliver(c, h, view)
@@ -725,6 +733,30 @@ async def test_a_client_app_gets_the_newer_release_the_server_holds(phone, monke
     assert (await c.get(f"{C}/app-update", params=other, headers=h)).json()["available"] is False
 
 
+async def test_a_client_app_keeps_its_own_build(phone, monkeypatch):
+    from syncmusic.infra import client_apps
+
+    app, c, device_id, h = phone
+    monkeypatch.setattr(client_apps, "running_binary", lambda: None)
+    tools = app.config.data_dir / "tools"
+    _app_zip(tools, "1.3.0-hard", {"syncmusic-compas": b"\x7fELF hard"})
+    _app_zip(tools, "1.3.0-soft", {"syncmusic-compas": b"\x7fELF soft"})
+    for variant, body in (
+        ("soft", b"\x7fELF soft"),
+        ("hard", b"\x7fELF hard"),
+        (None, b"\x7fELF hard"),
+    ):
+        q = {"app": "syncmusic-compas", "version": "1.2.0"} | (
+            {"variant": variant} if variant else {}
+        )
+        doc = (await c.get(f"{C}/app-update", params=q, headers=h)).json()
+        assert doc["available"] and doc["version"] == "1.3.0", doc
+        url = doc["files"][0]["url"]
+        assert (await c.get(f"{C}/{url}", headers=h)).content == body, variant
+        client = (await app.clients.get(device_id)).client
+        assert client["app_variant"] == (variant or "hard")
+
+
 async def test_app_update_offer_and_answer_show_on_the_device(phone, monkeypatch):
     """The server records the version the client runs, the update it offered and the user's answer; a client
     newer than the server's app is told so and offered nothing."""
@@ -769,6 +801,7 @@ async def test_a_large_sync_goes_in_windows_under_the_outbox_budget(phone, monke
     app, c, device_id, h = phone
     cfg = await app.store.device(device_id)
     cfg.settings = {**cfg.settings, "outbox_budget_mb": 1}
+    cfg.registration_pending = False  # registered on the server
     await app.store.put_device(cfg)
     monkeypatch.setattr(client_sessions, "MB", 1)  # a budget of one byte: one file per window
     got: list[str] = []
@@ -884,6 +917,7 @@ async def test_two_clients_sync_at_the_same_time(phone):
     )
     cfg = await app.store.device(other_id)
     cfg.rule_set = (await app.store.device(device_id)).rule_set
+    cfg.registration_pending = False  # registered on the server
     await app.store.put_device(cfg)
     a, b = await asyncio.gather(sync(c, h), sync(c, bearer(other_token)))
     assert a["status"] == b["status"] == "ready", (a, b)
@@ -916,6 +950,7 @@ async def test_progress_covers_the_whole_sync_across_windows(phone, monkeypatch)
     app, c, device_id, h = phone
     cfg = await app.store.device(device_id)
     cfg.settings = {**cfg.settings, "outbox_budget_mb": 1}
+    cfg.registration_pending = False  # registered on the server
     await app.store.put_device(cfg)
     monkeypatch.setattr(client_sessions, "MB", 1)
     got: list[str] = []

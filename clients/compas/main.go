@@ -38,6 +38,7 @@ type State struct {
 	Server      string               `json:"server,omitempty"`
 	Token       string               `json:"token,omitempty"`
 	DeviceID    string               `json:"device_id,omitempty"`
+	Name        string               `json:"name,omitempty"` // this player's name on the server (the server's name wins)
 	Seq         int                  `json:"seq"`
 	Events      []map[string]any     `json:"events"`
 	Files       map[string]int64     `json:"files"`                     // what this app put on the card: path -> size
@@ -258,7 +259,7 @@ func (c *Client) Pair(server, code, name string) error {
 	if err := c.call("POST", "pair", map[string]any{"code": code, "client": c.clientInfo(name), "capabilities": c.capabilities()}, &out); err != nil {
 		return err
 	}
-	c.st.Token, c.st.DeviceID = out.Token, out.DeviceID
+	c.st.Token, c.st.DeviceID, c.st.Name = out.Token, out.DeviceID, name
 	return c.save()
 }
 
@@ -841,7 +842,7 @@ func toF(v any) float64 {
 
 func main() {
 	if len(os.Args) == 1 {
-		fpuFallback(runtime.GOARCH)
+		fmt.Fprintf(os.Stderr, "syncmusic-compas %s (%s, float %s) starting\n", version, runtime.Version(), floatABI)
 		openStartupLog() // launched from the player
 	}
 	if err := run(os.Args[1:]); err != nil {

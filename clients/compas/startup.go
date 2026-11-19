@@ -44,7 +44,7 @@ func openStartupLog() {
 	step("syncmusic-compas %s starting: pid %d, %s/%s, screen %sx%s, board %s", version, os.Getpid(), runtime.GOOS,
 		runtime.GOARCH, os.Getenv("COMPAS_SCREEN_WIDTH"), os.Getenv("COMPAS_SCREEN_HEIGHT"), os.Getenv("COMPAS_BOARD"))
 	cpu, _ := os.ReadFile("/proc/cpuinfo")
-	step("float %s (fallback %v), cpu model %q", floatABI, os.Getenv("SYNCMUSIC_FPU_FALLBACK") != "", cpuModel(string(cpu)))
+	step("%s, float %s, cpu model %q", runtime.Version(), floatABI, cpuModel(string(cpu)))
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT)
 	go func() {
