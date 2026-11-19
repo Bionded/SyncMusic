@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, Field
 
+from syncmusic.core import manifest as manifest_io
 from syncmusic.core.models import (
     ActionKind,
     ItemRef,
@@ -151,7 +152,11 @@ class ClientSession(BaseModel):
     generated: dict[str, Any] | None = (
         None  # a set of server-built files (see ClientDevice.generated_files)
     )
-    gen_files: dict[str, Path] = {}  # fid -> server file of the generated set
+    gen_files: dict[
+        str, Path
+    ] = {}  # fid -> server file of the generated set (and the card manifest)
+    # the manifest the client writes onto its card after a complete sync (see ClientDevice.card_manifest)
+    card_manifest: dict[str, Any] | None = None
     after_sync: str = "none"
     fids: dict[str, str] = {}  # fid -> device path (in the outbox)
     # download ticket: lets a downloader that cannot send headers fetch this session's own files
@@ -341,11 +346,13 @@ class ClientSessions:
         player that cannot index its own files (`client_os`) gets its library database built on the server."""
         from syncmusic.core.models import DeviceConfig
         from syncmusic.core.proc_templates import with_tag_step
-        from syncmusic.core.sync import suggested_processors
+        from syncmusic.core.sync import suggested_processors, wifi_view
         from syncmusic.devices.client import ClientDevice
 
         cfg = await self.sync.store.device(device_id)
         new = cfg is None
+        if cfg is not None and cfg.type != "client":
+            cfg = wifi_view(cfg)  # Wi-Fi added to a device of the same card
         if cfg is None:
             cfg = DeviceConfig(
                 id=device_id,
@@ -444,7 +451,7 @@ class ClientSessions:
             if s.status == "planning":
                 await self._fill(s)  # streaming: what an earlier session left in the outbox
                 if s.stream:  # the generated set describes the whole card: only after the job
-                    s.generated, s.gen_files = None, {}
+                    s.generated, s.gen_files, s.card_manifest = None, {}, None
                 s.status = "ready"
                 s.acked(time.monotonic())  # the transfer starts now
         except ClientError as e:
@@ -759,6 +766,18 @@ class ClientSessions:
                     }
                 )
             s.generated = {"set_id": gen.set_id, "commit": gen.commit, "files": files}
+        s.card_manifest = None
+        card = await asyncio.to_thread(dev.card_manifest)
+        if card is not None:
+            cfid, mtime = await asyncio.to_thread(fid, card)
+            s.gen_files[cfid] = card
+            s.card_manifest = {
+                "path": str(manifest_io.MANIFEST_PATH),
+                "fid": cfid,
+                "size": (await asyncio.to_thread(card.stat)).st_size,
+                "mtime": mtime,
+                "url": f"files/{cfid}?ticket={s.ticket}",
+            }
         # what to do after a sync; the client does it only when the sync changed something on it
         s.after_sync = dev.settings.after_sync
 
@@ -811,6 +830,7 @@ class ClientSessions:
                 "totals": s.totals(),
                 "playlists": s.playlists,
                 "generated": s.generated,
+                "card_manifest": s.card_manifest,
                 "after_sync": s.after_sync,
                 "more": s.more,
                 # streaming: files are listed as they are prepared; delete, state, playlists and the generated

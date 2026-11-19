@@ -5,7 +5,7 @@ import { html, bytes, when, setHtml } from "../dom.js";
 import { t, addStrings } from "../i18n.js";
 import { helpTip, DOCS_BASE } from "../help.js";
 import { get, post, patch, del } from "../api.js";
-import { badge, pageHead, toast, confirm, typedConfirm, errorBox, errorMessage, problemBox, suggestionBox, emptyState, updateLine, indetBar, capacityBar, unsavedBar } from "../ui.js";
+import { badge, pageHead, toast, confirm, dialog, typedConfirm, errorBox, errorMessage, problemBox, suggestionBox, emptyState, updateLine, indetBar, capacityBar, unsavedBar } from "../ui.js";
 import { schemaForm, FormError } from "../forms.js";
 import { go, goFrom } from "../router.js";
 import { refreshSidebar } from "../sidebar.js";
@@ -68,6 +68,9 @@ addStrings({
   "devs.req_code": "Code on the player",
   "devs.req_expires": "expires {when}",
   "devs.req_approve": "Approve",
+  "devs.req_same_card": "This is {name}: add Wi-Fi to it",
+  "devs.req_same_card_hint": "This player holds the card of a device you already have.",
+  "devs.req_wifi_added": "Wi-Fi added to {name}.",
   "devs.finish_setup": "Finish setup",
   "devs.finish_setup_title": "Choose what this player gets: it waits until its setup is finished.",
   "devs.req_name": "Player name (you can change it before approving)",
@@ -110,6 +113,7 @@ addStrings({
   "devs.none": "Connect an iPod, a Rockbox player or a USB drive.",
   "devs.folder_kind": "Folder (cannot be formatted)",
   "devs.network_kind": "Server",
+  "devs.wifi_kind": "Wi-Fi",
   "devs.offline_since": "Not reachable since {when}",
   "dev.offline_since": "The server has not answered since {when}; automatic syncs try again at the next slot.",
   "dev.tab.overview": "Overview",
@@ -159,6 +163,15 @@ addStrings({
   "dev.sdtool_title": "Music shows on the player only after it indexed it",
   "dev.sdtool_text": "With compas-sdtool SyncMusic builds the player's library during the sync, so new music, hearts and play counts are there right after unplugging.",
   "dev.firmware_switched": "{name} now syncs for {new}",
+  "dev.conn_usb_wifi": "USB (also syncs over Wi-Fi)",
+  "dev.merge_title": "Another record of this player",
+  "dev.merge_text": "The same card is also the device {other}. Merge the two into one device: it keeps the settings and templates of {keep} and takes over the Wi-Fi app, history and listening data of the Wi-Fi record.",
+  "dev.merge": "Merge with {name}…",
+  "dev.merge_dialog": "Merge into one device?",
+  "dev.merge_dialog_text": "{drop} (Wi-Fi) goes into {keep}. The music on the player stays; the next USB sync brings the two file lists together.",
+  "dev.merge_name": "Name of the merged device",
+  "dev.merge_ok": "Merge",
+  "dev.merged": "{name} is one device now",
   "dev.lease_title": "Being synced by {name}",
   "dev.lease_text": "Another SyncMusic installation has been writing to this player since {since}. A sync started here is refused until it is done.",
   "dev.foreign_text": "Another program mounted it at {paths}. Two programs writing to it at once can damage the file system; see Troubleshooting to turn the system's automount off, or unmount it everywhere.",
@@ -514,7 +527,8 @@ function pairRequests(reqs) {
       <span class="cl-req-text"><input class="cl-req-name" maxlength="64" aria-label="${t("devs.req_name")}" title="${t("devs.req_name")}" value="${q.client?.name || q.client?.model || ""}" placeholder="${q.address}">
         <span class="cl-req-code">${badge("info", `${t("devs.req_code")}: ${q.display_code}`)}</span>
         <small class="muted">${[info(q), q.expires_at ? t("devs.req_expires", { when: when(q.expires_at) }) : ""].filter(Boolean).join(" · ")}</small></span>
-      <div class="toolbar cl-actions"><button type="button" class="btn small primary" data-action="clientApprove" data-id="${q.id}">${t("devs.req_approve")}</button>
+      <div class="toolbar cl-actions">${(q.same_card || []).map((d) => html`<button type="button" class="btn small primary" data-action="clientApprove" data-id="${q.id}" data-device="${d.id}" data-name="${d.name}" title="${t("devs.req_same_card_hint")}">${t("devs.req_same_card", { name: d.name })}</button>`)}
+        <button type="button" class="btn small ${q.same_card?.length ? "" : "primary"}" data-action="clientApprove" data-id="${q.id}">${t("devs.req_approve")}</button>
         <button type="button" class="btn small danger" data-action="clientReject" data-id="${q.id}">${t("devs.req_reject")}</button></div></div>`)}</div></section>`;
 }
 
@@ -558,7 +572,7 @@ function deviceRow(d, report, job, space) {
   return html`<div class="dev-row linkrow" data-device-row="${d.id}" data-state="${state}">
     <div class="dev-id"><span class="dev-ico">${deviceIcon(d.type, 24)}</span>
       <div class="meta"><b><a class="stretch" href="#/devices/${id}">${d.name}</a>${d.gentle ? html` <span class="tag" data-gentle>${t("devs.gentle")}</span>` : ""}</b>
-        <small data-type-label>${typeLabel(d.type)}${betaBadge(d.type)}${d.kind === "folder" ? html` · ${t("devs.folder_kind")}` : d.kind === "network" ? html` · ${t("devs.network_kind")}` : ""}</small></div></div>
+        <small data-type-label>${typeLabel(d.type)}${betaBadge(d.type)}${d.kind === "folder" ? html` · ${t("devs.folder_kind")}` : d.kind === "network" ? html` · ${t(d.connection === "wifi" ? "devs.wifi_kind" : "devs.network_kind")}` : ""}</small></div></div>
     <div class="dev-state">${badge(state, text)}${upd}</div>
     <div class="dev-space">${d.setting_clock ? html`<span class="bar indet" role="progressbar" aria-label="${t("dev.state.clock")}"><i></i></span>`
       : pct !== null ? html`<span class="bar thin" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></span>`
@@ -655,6 +669,9 @@ async function renderDevice(ctx) {
     ${live?.firmware_switch && !live.busy ? html`<div class="dev-note" role="status" data-firmware-switch><span class="dev-note-text">${icon("info", { size: 16 })}<b>${t("dev.firmware_title")}</b>
       <span>${t("dev.firmware_text", { old: fwName(cfg.type), new: fwName(live.firmware_switch) })}</span></span>
       <button type="button" class="btn small" data-action="switchFirmware">${t("dev.firmware_switch", { new: fwName(live.firmware_switch) })}</button></div>` : ""}
+    ${(live?.merge_with || []).map((m) => html`<div class="dev-note" role="status" data-merge-offer><span class="dev-note-text">${icon("info", { size: 16 })}<b>${t("dev.merge_title")}</b>
+      <span>${t("dev.merge_text", { other: m.name, keep: m.keep === cfg.id ? cfg.name : m.name })}</span></span>
+      <button type="button" class="btn small" data-action="mergeDevice" data-id="${m.id}" data-name="${m.name}" data-keep="${m.keep}">${t("dev.merge", { name: m.name })}</button></div>`)}
     ${sdtool?.error === "not found" ? html`<div class="dev-note" role="status" data-sdtool-offer><span class="dev-note-text">${icon("info", { size: 16 })}<b>${t("dev.sdtool_title")}</b>
       <span>${t("dev.sdtool_text")}</span></span>
       <button type="button" class="btn small" data-action="downloadSdtool">${t("sdtool.download")}</button></div>` : ""}
@@ -732,7 +749,11 @@ function deviceHeader(ctx, syncing) {
   const connected = !!live?.connected;
   const idle = connected && !live.busy && !live.ejecting && !live.ejected && !live.setting_clock && !live.no_medium;
   const server = live?.kind === "network";
-  const model = [ctx.state.type?.display_name || typeLabel(cfg.type), live?.model].filter(Boolean).join(" · ");
+  // a USB device reached through its Wi-Fi app shows as its own type, with how it is connected now
+  const disk = live?.type && live.type !== cfg.type ? live.type : null;
+  const conn = live?.connection === "wifi" && cfg.type !== "client" || disk ? t("devs.wifi_kind")
+    : live?.connection === "usb" && live.wifi_paired ? t("dev.conn_usb_wifi") : "";
+  const model = [disk ? typeLabel(disk) : ctx.state.type?.display_name || typeLabel(cfg.type), live?.model, conn].filter(Boolean).join(" · ");
   const [label, href, why] = syncing ? [t("dev.show_progress"), `#/devices/${id}/sync/${encodeURIComponent(live.busy)}`, ""]
     : live?.waiting && connected ? [t("dev.review_plan"), `#/devices/${id}/plan${live.waiting.plan_id ? `/${encodeURIComponent(live.waiting.plan_id)}` : ""}`, ""]
     : [t("dev.sync"), idle && libs.length ? `#/devices/${id}/plan` : "",
@@ -742,7 +763,7 @@ function deviceHeader(ctx, syncing) {
     : href ? html`<a class="btn primary" href="${href}" data-sync>${icon("sync", { size: 16, width: 2.2 })}${label}</a>`
     : html`<span class="btn primary" aria-disabled="true" title="${why}" data-sync>${icon("sync", { size: 16, width: 2.2 })}${label}</span>`;
   return html`<div class="dev-head" data-device-head>
-    <span class="dev-head-ico">${deviceIcon(cfg.type, 30)}</span>
+    <span class="dev-head-ico">${deviceIcon(disk || cfg.type, 30)}</span>
     <div class="dev-head-meta"><h1>${cfg.name}</h1>
       <div class="dev-head-line">${badge(state, text)}${live?.gentle ? html`<a class="dev-chip" href="#/devices/${id}/settings" title="${t("dev.gentle_title")}" data-gentle>${icon("shield", { size: 14 })}${t("dev.gentle")}</a>` : ""}
         ${feedbackChip(live)}<span data-model-line>${model}${betaBadge(cfg.type)}</span></div>
@@ -1253,6 +1274,7 @@ function dangerZone(cfg, type, live, idle, home) {
 // where the device is: the server's address, the folder, or the disk's USB serial / file system id
 function identity(cfg, live) {
   const st = cfg.settings || {}, ident = cfg.identity || {};
+  if (live?.connection === "wifi") return t("devs.wifi_kind");
   if (live?.kind === "network") return `${st.host}:${st.port ?? 21}${st.base_path || "/"}`;
   return cfg.mount_path || [ident.usb_serial, ident.fs_uuid].filter(Boolean).join(" · ") || "-";
 }
@@ -1522,7 +1544,15 @@ export const actions = {
     try {
       const input = el.closest("[data-request]")?.querySelector(".cl-req-name");
       const name = (input?.value || "").split(/\s+/).filter(Boolean).join(" ");
-      const r = await post(`/clients/requests/${encodeURIComponent(el.dataset.id)}/approve`, name ? { name } : undefined);
+      const target = el.dataset.device;
+      const body = target ? { device_id: target } : (name ? { name } : undefined);
+      const r = await post(`/clients/requests/${encodeURIComponent(el.dataset.id)}/approve`, body);
+      if (target) { // the device exists and is set up: no registration
+        toast(t("devs.req_wifi_added", { name: el.dataset.name }), "ok");
+        refreshSidebar();
+        goFrom(ctx, `/devices/${encodeURIComponent(target)}`);
+        return;
+      }
       const p = r.device_id && await get(`/clients/${encodeURIComponent(r.device_id)}`).catch(() => null);
       toast(t("devs.req_approved", { name: p?.name || r.client?.name || "" }), "ok");
       if (r.device_id && !r.continued) { // a new player: its registration (what it gets) right away
@@ -1758,6 +1788,31 @@ export const actions = {
     try {
       if (await downloadSdtool()) ctx.rerender();
     } finally { el.disabled = false; }
+  },
+  async mergeDevice(el, ctx) {
+    const { cfg } = ctx.state;
+    const keepId = el.dataset.keep;
+    const other = { id: el.dataset.id, name: el.dataset.name };
+    const [keep, drop] = keepId === cfg.id ? [cfg, other] : [other, cfg];
+    const names = [...new Set([keep.name, drop.name])];
+    let name = keep.name;
+    const ok = await dialog({
+      title: t("dev.merge_dialog"),
+      message: t("dev.merge_dialog_text", { keep: keep.name, drop: drop.name }),
+      body: html`<div class="field"><label for="mergeName">${t("dev.merge_name")}</label>
+        <select id="mergeName">${names.map((n) => html`<option value="${n}">${n}</option>`)}</select></div>`,
+      buttons: [{ label: t("common.cancel"), value: false }, { label: t("dev.merge_ok"), value: true, kind: "primary" }],
+      onButton: (value, root) => { if (value) name = root.querySelector("#mergeName").value; return true; },
+    });
+    if (ok !== true) return;
+    el.disabled = true;
+    try {
+      await post(`/devices/${encodeURIComponent(keep.id)}/merge`, { device_id: drop.id, name });
+    } finally { el.disabled = false; }
+    toast(t("dev.merged", { name }), "ok");
+    refreshSidebar();
+    if (keep.id === cfg.id) ctx.rerender();
+    else go(`/devices/${encodeURIComponent(keep.id)}`);
   },
   async switchFirmware(el, ctx) {
     const { cfg, live } = ctx.state;

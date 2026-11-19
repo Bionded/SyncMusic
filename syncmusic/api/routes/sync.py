@@ -11,7 +11,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from syncmusic.api.routes import thumb_response
@@ -70,6 +70,13 @@ class IgnoreDiskRequest(BaseModel):
 
 class BindDiskRequest(BaseModel):
     disk: str | None = None  # /dev path; default: the disk the device's directory is on
+
+
+class MergeRequest(BaseModel):
+    device_id: str = Field(
+        min_length=1, max_length=64
+    )  # the Wi-Fi client record that goes into this one
+    name: str = Field(default="", max_length=64)  # the kept record's name (empty: unchanged)
 
 
 class FormatRequest(BaseModel):
@@ -415,6 +422,12 @@ def router(facade: AppFacade) -> APIRouter:
     async def bind_disk(device_id: str, req: BindDiskRequest | None = None) -> dict[str, Any]:
         """A directory-bound device becomes a disk device (USB serial / fs UUID), so it can be formatted."""
         return await facade.bind_device_disk(device_id, req.disk if req else None)
+
+    @r.post("/devices/{device_id}/merge")
+    async def merge_device(device_id: str, req: MergeRequest) -> dict[str, Any]:
+        """Two records of one device become one: the Wi-Fi client `req.device_id` goes into this device (its
+        history, listening data and Wi-Fi pairing move here; this device's settings and templates stay)."""
+        return await facade.merge_devices(device_id, req.device_id, req.name)
 
     @r.post("/devices/{device_id}/format")
     async def format_device(device_id: str, req: FormatRequest) -> dict[str, Any]:

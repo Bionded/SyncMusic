@@ -19,6 +19,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Pairing codes for Wi-Fi clients are 8 digits (easy to type on a player), valid for 1 minute by default, and a client address gets at most 2 pairing attempts per second.
 
 ### Added
+- Devices: a player that was added twice — once over USB or a card reader and once as a separate Wi-Fi device — gets a **Merge with …** offer on both device pages. Merging keeps one device with the USB record's settings and templates, the name you choose, and the Wi-Fi record's app pairing, history and listening data (plays already sent are not sent again).
+- Wi-Fi clients: when a Compás player asking to connect holds the card of a device you already registered over USB, its request card offers **This is <name>: add Wi-Fi to it** — the player keeps one device record (settings, rules, history) instead of a second one. Its device page shows its own type and how it is connected now (Wi-Fi, or USB while it also syncs over Wi-Fi). A complete Wi-Fi sync writes the same manifest onto the card as a USB sync, so syncing that card over USB afterwards sees the Wi-Fi files as its own, and a Wi-Fi sync after a USB sync starts from what the USB sync left on the card.
 - When a sync stops twice on an I/O error, the device page offers **Skip that file and continue**: the file it stopped at is left out for a day, the file system is repaired and the sync continues.
 - Wi-Fi clients: the device page shows the real transfer speed to the player and the time left while the app downloads.
 - HiBy R1 with Compás (USB and the Wi-Fi app): album ratings sync both ways with Navidrome and other Subsonic servers.
@@ -35,6 +37,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 - If both copies of SyncMusic's sync record on a player are damaged, the device page offers **Rebuild from files**: the damaged copies are moved aside and the next sync starts as a first sync that can adopt the files already on the player, instead of wiping it.
 
 ### Fixed
+- Compás players synced both over USB and by the Wi-Fi app keep each playlist as one `Playlists/<name>.m3u` file: a Wi-Fi sync no longer deletes the copy a USB sync wrote and sends it again.
+- A registered player's card in a USB card reader (recognised by its manifest or file system) can be ejected, repaired and synced again; it was refused because the reader reports another serial.
 - The SyncMusic app for Compás players from the beta build closed at once on the HiBy R1: it is built with the Go version that runs there again, and the build now checks that the app starts.
 - Wi-Fi sync in the Compás app no longer fails with "ack: EOF" when a connection to the server was dropped: the app retries such calls, and the server keeps idle connections open longer.
 - Wi-Fi clients: a sync larger than the server's outbox budget shows its progress, size and time left for the whole sync (all windows), on the device page and in the Compás app, instead of restarting the count for every part.

@@ -725,6 +725,8 @@ class DeviceConfig(BaseModel):
     update_every_min: int | None = Field(15, ge=1, le=1440)
     # the last Wipe / Format; set by those actions, not editable
     erased: ErasedMark | None = None
+    # set on the Wi-Fi view of a disk device (`sync.wifi_view`): the record as stored, which saving restores
+    _disk: DeviceConfig | None = PrivateAttr(default=None)
 
     @model_validator(mode="before")
     @classmethod

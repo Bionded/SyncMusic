@@ -428,6 +428,30 @@ class ClientDevice(FileDeviceMixin, Device):
             files=[GeneratedFile(path=f"{COMPAS_GEN_DIR}/{n}", source=out / n) for n in names],
         )
 
+    def _playlist_format(self) -> tuple[str, str]:
+        """The Compás app keeps playlists where the player's own are, `Playlists/<name>.m3u` (the same files a
+        USB sync of its card writes); other clients get `.m3u8`."""
+        if self.settings.player_database == "compas":
+            return ".m3u", "\n"
+        return super()._playlist_format()
+
+    def card_manifest(self) -> Path | None:
+        """A copy of this device's manifest for the client to write onto its card as `.syncmusic/manifest.jsonl`,
+        or None. Only for a device that is also synced on its own mount (USB, card reader): with the same manifest
+        on the card, that sync sees the files the client took as its own."""
+        if self.config._disk is None or (self.mount / manifest_io.MERGED_MARK).exists():
+            return None
+        src = self.mount / manifest_io.MANIFEST_PATH
+        try:
+            data = src.read_bytes()
+        except FileNotFoundError:
+            return None
+        out = self._side("card") / "manifest.jsonl"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if not out.is_file() or out.read_bytes() != data:
+            manifest_io.atomic_write(out, data)
+        return out
+
     def _side(self, what: str) -> Path:
         return self.mount.parent / f"{self.mount.name}.{what}"
 
@@ -438,6 +462,18 @@ class ClientDevice(FileDeviceMixin, Device):
 
     def model_capabilities(self) -> DeviceCapabilities:
         return super().model_capabilities().model_copy(update={"path_rules": self.path_rules()})
+
+    def effective_capabilities(self) -> DeviceCapabilities:
+        """A device also synced on its own mount: what it had there at its last sync (files are processed alike
+        over both connections); else the client's own."""
+        if self.config._disk is not None:
+            try:
+                return DeviceCapabilities.model_validate_json(
+                    (self.mount / manifest_io.CARD_CAPS).read_bytes()
+                )
+            except (OSError, ValueError):
+                pass
+        return super().effective_capabilities()
 
     def label_for(self, name: str, fs: str | None, current: str | None) -> str | None:
         return None

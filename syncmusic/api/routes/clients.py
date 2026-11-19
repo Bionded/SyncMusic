@@ -95,6 +95,8 @@ class RenameRequest(BaseModel):
 
 class ApproveRequest(BaseModel):
     name: str = Field(default="", max_length=64)  # empty: the name the client asked with
+    # add Wi-Fi to this device (one of the request's `same_card`) instead of a new one
+    device_id: str = Field(default="", max_length=64)
 
 
 def base_url(request: Request) -> str:
@@ -543,9 +545,24 @@ def admin_router(facade: AppFacade) -> APIRouter:
         await app.announce()
         return {"ok": ok}
 
+    async def same_card(card_uid: str) -> list[dict[str, str]]:
+        """Devices already registered with the card a client reports (its on-card manifest id): offered as
+        'add Wi-Fi to it' instead of a new device."""
+        if not card_uid:
+            return []
+        return [
+            {"id": d.id, "name": d.name, "type": d.type}
+            for d in await app.sync.store.devices()
+            if d.type != "client" and card_uid in (d.identity.manifest_device_id, d.id)
+        ]
+
     @r.get("/requests")
     async def list_requests() -> list[dict[str, Any]]:
-        return [q.view() for q in app.clients.requests()]
+        """Pending requests, each with its `same_card` devices."""
+        return [
+            q.view() | {"same_card": await same_card(q.client.card_uid)}
+            for q in app.clients.requests()
+        ]
 
     @r.post("/requests/{request_id}/{answer}", response_model=None)
     async def answer_request(
@@ -555,8 +572,17 @@ def admin_router(facade: AppFacade) -> APIRouter:
             return JSONResponse(
                 {"error": "not_found", "message": "approve or reject"}, status_code=404
             )
+        target = body.device_id if body else ""
+        if target:
+            pending = next((q for q in app.clients.requests() if q.id == request_id), None)
+            ids = [d["id"] for d in await same_card(pending.client.card_uid)] if pending else []
+            if target not in ids or await app.clients.get(target) is not None:
+                return JSONResponse(
+                    {"error": "invalid", "message": "that device does not hold this player's card"},
+                    status_code=422,
+                )
         req = await app.clients.answer_request(
-            request_id, answer == "approve", body.name if body else ""
+            request_id, answer == "approve", body.name if body else "", target
         )
         if req is None:
             return JSONResponse(
@@ -564,6 +590,8 @@ def admin_router(facade: AppFacade) -> APIRouter:
                 status_code=404,
             )
         if req.device_id:
+            if target and req.device_id == target:
+                app.sync.wifi_ids.add(target)
             p = await app.clients.get(req.device_id)
             await app.client_sessions.ensure_device(
                 req.device_id,
@@ -668,6 +696,7 @@ def admin_router(facade: AppFacade) -> APIRouter:
             return JSONResponse(
                 {"error": "not_found", "message": "no such client"}, status_code=404
             )
+        app.sync.wifi_ids.discard(device_id)
         app.bus.publish("client.revoked", device_id=device_id)
         return {"ok": True}
 

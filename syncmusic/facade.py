@@ -3009,6 +3009,10 @@ class AppFacade:
     async def eject_device(self, device_id: str) -> None:
         await self.app.sync.eject(device_id)
 
+    async def merge_devices(self, keep: str, drop: str, name: str = "") -> dict[str, Any]:
+        cfg = await self.app.sync.merge_devices(keep, drop, name)
+        return _public_device(cfg)
+
     async def bind_device_disk(self, device_id: str, disk: str | None = None) -> dict[str, Any]:
         return _public_device(await self.app.sync.bind_disk(device_id, disk))
 

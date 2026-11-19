@@ -135,6 +135,7 @@ class Application:
         await self.notifications.start()
         await self.sync.add_tag_steps()
         await self.sync.load()
+        self.sync.wifi_ids = {p.device_id for p in await self.clients.list() if not p.revoked}
         if self.config.detect_devices:
             await self.watcher.start()
         try:

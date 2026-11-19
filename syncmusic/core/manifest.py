@@ -57,6 +57,12 @@ log = logging.getLogger(__name__)
 STATE_DIR = Path(".syncmusic")
 MANIFEST_PATH = STATE_DIR / "manifest.jsonl"
 INFLIGHT_PATH = STATE_DIR / "inflight"
+# a Wi-Fi record was merged into a USB one: the next USB sync merges the two manifests (until then the Wi-Fi side
+# does not hand its manifest to the card)
+MERGED_MARK = STATE_DIR / "merged"
+# the capabilities a device had on its own mount at its last sync there: its Wi-Fi app's syncs plan with the same,
+# so a file is processed alike over both connections
+CARD_CAPS = STATE_DIR / "card-capabilities.json"
 # a second copy of the manifest, written after it on other clusters: read when the manifest itself is damaged
 BACKUP_PATH = STATE_DIR / "manifest.jsonl.bak"
 

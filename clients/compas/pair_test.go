@@ -111,7 +111,7 @@ func TestPairingRequestPendingThenApproved(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	c := &Client{data: t.TempDir(), http: srv.Client(), st: State{UID: "u"}}
+	c := &Client{root: t.TempDir(), data: t.TempDir(), http: srv.Client(), st: State{UID: "u"}}
 	q, err := c.RequestPair(strings.TrimPrefix(srv.URL, "http://"), playerName) // no scheme: http
 	if err != nil || q.DisplayCode != "4821" || c.st.Server != srv.URL+"/" {
 		t.Fatalf("%+v %v %s", q, err, c.st.Server)
@@ -282,7 +282,7 @@ func TestPairingSendsTheDefaultNameAndTakesTheServerName(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	a := &App{c: &Client{data: t.TempDir(), http: srv.Client(), st: State{UID: "u"}}}
+	a := &App{c: &Client{root: t.TempDir(), data: t.TempDir(), http: srv.Client(), st: State{UID: "u"}}}
 	if a.shownName() != playerName {
 		t.Fatal("default name")
 	}

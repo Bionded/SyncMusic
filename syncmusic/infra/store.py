@@ -121,6 +121,10 @@ class Store:
         return DeviceConfig.model_validate_json(row["config"]) if row else None
 
     async def put_device(self, cfg: DeviceConfig) -> None:
+        if cfg._disk is not None:  # a Wi-Fi view is saved as the disk device it shows
+            disk = cfg._disk
+            cfg = cfg.model_copy(update={"type": disk.type, "settings": disk.settings})
+            cfg._disk = None
         now = utcnow().isoformat()
         await self.db.execute(
             "INSERT INTO devices (id, type, name, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) "
@@ -140,6 +144,47 @@ class Store:
                 ("DELETE FROM client_pairings WHERE device_id = ?", (device_id,)),
             ]
         )
+
+    async def merge_device(self, keep: str, drop: str) -> None:
+        """Fold the record `drop` into `keep` (two records of one device): its history, listening data still to
+        send, the plays already sent (so none is counted twice) and its Wi-Fi pairing move to `keep`; where both
+        have a row of the same key, `keep`'s stays. Then `drop` is deleted. One transaction."""
+        moved = (
+            "jobs",
+            "sync_reports",
+            "pending_feedback",
+            "dropped_feedback",
+            "device_health",
+            "notifications",
+        )
+        keyed = ("submitted_plays", "position_scopes", "feedback_journal", "client_pairings")
+        await self.db.execute_all(
+            [
+                *(
+                    (f"UPDATE {t} SET device_id = ? WHERE device_id = ?", (keep, drop))
+                    for t in moved
+                ),
+                *(
+                    (f"UPDATE OR IGNORE {t} SET device_id = ? WHERE device_id = ?", (keep, drop))
+                    for t in keyed
+                ),
+                *((f"DELETE FROM {t} WHERE device_id = ?", (drop,)) for t in keyed),
+                ("DELETE FROM device_items WHERE device_id = ?", (drop,)),
+                ("DELETE FROM devices WHERE id = ?", (drop,)),
+            ]
+        )
+
+    async def client_card_uids(self) -> dict[str, str]:
+        """Device id -> the card id its paired Wi-Fi app reported (paired, not revoked, with a card id)."""
+        rows = await self.db.fetchall(
+            "SELECT device_id, client FROM client_pairings WHERE token_sha256 IS NOT NULL"
+        )
+        out = {}
+        for r in rows:
+            uid = json.loads(r["client"]).get("card_uid") or ""
+            if uid:
+                out[r["device_id"]] = uid
+        return out
 
     # --- templates ---------------------------------------------------------------------------
 

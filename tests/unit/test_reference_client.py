@@ -264,3 +264,111 @@ async def test_streaming_delivery_in_one_session_resumes_a_dropped_download(
     assert not list(rc.folder.rglob("*.part"))
     assert not [p for p in dev.outbox() if p.endswith(".mp3")]
     assert (await rc.sync())["fetched"] == 0
+
+
+async def test_wifi_added_to_a_registered_device_syncs_into_that_device(server, tmp_path):
+    """A player whose card is already a registered (USB) device pairs onto that device: its Wi-Fi syncs plan for
+    the same record (its rules, its items) and the record stays the USB device."""
+    from syncmusic.core.models import DeviceConfig, DeviceIdentity
+
+    app, paired, _ = server
+    http = (await paired(tmp_path / "other")).http
+    ref_cfg = (await app.store.devices())[0]
+    await app.store.put_device(
+        DeviceConfig(
+            id="card-drive",
+            name="Card drive",
+            type="usb_drive",
+            identity=DeviceIdentity(manifest_device_id="0f1e2d3c-ffff"),
+            library_ids=["music"],
+            rule_set=ref_cfg.rule_set,
+            delete_threshold_pct=100,
+        )
+    )
+    rc = ReferenceClient(tmp_path / "card", http=http)
+    rc.formats, rc.card_uid = ["mp3"], "0f1e2d3c-ffff"
+
+    async def approve() -> None:
+        for _ in range(600):
+            if reqs := (await http.get("/api/v1/clients/requests")).json():
+                break
+            await asyncio.sleep(0.05)
+        assert [d["id"] for d in reqs[0]["same_card"]] == ["card-drive"]
+        r = await http.post(
+            f"/api/v1/clients/requests/{reqs[0]['id']}/approve", json={"device_id": "card-drive"}
+        )
+        assert r.status_code == 200, r.text
+
+    task = asyncio.create_task(approve())
+    assert await asyncio.wait_for(rc.request_pairing("http://t/", "R1"), 30) == "card-drive"
+    await task
+    out = await rc.sync()
+    assert out["failed"] == 0 and len(tracks(rc.folder)) == 2
+    assert (await rc.sync())["fetched"] == 0
+    stored = await app.store.device("card-drive")
+    assert stored.type == "usb_drive" and len(await app.store.devices()) == 2
+
+
+async def test_wifi_sync_writes_the_card_manifest_a_usb_sync_reads(server, tmp_path):
+    """A player paired onto a registered device gets that device's manifest onto its card after a complete
+    sync: the same uid and every file it took, so a USB sync of the card sees them as its own. A USB sync
+    later hands its manifest back to the Wi-Fi side."""
+    from types import SimpleNamespace
+
+    from syncmusic.core import manifest as manifest_io
+    from syncmusic.core.models import DeviceConfig, DeviceIdentity
+    from syncmusic.core.sync import foreign_manifest
+
+    app, paired, _ = server
+    http = (await paired(tmp_path / "other")).http
+    ref_cfg = (await app.store.devices())[0]
+    await app.store.put_device(
+        DeviceConfig(
+            id="card-drive",
+            name="Card drive",
+            type="usb_drive",
+            identity=DeviceIdentity(manifest_device_id="0f1e2d3c-eeee"),
+            library_ids=["music"],
+            rule_set=ref_cfg.rule_set,
+            delete_threshold_pct=100,
+        )
+    )
+    rc = ReferenceClient(tmp_path / "card", http=http)
+    rc.formats, rc.card_uid = ["mp3"], "0f1e2d3c-eeee"
+
+    async def approve() -> None:
+        for _ in range(600):
+            if reqs := (await http.get("/api/v1/clients/requests")).json():
+                break
+            await asyncio.sleep(0.05)
+        await http.post(
+            f"/api/v1/clients/requests/{reqs[0]['id']}/approve", json={"device_id": "card-drive"}
+        )
+
+    task = asyncio.create_task(approve())
+    await asyncio.wait_for(rc.request_pairing("http://t/", "R1"), 30)
+    await task
+    assert (await rc.sync())["failed"] == 0
+    card = manifest_io.read(rc.folder)
+    assert card is not None
+    assert not foreign_manifest(card, await app.store.device("card-drive"))
+    assert sorted(e.path for e in card.items.values()) == sorted(tracks(rc.folder))
+    assert (rc.folder / ".syncmusic/manifest.jsonl.bak").read_bytes() == (
+        rc.folder / ".syncmusic/manifest.jsonl"
+    ).read_bytes()
+    assert not any(p.startswith(".syncmusic/") for p in rc._files())
+
+    # a USB sync of the card changed its manifest: the Wi-Fi side takes the card's copy
+    usb = tmp_path / "usb"
+    (usb / ".syncmusic").mkdir(parents=True)
+    card.header.app_version = "0.0.1-usb"
+    changed = manifest_io.dumps(card)
+    assert changed.encode() != (rc.folder / ".syncmusic/manifest.jsonl").read_bytes()
+    (usb / ".syncmusic/manifest.jsonl").write_text(changed, encoding="utf-8")
+    cfg = await app.store.device("card-drive")
+    caps = (await app.client_sessions.device("card-drive")).effective_capabilities()
+    usb_dev = SimpleNamespace(network=False, mount=usb, effective_capabilities=lambda: caps)
+    await app.sync._mirror_card_manifest(cfg, usb_dev)
+    outbox = app.sync._network_dir(cfg) / ".syncmusic/manifest.jsonl"
+    assert outbox.read_text(encoding="utf-8") == changed
+    assert (await rc.sync())["fetched"] == 0

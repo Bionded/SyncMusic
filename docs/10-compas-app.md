@@ -85,6 +85,17 @@ when you press **Register**. If you leave the setup, the Devices page offers **F
 
 ![Finish the setup on the server](img/compas-app-setup.png)
 
+**A card you already sync over USB.** The app reads the id SyncMusic keeps on the card (`.syncmusic/` at the card's
+root; a card SyncMusic never wrote to gets one at the first pairing). When that card belongs to a device you already
+registered over USB or a card reader, its request card offers **This is <name>: add Wi-Fi to it**. That keeps one
+device: same settings, templates and history, synced over Wi-Fi while the player is not on USB (the Devices list
+shows it as *Wi-Fi*). After every complete Wi-Fi sync the app writes the same `.syncmusic/manifest.jsonl` a USB sync
+writes, so you can switch between USB and Wi-Fi freely: each sync sees the files the other one put on the card as
+its own. **Approve** instead makes a separate Wi-Fi device; if you did that earlier, both device pages offer
+**Merge with …**: the two records become one with the USB device's settings and templates, the name you pick, and
+the Wi-Fi device's pairing, history and listening data. The next USB sync brings both lists of files on the card
+together.
+
 **Settings → Server → Forget this server** on the player removes the
 pairing; the music on the card stays. (Writing `<server address> <code>` into `.apps-data/syncmusic/pair.txt`
 over USB also pairs the app on its next start.)

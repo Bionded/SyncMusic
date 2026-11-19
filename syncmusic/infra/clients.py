@@ -56,6 +56,9 @@ class ClientInfo(BaseModel):
     """What a client says about itself when it pairs (shown in the UI, never trusted)."""
 
     uid: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9._:-]+$")
+    # the id in the header of SyncMusic's manifest on the player's storage card ("" = unknown): the card is
+    # the device, so this ties the client to a device synced over USB or a card reader
+    card_uid: str = Field("", max_length=64, pattern=r"^[A-Za-z0-9._:-]*$")
     name: str = Field("", max_length=64)
     model: str = Field("", max_length=64)
     manufacturer: str = Field("", max_length=64)
@@ -248,9 +251,10 @@ class Clients:
         return await self._issue(client, capabilities, address)
 
     async def _issue(
-        self, client: ClientInfo, capabilities: dict[str, Any], address: str
+        self, client: ClientInfo, capabilities: dict[str, Any], address: str, device_id: str = ""
     ) -> tuple[str, str, bool]:
-        """A token for this install: `(device_id, token, continued)` (a known uid continues its device)."""
+        """A token for this install: `(device_id, token, continued)` (a known uid continues its device; a new one
+        gets `device_id`, an existing device of the same card, or a new id)."""
         now = _now()
         token = "smc_" + secrets.token_urlsafe(32)
         name = client.name.strip() or client.model.strip() or "Wi-Fi client"
@@ -268,7 +272,7 @@ class Clients:
                 (info, caps, _sha(token), _iso(now), device_id),
             )
         else:
-            device_id = uuid.uuid4().hex[:12]
+            device_id = device_id or uuid.uuid4().hex[:12]
             await self.db.execute(
                 "INSERT INTO client_pairings (device_id, client_uid, name, client, capabilities, "
                 "token_sha256, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -346,7 +350,7 @@ class Clients:
         return req
 
     async def answer_request(
-        self, request_id: str, approve: bool, name: str = ""
+        self, request_id: str, approve: bool, name: str = "", device_id: str = ""
     ) -> PairRequestState | None:
         """Approve (issues the token, kept for the client's next poll) or reject a pending request; `name`
         replaces the name the client asked with."""
@@ -358,7 +362,7 @@ class Clients:
             if name.strip():
                 req.client = req.client.model_copy(update={"name": name.strip()[:64]})
             req.device_id, req.token, req.continued = await self._issue(
-                req.client, req.capabilities, req.address
+                req.client, req.capabilities, req.address, device_id
             )
             req.status = "approved"
         else:

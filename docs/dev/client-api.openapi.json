@@ -290,6 +290,13 @@
             "title": "App Version",
             "type": "string"
           },
+          "card_uid": {
+            "default": "",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9._:-]*$",
+            "title": "Card Uid",
+            "type": "string"
+          },
           "manufacturer": {
             "default": "",
             "maxLength": 64,

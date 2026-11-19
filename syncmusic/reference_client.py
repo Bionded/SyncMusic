@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -34,6 +35,7 @@ import httpx
 API = "api/client/v1"
 STATE = ".syncmusic-client.json"
 PART = ".part"
+CARD_STATE = ".syncmusic/"  # the card's manifest a USB sync writes too (not the client's inventory)
 CHUNK = 1 << 20
 
 
@@ -55,6 +57,9 @@ class ReferenceClient:
         self._http = http
         self._own_http = http is None
         self.formats: list[str] = ["mp3", "aac", "flac", "ogg", "opus"]
+        self.card_uid = (
+            ""  # the id of the card it syncs (a removable card a USB sync also knows), if any
+        )
         self.stream = True  # off: the older protocol of outbox windows (each a session of its own)
 
     # --- state --------------------------------------------------------------------------------------
@@ -139,7 +144,7 @@ class ReferenceClient:
             "os": platform.system()[:32],
             "app": "syncmusic-reference-client",
             "app_version": "1",
-        }
+        } | ({"card_uid": self.card_uid} if self.card_uid else {})
         r = await self.http.post(
             self._url("pair-requests"), json={"client": info, "capabilities": self.capabilities()}
         )
@@ -173,7 +178,7 @@ class ReferenceClient:
             rel = p.relative_to(self.folder).as_posix()
             if (
                 p.is_file()
-                and not rel.startswith(STATE)
+                and not rel.startswith((STATE, CARD_STATE))
                 and not rel.endswith(PART)
                 and rel not in generated
             ):
@@ -336,6 +341,11 @@ class ReferenceClient:
         if got or gone or installed:  # a player would now refresh or restart as the plan says
             self.state["after_sync"] = view["plan"].get("after_sync", "none")
         status = "cancelled" if stopped else "complete" if not failed else "partial"
+        card = view["plan"].get("card_manifest")
+        if card and status == "complete" and await self.download(card):
+            # the card's manifest (and its backup): a USB sync of the same card sees these files as its own
+            dest = self._target(card["path"])
+            shutil.copyfile(dest, dest.with_name(dest.name + ".bak"))
         _, fin = await self._call("POST", f"sync/{sid}/finish", json={"status": status})
         self.state["inventory"] = self._files()
         self.save()

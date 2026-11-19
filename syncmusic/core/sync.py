@@ -416,6 +416,40 @@ def _account_name(settings: dict[str, Any], fallback: str) -> str:
     return fallback
 
 
+def wifi_view(cfg: DeviceConfig) -> DeviceConfig:
+    """A disk device as its paired Wi-Fi app reaches it: a `client` device with the settings both share (the
+    Compás player gets its database built on the server); saving the view saves the disk record."""
+    fields = registry.device_class("client").Settings.model_fields
+    settings = {k: v for k, v in cfg.settings.items() if k in fields}
+    if cfg.type == "hiby_compas":
+        settings |= {"player_database": "compas", "after_sync": "restart"}
+    view = cfg.model_copy(update={"type": "client", "settings": settings})
+    view._disk = cfg
+    return view
+
+
+def merge_suggestions(
+    configs: list[DeviceConfig], card_uids: dict[str, str], wifi_ids: set[str]
+) -> dict[str, list[dict[str, str]]]:
+    """Device id -> the other records of its card: a Wi-Fi client whose app reported the card id of a device
+    registered over USB (that device has no Wi-Fi app paired yet). Listed on both records."""
+    out: dict[str, list[dict[str, str]]] = {}
+    disks = [c for c in configs if c.type != "client" and c.id not in wifi_ids]
+    for client in configs:
+        uid = card_uids.get(client.id) if client.type == "client" else None
+        if not uid:
+            continue
+        for disk in disks:
+            if uid in (disk.identity.manifest_device_id, disk.id):
+                out.setdefault(disk.id, []).append(
+                    {"id": client.id, "name": client.name, "keep": disk.id}
+                )
+                out.setdefault(client.id, []).append(
+                    {"id": disk.id, "name": disk.name, "keep": disk.id}
+                )
+    return out
+
+
 class SyncService:
     def __init__(
         self, ctx: AppContext, store: Store, preparer: Preparer, snapshots: SnapshotCache
@@ -445,6 +479,8 @@ class SyncService:
         self._device_items: dict[str, frozenset[str]] = {}  # last recorded per device
         self.detector = Detector(ctx.bus, lambda: self._configs, self._probe_manifest)
         self._configs: list[DeviceConfig] = []
+        # disk devices that also have a paired Wi-Fi app (the same card): reached over Wi-Fi when not on USB
+        self.wifi_ids: set[str] = set()
         self._libraries: dict[str, Library] = {}
         self._mounts: dict[str, mnt.Mounted] = {}  # device id -> our mount
         self._ro_mounts: dict[
@@ -819,6 +855,12 @@ class SyncService:
         cfg = await self.store.device(device_id)
         if cfg is None:
             raise SyncError(f"unknown device {device_id!r}", "not_found")
+        if (
+            cfg.type != "client"
+            and device_id in self.wifi_ids
+            and self.detector.by_device(device_id) is None
+        ):
+            return wifi_view(cfg)  # not on USB: reached through its paired Wi-Fi app
         return cfg
 
     def _network(self, cfg: DeviceConfig) -> bool:
@@ -904,14 +946,18 @@ class SyncService:
         registered = []
         feedback = await self.store.feedback_counts()
         table = await asyncio.to_thread(mnt.mount_table)
-        for cfg in await self.store.devices():
+        configs = await self.store.devices()
+        merges = merge_suggestions(configs, await self.store.client_card_uids(), self.wifi_ids)
+        for cfg in configs:
             libs = await self.libraries_of(cfg)
             cd = self.detector.by_device(cfg.id)
             fixed = bool(cfg.mount_path) and await asyncio.to_thread(
                 Path(cfg.mount_path or "").is_dir
             )
             # configured = available; the server answers when it is used (an MTP player: while plugged in)
-            network = self._network(cfg) and not self._usb_mtp(cfg)
+            # a disk device with a paired Wi-Fi app (the same card) is reached over Wi-Fi while not on USB
+            wifi = cfg.type != "client" and cfg.id in self.wifi_ids and cd is None and not fixed
+            network = (self._network(cfg) and not self._usb_mtp(cfg)) or wifi
             connected = cd is not None or fixed or network
             job = self.ctx.jobs.running_for_device(cfg.id)
             registered.append(
@@ -921,6 +967,15 @@ class SyncService:
                     "type": cfg.type,
                     "library_accounts": cfg.library_accounts,
                     "connected": connected,
+                    # how it is reached now: usb (or a card reader), wifi (its paired app), None
+                    "connection": "wifi"
+                    if wifi or cfg.type == "client"
+                    else "usb"
+                    if cd is not None
+                    else None,
+                    "wifi_paired": cfg.type == "client" or cfg.id in self.wifi_ids,
+                    # another record of the same card (a Wi-Fi client and a USB device): offered to merge
+                    "merge_with": merges.get(cfg.id, []),
                     "disk": cd.disk.path if cd else None,
                     # the player now runs another firmware: the type its disk is claimed by
                     "firmware_switch": cd.firmware_switch if cd else None,
@@ -998,7 +1053,7 @@ class SyncService:
                     "offline_since": self._offline[cfg.id].isoformat()
                     if cfg.id in self._offline
                     else None,
-                    "can_format": not cfg.mount_path and not self._network(cfg),
+                    "can_format": not cfg.mount_path and not self._network(cfg) and not wifi,
                     "bindable_disk": bd.disk.path
                     if (bd := await asyncio.to_thread(self._bindable_disk, cfg))
                     else None,
@@ -1649,6 +1704,58 @@ class SyncService:
         await self.load()
         await self.detector.rematch()  # its disk is unknown again
 
+    async def merge_devices(self, keep_id: str, drop_id: str, name: str = "") -> DeviceConfig:
+        """Make two records of one device one: `drop` (a Wi-Fi client record) goes into `keep` (the device
+        registered over USB or a card reader). `keep`'s settings and templates stay; `drop`'s history, listening
+        data and Wi-Fi pairing move to it, and so do the files waiting for the app. `name`: the kept record's
+        name (empty: unchanged). Never automatic: the user asks for it."""
+        keep, drop = await self.config(keep_id), await self.config(drop_id)
+        if keep._disk is not None:
+            keep = keep._disk
+        if drop.type != "client" or keep.type == "client" or keep_id == drop_id:
+            raise SyncError("only a Wi-Fi client goes into a device registered over USB", "invalid")
+        if keep_id in self.wifi_ids:
+            raise SyncError(f"{keep.name} already has a Wi-Fi app paired", "conflict")
+        for d in (keep_id, drop_id):
+            if self.ctx.jobs.device_busy(d):
+                raise SyncError(f"{d} is busy", "busy")
+        self.drop_plans(keep_id)
+        self.drop_plans(drop_id)
+        old, new = self._network_dir(drop), self._network_dir(keep)
+
+        def move_files() -> None:
+            for suffix in ("", ".shadow", ".gen", ".card"):
+                src, dest = old.with_name(old.name + suffix), new.with_name(new.name + suffix)
+                if dest.exists():
+                    shutil.rmtree(dest)  # nothing paired to it: left over
+                if src.exists():
+                    src.rename(dest)
+            m = manifest_io.read(new)
+            if (
+                m is not None
+            ):  # the app's items under the kept record's id; the card's own list is merged
+                m.header.device_id = keep.id
+                m.header.device_uid = keep.identity.manifest_device_id
+                manifest_io.write(new, m, compact=True)
+                (new / manifest_io.MERGED_MARK).touch()
+            manifest_io.forget(new)
+
+        await asyncio.to_thread(move_files)
+        await self.store.merge_device(keep_id, drop_id)
+        self.wifi_ids.discard(drop_id)
+        self.wifi_ids.add(keep_id)
+        self._device_items.pop(drop_id, None)
+        own = own_template_id(drop_id)
+        if not any(own in d.rule_set.template_ids for d in await self.store.devices()):
+            await self.store.delete_template(own)
+        if name.strip() and name.strip() != keep.name:
+            keep = keep.model_copy(update={"name": name.strip()})
+            await self.store.put_device(keep)
+        await self.load()
+        log.info("%s: merged the Wi-Fi record %s into it", keep_id, drop_id)
+        self.ctx.bus.publish("device.updated", device_id=keep_id)
+        return keep
+
     async def open_device(self, device_id: str, *, read_only: bool = False) -> Device:
         """Device instance on its mounted tree (mounts the data partition if needed). `read_only`: a view that
         only reads; a stay-ready device that is not mounted yet gets a read-only mount for it, which the next
@@ -1719,7 +1826,7 @@ class SyncService:
                         clock
                     )  # the iPod writes its FAT after the clock: never mount meanwhile
                 await self._wait_for_automount(device_id)
-                registered = cfg.identity.guard_ids()
+                registered = self._guard_ids(cfg)
                 ro = read_only and cfg.sync.stay_ready
                 try:
                     m = await mnt.mount(
@@ -1931,7 +2038,7 @@ class SyncService:
                 for path in self._foreign_in(cd, table):
                     try:
                         await asyncio.to_thread(
-                            self.ctx.guard.check, cd.disk.path, "eject", cfg.identity.guard_ids()
+                            self.ctx.guard.check, cd.disk.path, "eject", self._guard_ids(cfg)
                         )
                         await mnt.run_cmd(["umount", path])
                         log.info("%s: unmounted another program's mount at %s", cfg.name, path)
@@ -1949,7 +2056,7 @@ class SyncService:
         if self.ctx.guard is None:
             raise SyncError("no block device guard configured", "invalid")
         try:
-            disk, _ = self.ctx.guard.check(cd.disk.path, "eject", cfg.identity.guard_ids())
+            disk, _ = self.ctx.guard.check(cd.disk.path, "eject", self._guard_ids(cfg))
         except (GuardError, mnt.BlockdevError) as e:
             raise SyncError(f"{cfg.name}: {e}", "invalid") from e
         return self.ctx.guard, disk
@@ -1993,7 +2100,7 @@ class SyncService:
                 done = await mnt.unmount_everywhere(
                     guard,
                     disk.path,
-                    cfg.identity.guard_ids(),
+                    self._guard_ids(cfg),
                     lazy=lazy,
                     mount_root=self.ctx.config.mount_root,
                 )
@@ -2004,6 +2111,16 @@ class SyncService:
         log.info("%s: unmounted everywhere: %s", cfg.name, ", ".join(m.path for m in done) or "-")
         self.ctx.bus.publish("device.unmounted", device_id=cfg.id)
         return [dataclasses.asdict(m) for m in done]
+
+    def _guard_ids(self, cfg: DeviceConfig) -> list[str]:
+        """Identities the guard accepts for `cfg`: the registered ones plus those of the disk detection matched
+        to it (a card in a card reader has the reader's serial, matched by manifest or fs UUID)."""
+        ids = cfg.identity.guard_ids()
+        cd = self.detector.by_device(cfg.id)
+        if cd is not None and cd.device_id == cfg.id:
+            found = [cd.disk.serial, *(n.uuid for n in (cd.disk, *cd.disk.children))]
+            ids += [x for x in found if x and x not in ids]
+        return ids
 
     async def eject(self, device_id: str) -> None:
         """Unmount, set the clock (iPod, opt-in), power off. From the first step to the last the device is
@@ -2050,7 +2167,7 @@ class SyncService:
                 # let the iPod finish writing its Device files; tell the UI why eject takes a while
                 self.ctx.bus.publish("device.ejecting", device_id=cfg.id, settle_s=scsi.SETTLE_S)
                 await self._settle(cd.disk.path, cd.data_partition)
-            registered = cfg.identity.guard_ids()
+            registered = self._guard_ids(cfg)
             await mnt.eject(self.ctx.guard, cd.disk.path, registered=registered)
 
     async def format(self, device_id: str, confirm: str, fs: str | None = None) -> DeviceConfig:
@@ -2184,7 +2301,7 @@ class SyncService:
                 label = device.label_for(name, node.fstype, node.label)
                 if label is not None and label != node.label:
                     await self._unmount(device_id)
-                    registered = cfg.identity.guard_ids()
+                    registered = self._guard_ids(cfg)
                     label = await fmt.set_label(
                         self.ctx.guard, part, str(node.fstype), label, registered
                     )
@@ -3249,6 +3366,7 @@ class SyncService:
                     await self._write_device_templates(cfg, device)
             if not update and not device.network:
                 await self._record_health(cfg, report=report, job_id=ctx.info.id)
+            await self._mirror_card_manifest(cfg, device)
             self._plan_auto_eject(cfg, device, report, ctx.info.id, update)
             return report
         except Exception as e:
@@ -3699,6 +3817,60 @@ class SyncService:
             return f"{root}|{'|'.join(parts)}|{libs}" if parts else None
 
         return await asyncio.to_thread(stat)
+
+    async def _mirror_card_manifest(self, cfg: DeviceConfig, device: Device) -> None:
+        """After a sync on a device's own mount, the Wi-Fi side's copy of the card manifest becomes the card's, so a
+        Wi-Fi sync (an app paired now or later) starts from what is on the card now."""
+        if device.network:
+            return
+        src = device.mount / manifest_io.MANIFEST_PATH
+        mark = self._network_dir(cfg) / manifest_io.MERGED_MARK
+
+        def merge() -> Manifest | None:
+            """After a merge: the card's manifest gains what the Wi-Fi record delivered (the card wins a key both
+            list), so neither side's files become unknown to the other."""
+            wifi, card = manifest_io.read(self._network_dir(cfg)), manifest_io.read(device.mount)
+            if wifi is None or card is None or foreign_manifest(card, cfg):
+                return None
+            added = {k: e for k, e in wifi.items.items() if k not in card.items}
+            if not added:
+                return None
+            card.items.update(added)
+            return card
+
+        caps = device.effective_capabilities().model_dump_json().encode("utf-8")
+        caps_path = self._network_dir(cfg) / manifest_io.CARD_CAPS
+
+        def save_caps() -> None:
+            if not caps_path.is_file() or caps_path.read_bytes() != caps:
+                caps_path.parent.mkdir(parents=True, exist_ok=True)
+                manifest_io.atomic_write(caps_path, caps)
+
+        if await asyncio.to_thread(mark.is_file):
+            union = await asyncio.to_thread(merge)
+            if union is not None:
+                await device.write_manifest(union)
+            await asyncio.to_thread(mark.unlink, missing_ok=True)
+
+        def copy() -> None:
+            try:
+                data = src.read_bytes()
+            except FileNotFoundError:
+                return
+            dest = self._network_dir(cfg) / manifest_io.MANIFEST_PATH
+            if dest.is_file() and dest.read_bytes() == data:
+                return
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            manifest_io.atomic_write(dest, data)
+            bak = dest.with_name(dest.name + ".bak")
+            bak.unlink(missing_ok=True)
+
+        try:
+            await asyncio.to_thread(save_caps)
+            await asyncio.to_thread(copy)
+            manifest_io.forget(self._network_dir(cfg))
+        except OSError as e:
+            log.warning("%s: could not copy the card manifest for Wi-Fi: %s", cfg.id, e)
 
     async def _read_manifest(self, cfg: DeviceConfig, device: Device) -> Manifest | None:
         """The device's manifest; its item keys are recorded as what the device holds (the library browser's "On devices" chips), written only when they changed. A foreign manifest is not."""
@@ -4589,7 +4761,7 @@ class SyncService:
             await self._unmount(cfg.id)
             self.drop_plans(cfg.id)
             ctx.progress(0.1, f"checking the file system on {part}")
-            result = await mnt.repair(guard, part, registered=cfg.identity.guard_ids())
+            result = await mnt.repair(guard, part, registered=self._guard_ids(cfg))
             self._damaged.pop(cfg.id, None)
             self._errors.pop(cfg.id, None)
             self._device_items.pop(cfg.id, None)

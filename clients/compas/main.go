@@ -329,8 +329,11 @@ type view struct {
 		Next   map[string]*string `json:"next"`
 		// Generated: server-built files installed as one set (here: the card's tagcache), nil = none.
 		Generated *genSet `json:"generated"`
-		AfterSync string  `json:"after_sync"` // none | refresh | restart (after a sync that changed something)
-		More      int     `json:"more"`       // files the server holds back for the next window
+		// CardManifest: the server's manifest of this card, written to .syncmusic/manifest.jsonl after a complete
+		// sync so a USB sync of the same card sees these files as its own; nil = none.
+		CardManifest *item  `json:"card_manifest"`
+		AfterSync    string `json:"after_sync"` // none | refresh | restart (after a sync that changed something)
+		More         int    `json:"more"`       // files the server holds back for the next window
 		// Stream: the server lists the files as it prepares them (fetch pages wait for the next ones);
 		// Complete: delete, state and generated are final (else read the session again after the last page)
 		Stream   bool `json:"stream"`
@@ -768,6 +771,11 @@ func (c *Client) syncOnce() (Result, bool, error) {
 			return res, false, err
 		}
 	}
+	if status == "complete" && v.Plan.CardManifest != nil {
+		if err := c.installCardManifest(*v.Plan.CardManifest); err != nil {
+			fmt.Printf("card manifest: %v\n", err) // the files are on the card; the next sync tries again
+		}
+	}
 	var fin struct {
 		More bool `json:"more"`
 	}
@@ -950,4 +958,25 @@ func (c *Client) ignorePodcasts() {
 	if f, err := os.Create(p); err == nil {
 		f.Close()
 	}
+}
+
+// installCardManifest writes the server's manifest of this card to .syncmusic/manifest.jsonl and its backup copy
+// manifest.jsonl.bak (the same bytes, after the manifest), like a USB sync does.
+func (c *Client) installCardManifest(it item) error {
+	ok, err := c.download(it)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%s did not arrive intact", it.Path)
+	}
+	dest, err := c.target(it.Path)
+	if err != nil {
+		return err
+	}
+	b, err := os.ReadFile(dest)
+	if err != nil {
+		return err
+	}
+	return writeSynced(dest+".bak", b)
 }

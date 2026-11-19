@@ -81,7 +81,7 @@ codes are also limited per minute and a code guessed at too often is burnt.
 `POST pair`
 ```json
 {"code": "1234-5678",
- "client": {"uid": "3f0c…", "name": "Pixel", "model": "", "manufacturer": "", "os": "Android",
+ "client": {"uid": "3f0c…", "card_uid": "", "name": "Pixel", "model": "", "manufacturer": "", "os": "Android",
             "os_version": "15", "app": "MyPlayer", "app_version": "1.0"},
  "capabilities": {…}}
 ```
@@ -89,6 +89,10 @@ codes are also limited per minute and a code guessed at too often is burnt.
 
 - `uid`: generate it once per install (a UUID) and keep it. Pairing the same install again **continues** the same
   device (same id and history; `continued: true`).
+- `card_uid` (optional): the id of the storage the client syncs onto - `device_uid` (else `device_id`) from the
+  first line of `/.syncmusic/manifest.jsonl` (or `manifest.jsonl.bak`) on that storage. A storage without one gets
+  a manifest holding only a header (`{"type":"header","manifest_version":2,"device_id":"<uuid>","device_uid":"<uuid>",
+  "created_at":…,"updated_at":…}`). The same card synced over USB or in a card reader carries the same id.
 - Store the token safely; the server keeps only its hash and cannot show it again.
 - After pairing the user chooses on the server what the device gets (templates); until then a sync has nothing to
   plan.
@@ -189,7 +193,7 @@ the connection may drop between any two requests.
           "state":  [{"key": "nd/123", "rating": 4, "favourite": true, "play_count": 12},
                      {"key": "abs/ep-9", "rating": null, "favourite": false, "play_count": 0, "position_s": 1834.2,
                       "finished": false}],
-          "generated": null, "after_sync": "none", "more": 0,
+          "generated": null, "card_manifest": null, "after_sync": "none", "more": 0,
           "next": {"fetch": "500"},
           "totals": {"fetch_bytes": 912345678, "fetch_count": 812, "delete_count": 3}}}
 ```
@@ -209,6 +213,12 @@ the connection may drop between any two requests.
   "mtime", "url"}]}`. If the `commit` file already contains `set_id`, skip the set. Otherwise download and verify every
   file to a temporary name first, then move them all in place, then write `set_id` into the `commit` file. Generated
   files are not acknowledged and not part of the inventory. Which devices get a set is decided on the server.
+- `card_manifest` (or `null`): for a client that syncs a removable card the server also syncs over USB (the
+  same device, paired with the card's `card_uid`): `{"path": ".syncmusic/manifest.jsonl", "fid", "size", "mtime",
+  "url"}`. After a **complete** sync (every file fetched, nothing failed, nothing cancelled) download and verify it,
+  move it in place at `path` on the card, then write the same bytes to `path` + `.bak`. A USB sync of the card then
+  sees the files the client took as its own. Not acknowledged and not part of the inventory (nothing under
+  `.syncmusic/` is).
 - `after_sync`: `none`, `refresh` (reload the library view) or `restart` (restart the player): what to do after a
   sync that changed something on the client (files fetched or deleted, or a new generated set installed). A sync
   that changed nothing does nothing. Set per device on the server.

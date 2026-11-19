@@ -476,3 +476,115 @@ def test_approved_player_is_registered_in_the_wizard(chrome, web_server, tmp_pat
     cfg = httpx.get(f"{url}/api/v1/devices/{device_id}").json()["config"]
     assert cfg["rule_set"]["template_ids"] == [tpl.json()["id"]] and not cfg["registration_pending"]
     assert page.errors == []
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_request_of_a_known_card_adds_wifi_to_that_device(chrome, web_server, width):
+    from syncmusic.core.models import DeviceConfig, DeviceIdentity
+
+    url, app = web_server
+    httpx.patch(f"{url}/api/v1/settings", json={"clients_allowed": True}).raise_for_status()
+    dev_id = f"card-{width}"
+    card = f"0f1e2d3c-{width:04d}"
+    run_on(
+        app,
+        app.sync.store.put_device(
+            DeviceConfig(
+                id=dev_id,
+                name="Плеєр з карткою",
+                type="hiby_compas",
+                identity=DeviceIdentity(manifest_device_id=card),
+            )
+        ),
+    )
+    page = open_page(chrome, f"{url}/#/devices", width=width)
+    page.locator("#content h1").wait_for()
+    r = httpx.post(
+        f"{url}/api/client/v1/pair-requests",
+        json={"client": {"uid": str(uuid.uuid4()), "name": "R1", "os": "Compas", "card_uid": card}},
+    )
+    assert r.status_code == 202, r.text
+    req = r.json()
+    row = page.locator(f"[data-request='{req['request_id']}']")
+    row.wait_for(timeout=10_000)
+    offer = row.locator(f"[data-action=clientApprove][data-device='{dev_id}']")
+    assert "This is Плеєр з карткою: add Wi-Fi to it" in offer.inner_text()
+    row.scroll_into_view_if_needed()
+    assert no_horizontal_scroll(page)
+    shot(page, f"clients-request-same-card-{width}")
+    offer.click()
+    page.wait_for_url(f"**/#/devices/{dev_id}", timeout=10_000)
+    page.locator("#content h1").wait_for()
+    page.wait_for_timeout(500)
+    shot(page, f"clients-same-card-device-{width}")
+    page.goto(f"{url}/#/devices")
+    page.locator(f"[data-device='{dev_id}'], #content").first.wait_for()
+    page.wait_for_timeout(500)
+    shot(page, f"clients-same-card-list-{width}")
+    assert "HiBy player · Wi-Fi" in page.locator("#content").inner_text()
+    body = httpx.get(
+        f"{url}/api/client/v1/pair-requests/{req['request_id']}",
+        headers={"x-pair-secret": req["secret"]},
+    ).json()
+    assert body["device_id"] == dev_id
+    assert run_on(app, app.sync.store.device(dev_id)).type == "hiby_compas"  # one record
+    assert page.errors == []
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_merge_a_wifi_record_into_the_device_of_its_card(chrome, web_server, width):
+    from syncmusic.core.models import DeviceConfig, DeviceIdentity
+
+    url, app = web_server
+    httpx.patch(f"{url}/api/v1/settings", json={"clients_allowed": True}).raise_for_status()
+    dev_id = f"merge-{width}"
+    card = f"0f1e2d3c-9{width:03d}"
+    run_on(
+        app,
+        app.sync.store.put_device(
+            DeviceConfig(
+                id=dev_id,
+                name="Плеєр з карткою",
+                type="hiby_compas",
+                identity=DeviceIdentity(manifest_device_id=card),
+            )
+        ),
+    )
+    r = httpx.post(
+        f"{url}/api/client/v1/pair-requests",
+        json={
+            "client": {
+                "uid": str(uuid.uuid4()),
+                "name": "R1 Wi-Fi",
+                "os": "Compas",
+                "card_uid": card,
+            }
+        },
+    )
+    req = r.json()
+    approved = httpx.post(f"{url}/api/v1/clients/requests/{req['request_id']}/approve")
+    wifi_id = approved.json()["device_id"]
+    page = open_page(chrome, f"{url}/#/devices/{wifi_id}", width=width)
+    note = page.locator("[data-merge-offer]")
+    note.wait_for(timeout=10_000)
+    assert "Merge with Плеєр з карткою" in note.inner_text()
+    assert no_horizontal_scroll(page)
+    shot(page, f"merge-offer-{width}")
+    note.locator("[data-action=mergeDevice]").click()
+    dlg = page.locator(".modal")
+    dlg.wait_for()
+    assert "R1 Wi-Fi (Wi-Fi) goes into Плеєр з карткою" in dlg.inner_text()
+    dlg.locator("#mergeName").select_option("R1 Wi-Fi")
+    shot(page, f"merge-dialog-{width}")
+    dlg.get_by_role("button", name="Merge", exact=True).click()
+    page.wait_for_url(f"**/#/devices/{dev_id}", timeout=10_000)
+    page.locator("#content h1").wait_for()
+    page.wait_for_timeout(500)
+    shot(page, f"merge-done-{width}")
+    assert page.locator("[data-merge-offer]").count() == 0
+    # reached through its app: its own type, connected over Wi-Fi
+    assert "HiBy player · Wi-Fi" in page.locator("[data-model-line]").inner_text()
+    devices = run_on(app, app.sync.store.devices())
+    merged = [d for d in devices if d.id in (dev_id, wifi_id)]
+    assert [(d.id, d.type, d.name) for d in merged] == [(dev_id, "hiby_compas", "R1 Wi-Fi")]
+    assert page.errors == []

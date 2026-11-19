@@ -118,6 +118,10 @@ CONTROLS: dict[str, tuple[str, str]] = {
         "test_devices.py::test_format_needs_the_typed_name; disk devices only",
     ),
     "devices:skipFailedFile": ("elsewhere", "test_fs_damaged_ui.py::test_skip_that_file_offer"),
+    "devices:mergeDevice": (
+        "elsewhere",
+        "test_clients_ui.py::test_merge_a_wifi_record_into_the_device_of_its_card",
+    ),
     "devices:clientSync": (
         "elsewhere",
         "test_clients_ui.py::test_sync_now_asks_the_player_and_shows_that_it_waits",

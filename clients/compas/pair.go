@@ -229,7 +229,7 @@ type pairAsk struct {
 }
 
 func (c *Client) clientInfo(name string) map[string]any {
-	return map[string]any{"uid": c.st.UID, "name": name, "os": "Compas", "app": "syncmusic-compas", "app_version": version}
+	return map[string]any{"uid": c.st.UID, "card_uid": c.cardID(), "name": name, "os": "Compas", "app": "syncmusic-compas", "app_version": version}
 }
 
 // RequestPair asks the server to pair without a code; the user approves it there.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import PurePosixPath
 
 import pytest
@@ -106,17 +107,48 @@ async def test_remove(device, tmp_path):
     assert (await device.read_manifest()).items.keys() == manifest.items.keys()
 
 
-async def test_free_space_decreases(device, tmp_path):
+def _private_statvfs(monkeypatch, root) -> None:
+    """Directory-backed devices live on a file system shared with other tests and processes (parallel
+    workers write and free space there at any moment); give the test tree its own view: a fixed size
+    minus the bytes stored under it."""
+    real = os.statvfs
+    root = str(root)
+
+    def fake(path):
+        st = real(path)
+        if not os.path.realpath(path).startswith(os.path.realpath(root)):
+            return st
+        used = sum(
+            os.path.getsize(os.path.join(d, f)) for d, _, files in os.walk(root) for f in files
+        )
+        frsize = st.f_frsize
+        blocks = (1 << 34) // frsize
+        avail = blocks - -(-used // frsize)
+        return os.statvfs_result(
+            (
+                st.f_bsize,
+                frsize,
+                blocks,
+                avail,
+                avail,
+                st.f_files,
+                st.f_ffree,
+                st.f_favail,
+                st.f_flag,
+                st.f_namemax,
+            )
+        )
+
+    monkeypatch.setattr(os, "statvfs", fake)
+
+
+async def test_free_space_decreases(device, tmp_path, monkeypatch):
+    _private_statvfs(monkeypatch, getattr(device, "mount", None) or tmp_path)
     cap = await device.capacity()
-    # directory-backed devices share their filesystem (/tmp) with other tests and processes, which may free space
-    # at the same moment (parallel workers): a write must show up in one of a few tries
-    for attempt in range(3):
-        before = await device.free_space()
-        assert 0 < before <= cap
-        await _sync(device, tmp_path, [(f"One {attempt}", "A")])
-        if await device.free_space() < before:
-            return
-    pytest.fail("free space did not decrease after three writes")
+    before = await device.free_space()
+    assert 0 < before <= cap
+    await _sync(device, tmp_path, [("One", "A")])
+    assert await device.free_space() < before
 
 
 async def test_path_rules_respected(device, tmp_path):
