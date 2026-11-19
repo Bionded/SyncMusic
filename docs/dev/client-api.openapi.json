@@ -585,6 +585,29 @@
         "title": "TemplatesRequest",
         "type": "object"
       },
+      "UpdateAnswer": {
+        "properties": {
+          "answer": {
+            "enum": [
+              "update",
+              "later"
+            ],
+            "title": "Answer",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 64,
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "answer"
+        ],
+        "title": "UpdateAnswer",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -700,6 +723,47 @@
           }
         },
         "summary": "App Update"
+      }
+    },
+    "/api/client/v1/app-update/answer": {
+      "post": {
+        "description": "The user's answer on the client to the offered app update (shown on the device page).",
+        "operationId": "app_update_answer_api_client_v1_app_update_answer_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAnswer"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response App Update Answer Api Client V1 App Update Answer Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "App Update Answer"
       }
     },
     "/api/client/v1/app-update/{app_name}/{version}/{name}": {

@@ -26,6 +26,7 @@ type Progress struct {
 	Phase             string
 	Files, FilesTotal int
 	Bytes, BytesTotal int64
+	BytesBase         int64  // bytes earlier windows of the sync delivered (not part of the current speed)
 	File              string // the file being downloaded (card path)
 	FileSize          int64
 	Started           time.Time // when the download phase began
@@ -76,10 +77,10 @@ func mb(n int64) string {
 // rate and time left of the download so far; ok is false until there is enough to tell.
 func rateETA(p Progress, now time.Time) (bps float64, left time.Duration, ok bool) {
 	el := now.Sub(p.Started).Seconds()
-	if p.Started.IsZero() || el < 1 || p.Bytes <= 0 {
+	if p.Started.IsZero() || el < 1 || p.Bytes-p.BytesBase <= 0 {
 		return 0, 0, false
 	}
-	bps = float64(p.Bytes) / el
+	bps = float64(p.Bytes-p.BytesBase) / el
 	return bps, time.Duration(float64(p.BytesTotal-p.Bytes)/bps) * time.Second, true
 }
 

@@ -84,14 +84,14 @@ func (b *backlight) set(mode, dimPercent int) {
 	if b.dir == "" || mode == b.mode {
 		return
 	}
-	blank := sysRoot("/sys/class/graphics/fb0/blank")
 	switch mode {
 	case screenOff:
+		// brightness only: blanking the framebuffer may power drivers down (and with them Wi-Fi) on this kernel
 		b.write(filepath.Join(b.dir, "brightness"), "0")
-		b.write(blank, "1")
 	default:
 		if b.mode == screenOff {
-			b.write(blank, "0") // unblank first, then the brightness (as the player does)
+			// a screen blanked by an older app build or the player: unblank first, then the brightness
+			b.write(sysRoot("/sys/class/graphics/fb0/blank"), "0")
 		}
 		v := b.orig
 		if mode == screenDim {

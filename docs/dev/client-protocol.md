@@ -159,7 +159,10 @@ the connection may drop between any two requests.
   `{"available": false}`, or `{"available": true, "app", "version", "files": [{"path", "size", "sha256", "url"}]}`
   when the server holds a newer release zip of that app (`<app>-<version>.zip` next to the SyncMusic binary or in
   the data directory's `tools/` folder). `url` is relative to the client API and needs the bearer token. The client
-  checks size and SHA-256 of every file before it replaces anything, and replaces its program file last.
+  checks size and SHA-256 of every file before it replaces anything, and replaces its program file last. Every
+  answer also carries `server_version` (the newest release the server holds, or `null`) and `client_newer` (the
+  running version is newer than that: tell the user to update the server). The server shows the running version on
+  the device page. `POST app-update/answer {"version", "answer": "update" | "later"}` records the user's choice.
 - **Diagnostics** (any time, when the user asks for it): `POST diagnostics {"log": "<text, at most 512 KiB>",
   "summary": {…}}` → `202 {"received_at", "size"}`. The server keeps the latest upload per client for the device
   page (*Diagnostics: Download*). Leave tokens out; what still looks like one is masked by the server.
@@ -201,9 +204,16 @@ the connection may drop between any two requests.
 - `after_sync`: `none`, `refresh` (reload the library view) or `restart` (restart the player): what to do after a
   sync that changed something on the client (files fetched or deleted, or a new generated set installed). A sync
   that changed nothing does nothing. Set per device on the server.
-- `more`: how many files the server held back for a later **window**. The server prepares (converts, retags)
-  only as much as fits its outbox budget at a time, so a large first sync comes in several sessions. Install
-  `generated` only from the last window (`more` = 0).
+- **Streaming** (recommended): a client that sends `"stream": true` in its `capabilities` gets the whole plan in
+  one session. The server prepares (converts, retags) the files only a few ahead of the client's acks, so it never
+  holds a copy of the library, and lists them as they are ready: `plan.stream` is `true`, `totals` count the whole
+  plan, and a `fetch` page waits (up to ~25 s) for the next files — keep paging while `next` is not `null`,
+  downloading and acking each file as it comes (a file that is not acked holds back the next ones). When the last
+  page has `next: null`, read the session again (`GET sync/{session_id}`): with `plan.complete` true its
+  `delete`, `state`, `playlists` and `generated` are final.
+- `more` (clients without `stream`): how many files the server held back for a later **window**. The server
+  prepares only as much as fits its outbox budget at a time, so a large first sync comes in several sessions.
+  Install `generated` only from the last window (`more` = 0).
 - A tags-only change arrives as a fetch with a new `fid` that replaces the file at the same `path`.
 - Work order: **deletes first** (frees space), then fetches in list order (rule priority: the most important come
   first when space runs out).
@@ -264,7 +274,8 @@ ends when the client starts its sync; nothing is prepared on the server before t
 | The user stops the sync in the app | `finish {"status": "cancelled"}`; acked files stay done, `status` says `full` until the rest is fetched |
 | *Sync now*, but the app is closed | the request waits (the device page says so) until the app starts, or the user withdraws it |
 | Two clients of one server at once | each has its own session and outbox; both finish |
-| The library is larger than the outbox budget | the server prepares one window (plain files hard-linked, converted ones from the cache), `plan.more` and `finish → more` ask the client to sync again; acked files leave the outbox at once |
+| A streaming client syncs a large library | one session: the server prepares a few files ahead of the acks, fetch pages wait for them; finishing early stops the server's work, the next sync goes on from there |
+| The library is larger than the outbox budget (no `stream`) | the server prepares one window (plain files hard-linked, converted ones from the cache), `plan.more` and `finish → more` ask the client to sync again; acked files leave the outbox at once |
 | The connection drops in the middle of a window | the un-acked file stays in the outbox; the next session plans it again and the client continues its `.part` with a `Range` request |
 
 Each row is covered by a test in `tests/unit/test_client_sync.py` (the reference client follows the same rules).

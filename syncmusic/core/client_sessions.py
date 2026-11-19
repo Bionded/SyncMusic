@@ -163,12 +163,28 @@ class ClientSession(BaseModel):
     cancel: bool = False
     may_confirm: bool = False  # needs_review that the client itself may confirm (device setting)
     more: int = 0  # files of the plan held back for the next window (the outbox budget)
+    more_bytes: int = 0
+    # what earlier windows of the same sync already delivered (files, bytes): progress covers the whole sync
+    before: tuple[int, int] = (0, 0)
+    # streaming (the client asked for it): the whole plan in one session, files listed as the job prepares them
+    stream: bool = False
+    job_done: bool = False  # streaming: the sync job ended (the rest of the plan is listed)
+    planned: tuple[int, int] = (0, 0)  # streaming: files and bytes the plan fetches
+    metas: dict[str, dict[str, Any]] = {}  # streaming: item key -> what the client shows for it
+    seen: int = 0  # streaming: entries of the job's written list already looked at
 
     def totals(self) -> dict[str, int]:
+        count, size = len(self.fetch), sum(int(f["size"]) for f in self.fetch)
+        if (
+            self.stream and not self.job_done
+        ):  # not every file is prepared yet: the plan says how many
+            count, size = max(count, self.planned[0]), max(size, self.planned[1])
         return {
-            "fetch_bytes": sum(int(f["size"]) for f in self.fetch),
-            "fetch_count": len(self.fetch),
+            "fetch_bytes": size,
+            "fetch_count": count,
             "delete_count": len(self.delete),
+            "more_count": self.more,
+            "more_bytes": self.more_bytes,
         }
 
     # (time.monotonic(), bytes_done) at each ack: the transfer rate to the client over the last RATE_WINDOW_S
@@ -181,7 +197,8 @@ class ClientSession(BaseModel):
     def progress(self, now: float | None = None) -> dict[str, Any]:
         """Files and bytes the client took (acked), and the rate of that transfer to the client in bytes/s over
         the last seconds with the time left at that rate (None until two acks are some time apart)."""
-        total = self.totals()["fetch_bytes"]
+        totals = self.totals()
+        total = totals["fetch_bytes"]
         rate: float | None = None
         if len(self.acks) >= 2:
             (t0, b0), (t1, b1) = self.acks[0], self.acks[-1]
@@ -191,11 +208,17 @@ class ClientSession(BaseModel):
                 rate = (b1 - b0) / (t1 - t0)
         return {
             "done": len(self.done) + len(self.deleted),
-            "total": len(self.fetch) + len(self.delete),
+            "total": totals["fetch_count"] + len(self.delete),
             "bytes_done": self.bytes_done,
             "bytes_total": total,
             "rate_bps": round(rate) if rate is not None else None,
-            "eta_s": round((total - self.bytes_done) / rate) if rate else None,
+            # time left for the whole sync, the windows still held back included
+            "eta_s": round((total + self.more_bytes - self.bytes_done) / rate) if rate else None,
+            # the whole sync across the windows of the outbox (what earlier windows did + this one + held back)
+            "run_done": self.before[0] + len(self.done) + len(self.deleted),
+            "run_total": self.before[0] + totals["fetch_count"] + len(self.delete) + self.more,
+            "run_bytes_done": self.before[1] + self.bytes_done,
+            "run_bytes_total": self.before[1] + total + self.more_bytes,
         }
 
 
@@ -239,31 +262,48 @@ def listening_state(key: str | None, t: Track) -> dict[str, Any]:
 
 
 MB = 1024 * 1024
+# a streaming session: the server prepares at most this many files / bytes ahead of the client's acks
+STREAM_AHEAD_FILES = 4
+STREAM_AHEAD_BYTES = 256 * MB
+STREAM_PAGE_WAIT_S = (
+    25.0  # a fetch page of a streaming session waits this long for the next prepared files
+)
 RATE_WINDOW_S = 15.0  # the transfer rate to a client is measured over this many seconds of acks
 
 
-def window(plan: SyncPlan, dev: ClientDevice) -> int:
+def window(plan: SyncPlan, dev: ClientDevice) -> tuple[int, int]:
     """Hold back the plan's adds and replaces beyond the outbox budget (they stay missing on the client and
-    are planned again by the next sync), so the server never prepares the whole library at once. Returns how many
-    were held back; the first file always goes."""
+    are planned again by the next sync), so the server never prepares the whole library at once. Files of an
+    earlier window the client has not acked yet still count. Returns how many files (and bytes) were held back;
+    the first file always goes."""
     budget = dev.settings.outbox_budget_mb * MB
     if budget <= 0:
-        return 0
+        return 0, 0
     used = sum(dev.outbox().values())
     keep: list[PlanAction] = []
-    held = 0
+    held = held_bytes = 0
     for a in plan.actions:
         if a.kind in (ActionKind.ADD, ActionKind.REPLACE) and not a.tags_only:
             size = a.item.file.size if a.item is not None and a.item.file.size else 0
             if held or (used + size > budget and used > 0):
                 held += 1
+                held_bytes += size
                 continue
             used += size
         keep.append(a)
     if held:
         plan.actions = keep
         log.info("%s: %d files wait for the next window of the outbox", dev.config.name, held)
-    return held
+    return held, held_bytes
+
+
+def _stop_stream(s: ClientSession) -> None:
+    """A streaming session ended: its job stops at the next file it would prepare (what is done stays)."""
+    from syncmusic.devices.client import STREAMS
+
+    st = STREAMS.get(s.device_id)
+    if s.stream and st is not None and not s.job_done:
+        st.stopped = True
 
 
 class ClientSessions:
@@ -271,6 +311,8 @@ class ClientSessions:
         self.sync = sync
         self.clients = clients
         self._more: dict[str, int] = {}  # device id -> files its last session held back
+        # device id -> (files, bytes) the windows of an unfinished sync delivered so far
+        self._run: dict[str, tuple[int, int]] = {}
         self.sessions: dict[str, ClientSession] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._deliver: dict[str, asyncio.Task[None]] = {}  # device id -> debounced event delivery
@@ -322,7 +364,7 @@ class ClientSessions:
     def _expire(self) -> None:
         now = _now()
         for sid in [s.id for s in self.sessions.values() if s.expires_at <= now]:
-            del self.sessions[sid]
+            _stop_stream(self.sessions.pop(sid))
 
     def open_for(self, device_id: str) -> ClientSession | None:
         self._expire()
@@ -364,7 +406,7 @@ class ClientSessions:
             if old is not None and old.status == "planning":
                 return old  # still planning: the same session
             if old is not None:
-                del self.sessions[old.id]
+                _stop_stream(self.sessions.pop(old.id))
             dev = await self.device(device_id)
             await asyncio.to_thread(
                 dev.report, req.capabilities, items, inv.removed, full=inv.kind == "full"
@@ -374,6 +416,8 @@ class ClientSessions:
                 device_id=device_id,
                 mode=req.mode,
                 expires_at=_now() + dt.timedelta(hours=SESSION_HOURS),
+                before=self._run.get(device_id, (0, 0)),
+                stream=bool((req.capabilities or {}).get("stream")) and req.mode != "update",
             )
             self.sessions[s.id] = s
         if req.capabilities is not None:
@@ -388,7 +432,9 @@ class ClientSessions:
         try:
             await self._run_sync(s, first_inventory=first_inventory)
             if s.status == "planning":
-                await self._fill(s)
+                await self._fill(s)  # streaming: what an earlier session left in the outbox
+                if s.stream:  # the generated set describes the whole card: only after the job
+                    s.generated, s.gen_files = None, {}
                 s.status = "ready"
                 s.acked(time.monotonic())  # the transfer starts now
         except ClientError as e:
@@ -430,12 +476,134 @@ class ClientSessions:
                 s.may_confirm = dev.settings.client_may_confirm
                 return self._review(s, reasons)
             dev = await self.device(s.device_id)
-            s.more = await asyncio.to_thread(window, plan, dev)
+            if s.stream:
+                return await self._start_stream(s, plan, first)
+            s.more, s.more_bytes = await asyncio.to_thread(window, plan, dev)
             job = await sync.apply(plan.id, first_sync=first)
         s.job_id = job.id
         info = await sync.ctx.jobs.wait(job.id)
         if info.status != JobStatus.SUCCEEDED:
             raise ClientError("server_error", info.error or f"sync job {info.status.value}", 500)
+
+    async def _start_stream(
+        self, s: ClientSession, plan: SyncPlan, first: Literal["keep"] | None
+    ) -> None:
+        """Start the sync job without waiting for it: it prepares the files a few ahead of the client's acks
+        (`ClientDevice.put_track`), the fetch pages list them as they come, the rest follows when it ends."""
+        from syncmusic.devices.client import STREAMS, Stream
+
+        adds = [
+            a
+            for a in plan.actions
+            if a.kind in (ActionKind.ADD, ActionKind.REPLACE) and a.item is not None
+        ]
+        s.planned = (len(adds), sum(max(a.item.file.size or 0, 0) for a in adds if a.item))
+        s.metas = {a.ref.key(): track_meta(a.item.track) for a in adds if a.item is not None}
+        old = STREAMS.get(s.device_id)
+        if old is not None:
+            old.stopped = True
+        STREAMS[s.device_id] = Stream(STREAM_AHEAD_FILES, STREAM_AHEAD_BYTES)
+        job = await self.sync.apply(plan.id, first_sync=first)
+        s.job_id = job.id
+        self._tasks[f"{s.id}:job"] = asyncio.create_task(self._stream_job(s, job.id))
+
+    async def _stream_job(self, s: ClientSession, job_id: str) -> None:
+        from syncmusic.devices.client import STREAMS
+
+        try:
+            info = await self.sync.ctx.jobs.wait(job_id)
+            while s.status == "planning":  # noqa: ASYNC110 - _plan lists the outbox first, then it is ready
+                await asyncio.sleep(0.05)
+            if s.status != "ready":
+                return  # the session ended meanwhile
+            if info.status not in (JobStatus.SUCCEEDED, JobStatus.CANCELLED):
+                s.status, s.message = "failed", info.error or f"sync job {info.status.value}"
+                s.code = "server_error"
+                return
+            await self._fill(
+                s
+            )  # what the job did not list one by one: playlists, deletes, the generated set
+        except Exception as e:  # noqa: BLE001 - the client sees the reason, the server logs it
+            log.warning("client sync %s: %s", s.device_id, e, exc_info=True)
+            s.status, s.message = "failed", str(e)
+        finally:
+            s.job_done = True
+            st = STREAMS.get(s.device_id)
+            if st is not None and s.job_id == job_id:
+                STREAMS.pop(s.device_id, None)
+            self._tasks.pop(f"{s.id}:job", None)
+
+    async def _stream_refresh(self, s: ClientSession) -> None:
+        """List the files the streaming job wrote since the last look (each once, in write order)."""
+        from syncmusic.devices.client import STREAMS
+
+        st = STREAMS.get(s.device_id)
+        if st is None or s.job_done:
+            return
+        new = st.written[s.seen :]
+        if not new:
+            return
+        root = self._outbox_root(s.device_id)
+        listed = {f["path"] for f in s.fetch}
+
+        def items() -> list[dict[str, Any]]:
+            out = []
+            for rel, key, role in new:
+                p = root / rel
+                if rel in listed or not p.is_file():
+                    continue
+                st_ = p.stat()
+                ck = (s.device_id, str(p), st_.st_size, st_.st_mtime_ns)
+                if ck not in self._fid_cache:
+                    self._fid_cache[ck] = sha256_of(p)
+                f = self._fid_cache[ck]
+                out.append(
+                    {
+                        "op": "add",
+                        "key": key,
+                        "fid": f,
+                        "size": st_.st_size,
+                        "mtime": int(st_.st_mtime),
+                        "mime": mimetypes.guess_type(rel)[0] or "application/octet-stream",
+                        "path": rel,
+                        "role": role,
+                        "url": f"files/{f}?ticket={s.ticket}",
+                    }
+                    | ({"meta": s.metas[key]} if role == "track" and key in s.metas else {})
+                )
+            return out
+
+        got = await asyncio.to_thread(items)
+        s.seen += len(new)
+        held = (await self.device(s.device_id)).state.inventory
+        for f in got:
+            if f["path"] in held:
+                f["op"] = "replace"
+        s.fetch += got
+        s.fids |= {f["fid"]: f["path"] for f in got}
+
+    async def page_wait(
+        self, s: ClientSession, section: str, cursor: str | None, limit: int
+    ) -> dict[str, Any]:
+        """A page of a section; a streaming session's fetch page waits for the next prepared files and says
+        `next` until its job ended and every file is listed."""
+        if not (s.stream and section == "fetch"):
+            return self.page(s, section, cursor, limit)
+        start = int(cursor or 0) if (cursor or "0").isdigit() else -1
+        if start < 0:
+            raise ClientError("invalid", "bad cursor", 400)
+        end_at = time.monotonic() + STREAM_PAGE_WAIT_S
+        while True:
+            await self._stream_refresh(s)
+            if s.status != "ready":
+                raise ClientError("server_error", s.message or "the sync stopped", 500)
+            if len(s.fetch) > start or s.job_done or time.monotonic() >= end_at:
+                break
+            await asyncio.sleep(0.2)
+        out = self.page(s, section, cursor, limit)
+        if out["next"] is None and not s.job_done:
+            out["next"] = str(start + len(out["items"]))  # more files are on their way
+        return out
 
     def _review_totals(self, plan_id: str) -> dict[str, int]:
         """What the plan waiting for confirmation would do (for the client's preview)."""
@@ -520,8 +688,12 @@ class ClientSessions:
         fid_of = await asyncio.to_thread(fids)
         tracks = await self._tracks(s.device_id, manifest)
         held = dev.state.inventory
-        s.fetch = []
+        listed = {f["path"] for f in s.fetch} if s.stream else set()
+        if not s.stream:
+            s.fetch = []
         for rel in ordered:
+            if rel in listed:
+                continue
             item_key, role = by_path.get(
                 rel, (None, "playlist" if rel in playlist_paths else "file")
             )
@@ -543,7 +715,7 @@ class ClientSessions:
                     else {}
                 )
             )
-        s.fids = {f["fid"]: f["path"] for f in s.fetch}
+        s.fids |= {f["fid"]: f["path"] for f in s.fetch}
         s.delete = [
             {"key": by_path.get(rel, (None, ""))[0], "path": rel} for rel in dev.state.deletes
         ]
@@ -631,11 +803,17 @@ class ClientSessions:
                 "generated": s.generated,
                 "after_sync": s.after_sync,
                 "more": s.more,
+                # streaming: files are listed as they are prepared; delete, state, playlists and the generated
+                # set are complete once `complete` is true (read the session again after the last fetch page)
+                "stream": s.stream,
+                "complete": not s.stream or s.job_done,
                 "expires_at": s.expires_at.isoformat(),
                 "next": {},
             }
             for section in SECTIONS:
                 page = self.page(s, section, None, limit)
+                if s.stream and section == "fetch" and page["next"] is None and not s.job_done:
+                    page["next"] = str(len(s.fetch))  # more files are on their way
                 plan[section] = page["items"]
                 plan["next"][section] = page["next"]
             out["plan"] = plan
@@ -796,8 +974,14 @@ class ClientSessions:
             await asyncio.to_thread(dev.save_state)
         s.status = "finished"
         self.sessions.pop(s.id, None)
+        _stop_stream(s)
         self._more[device_id] = s.more
         progress = s.progress()
+        more = s.more > 0 and status == "complete"
+        if more:  # the next window continues this sync: its progress counts on from here
+            self._run[device_id] = (progress["run_done"], progress["run_bytes_done"])
+        else:
+            self._run.pop(device_id, None)
         log.info(
             "client %s finished its sync (%s): %d of %d done, %d failed",
             device_id,
@@ -818,7 +1002,7 @@ class ClientSessions:
             "progress": progress,
             "failed": s.failed,
             # the plan held files back for a later window: sync again (at once) for the next one
-            "more": s.more > 0 and status == "complete",
+            "more": more,
         }
 
     def cancel(self, device_id: str) -> bool:

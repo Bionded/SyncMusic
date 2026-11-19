@@ -6,6 +6,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- Compás app: a short press of Power switches the screen off and on; with the screen off the app now only turns the backlight off and keeps the player awake, so the Wi-Fi connection stays up.
+- Compás app: when the server holds a newer app, the app asks right after it connects (Update / Later) instead of only showing a button; an app newer than the server says so. The device page shows the app version the player runs and the answer.
+- Wi-Fi clients: the SyncMusic app for Compás players gets a whole sync in one go: the server prepares each file just before the app downloads it instead of preparing 2 GB parts in advance, so a large library needs almost no disk on the server, and stopping a sync continues where it stopped next time.
 - Ratings and favourites pass back exactly as each player has them (stars to ratings, hearts to favourites, never converted), and a device's reverse sync settings show only what that player records.
 - Players that ask to connect without a code are now approved on the Devices page (with a count on the Devices menu item) instead of in Settings → Wi-Fi clients.
 - Every Wi-Fi client app may now confirm a sync that needs a confirmation (many removals, not enough space) on the player by default; the device setting *The player may confirm a sync* only turns this off.
@@ -28,6 +31,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 - If both copies of SyncMusic's sync record on a player are damaged, the device page offers **Rebuild from files**: the damaged copies are moved aside and the next sync starts as a first sync that can adopt the files already on the player, instead of wiping it.
 
 ### Fixed
+- Wi-Fi sync in the Compás app no longer fails with "ack: EOF" when a connection to the server was dropped: the app retries such calls, and the server keeps idle connections open longer.
+- Wi-Fi clients: a sync larger than the server's outbox budget shows its progress, size and time left for the whole sync (all windows), on the device page and in the Compás app, instead of restarting the count for every part.
 - A Wi-Fi client's sync that waits for your confirmation (too many removals, does not fit) or failed now says so on its device page, with a Review plan button, instead of showing that the plan is being made.
 - The buttons under a sync error on the device page now wrap on phones instead of scrolling sideways.
 - Wi-Fi clients: **Cancel** on the device page now stops a sync the player's app is running (before, it only withdrew a pending *Sync now*).

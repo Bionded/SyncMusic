@@ -14,8 +14,9 @@ import contextlib
 import ipaddress
 import mimetypes
 import socket
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import segno
@@ -38,6 +39,7 @@ from syncmusic.facade import AppFacade
 from syncmusic.infra import client_apps
 from syncmusic.infra.announce import PROTOCOL_MAJOR
 from syncmusic.infra.clients import ClientError, ClientInfo, show_code
+from syncmusic.infra.updates import is_newer
 
 PREFIX = "/api/client/v1"
 
@@ -53,6 +55,15 @@ def client_error(e: ClientError) -> JSONResponse:
         }
     }
     return JSONResponse(body, status_code=e.status, headers=headers)
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+class UpdateAnswer(BaseModel):
+    version: str = Field(max_length=64)
+    answer: Literal["update", "later"]
 
 
 class PairRequest(BaseModel):
@@ -284,7 +295,7 @@ def client_router(facade: AppFacade) -> APIRouter:
         limit: int = PAGE_MAX,
         device_id: str = Depends(device),
     ) -> dict[str, Any]:
-        return sessions.page(sessions.get(device_id, session_id), section, cursor, limit)
+        return await sessions.page_wait(sessions.get(device_id, session_id), section, cursor, limit)
 
     @r.get("/files/{fid}", response_model=None)
     async def file(fid: str, request: Request, ticket: str | None = None) -> FileResponse:
@@ -349,23 +360,54 @@ def client_router(facade: AppFacade) -> APIRouter:
     ) -> dict[str, Any]:
         """A newer release of the client's own app the server holds, or `available: false`. The client installs
         the files itself (`url` relative to the client API)."""
-        rel = await asyncio.to_thread(client_apps.offer, app_name, version, app.config.data_dir)
-        if rel is None:
-            return {"available": False}
+        newest = await asyncio.to_thread(client_apps.newest, app_name, app.config.data_dir)
+        offer = newest if newest is not None and is_newer(newest.version, version) else None
+        client_newer = newest is not None and is_newer(version, newest.version)
+        await app.clients.update_client(
+            device_id,
+            {
+                "app_version": version,
+                "update_offer": {"version": offer.version, "state": "offered", "at": _now_iso()}
+                if offer is not None
+                else None,
+                "newer_than_server": client_newer,
+            },
+        )
+        app.bus.publish("client.changed", device_id=device_id)
+        base: dict[str, Any] = {
+            "server_version": newest.version if newest is not None else None,
+            "client_newer": client_newer,
+        }
+        if offer is None:
+            return {"available": False, **base}
         return {
             "available": True,
-            "app": rel.app,
-            "version": rel.version,
+            "app": offer.app,
+            "version": offer.version,
+            **base,
             "files": [
                 {
                     "path": f.name,
                     "size": f.size,
                     "sha256": f.sha256,
-                    "url": f"app-update/{quote(rel.app)}/{quote(rel.version)}/{quote(f.name)}",
+                    "url": f"app-update/{quote(offer.app)}/{quote(offer.version)}/{quote(f.name)}",
                 }
-                for f in rel.files
+                for f in offer.files
             ],
         }
+
+    @r.post("/app-update/answer")
+    async def app_update_answer(
+        body: UpdateAnswer, device_id: str = Depends(device)
+    ) -> dict[str, Any]:
+        """The user's answer on the client to the offered app update (shown on the device page)."""
+        state = "accepted" if body.answer == "update" else "declined"
+        await app.clients.update_client(
+            device_id,
+            {"update_offer": {"version": body.version, "state": state, "at": _now_iso()}},
+        )
+        app.bus.publish("client.changed", device_id=device_id)
+        return {"ok": True}
 
     @r.get("/app-update/{app_name}/{version}/{name:path}", response_model=None)
     async def app_update_file(

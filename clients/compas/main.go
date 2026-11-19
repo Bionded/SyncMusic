@@ -56,12 +56,15 @@ type State struct {
 
 type Client struct {
 	data, root string
-	st         State
-	http       *http.Client
-	progress   func(done, total int, what string)
-	cancel     func() bool        // the user asked to stop (UI key); nil = never
-	pr         progressBox        // what the running sync is doing (read by the UI)
-	preview    func(Preview) bool // asks the user before a sync starts (nil = go ahead)
+	// files and bytes the earlier windows of the running sync delivered: progress covers the whole sync
+	runFiles int
+	runBytes int64
+	st       State
+	http     *http.Client
+	progress func(done, total int, what string)
+	cancel   func() bool        // the user asked to stop (UI key); nil = never
+	pr       progressBox        // what the running sync is doing (read by the UI)
+	preview  func(Preview) bool // asks the user before a sync starts (nil = go ahead)
 }
 
 func uuid4() string {
@@ -82,7 +85,7 @@ func open() (*Client, error) {
 	if root == "" {
 		root = filepath.Dir(filepath.Dir(data))
 	}
-	c := &Client{data: data, root: root, http: &http.Client{Timeout: 0},
+	c := &Client{data: data, root: root, http: newHTTPClient(0),
 		progress: func(int, int, string) {}}
 	if err := os.MkdirAll(data, 0o755); err != nil {
 		return nil, err
@@ -143,14 +146,61 @@ func (c *Client) call(method, path string, body any, out any) error {
 	return c.callH(method, path, nil, body, out)
 }
 
+// newHTTPClient drops idle connections well before a server closes them (uvicorn's default keep-alive is 5 s):
+// a request sent on a connection the server has just closed fails with EOF.
+func newHTTPClient(timeout time.Duration) *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.IdleConnTimeout = 4 * time.Second
+	return &http.Client{Timeout: timeout, Transport: t}
+}
+
+// retryable: calls the server treats as idempotent (a repeated ack/finish/confirm/events is a no-op), so a
+// transient network error can simply be sent again. Starting a sync or pairing is never repeated blindly.
+func retryable(method, path string) bool {
+	if method == "GET" || method == "PUT" {
+		return true
+	}
+	if path == "events" {
+		return true
+	}
+	return strings.HasPrefix(path, "sync/") &&
+		(strings.HasSuffix(path, "/ack") || strings.HasSuffix(path, "/finish") || strings.HasSuffix(path, "/confirm"))
+}
+
+// retryDelays between tries of a retryable call that failed on the network (not with a server answer).
+var retryDelays = []time.Duration{500 * time.Millisecond, 2 * time.Second, 5 * time.Second}
+
 func (c *Client) callH(method, path string, headers map[string]string, body any, out any) error {
-	var rd io.Reader
+	var payload []byte
 	if body != nil {
-		b, _ := json.Marshal(body)
-		rd = bytes.NewReader(b)
+		payload, _ = json.Marshal(body)
+	}
+	tries := 1
+	if retryable(method, path) {
+		tries += len(retryDelays)
+	}
+	var err error
+	for i := 0; i < tries; i++ {
+		if i > 0 {
+			fmt.Fprintf(os.Stderr, "%s %s: %v - trying again\n", method, path, err)
+			time.Sleep(retryDelays[i-1])
+		}
+		var proto *ProtoError
+		err = c.callOnce(method, path, headers, payload, body != nil, out)
+		if err == nil || errors.As(err, &proto) {
+			return err
+		}
+	}
+	return err
+}
+
+func (c *Client) callOnce(method, path string, headers map[string]string, payload []byte, hasBody bool, out any) error {
+	var rd io.Reader
+	if hasBody {
+		rd = bytes.NewReader(payload)
 	}
 	req, _ := http.NewRequest(method, c.url(path), rd)
-	if body != nil {
+	if hasBody {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if c.st.Token != "" {
@@ -164,7 +214,10 @@ func (c *Client) callH(method, path string, headers map[string]string, body any,
 		return err
 	}
 	defer r.Body.Close()
-	raw, _ := io.ReadAll(r.Body)
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
 	if r.StatusCode >= 400 {
 		var e struct {
 			Error struct{ Code, Message string } `json:"error"`
@@ -192,6 +245,7 @@ func (c *Client) capabilities() map[string]any {
 		"storage":     map[string]any{"total": total, "free": free},
 		"features":    map[string]any{"playlists": true, "play_events": true},
 		"layout":      map[string]any{"stores_paths": true},
+		"stream":      true, // the whole plan in one session, files prepared just ahead of the downloads
 	}
 }
 
@@ -242,6 +296,8 @@ type Totals struct {
 	FetchBytes      int64 `json:"fetch_bytes"`
 	DeleteCount     int   `json:"delete_count"`
 	SkippedForSpace int   `json:"skipped_for_space"`
+	MoreCount       int   `json:"more_count"` // held back for the next window of the server's outbox
+	MoreBytes       int64 `json:"more_bytes"`
 }
 
 // Preview is what a sync is about to do, shown before it starts. Confirm: the server waits for the user's
@@ -274,6 +330,10 @@ type view struct {
 		Generated *genSet `json:"generated"`
 		AfterSync string  `json:"after_sync"` // none | refresh | restart (after a sync that changed something)
 		More      int     `json:"more"`       // files the server holds back for the next window
+		// Stream: the server lists the files as it prepares them (fetch pages wait for the next ones);
+		// Complete: delete, state and generated are final (else read the session again after the last page)
+		Stream   bool `json:"stream"`
+		Complete bool `json:"complete"`
 	} `json:"plan"`
 }
 
@@ -453,6 +513,7 @@ type Result struct {
 // Sync syncs until the server has nothing more to send: a large sync comes in windows (the server prepares only
 // part of it at a time), each one a session of its own.
 func (c *Client) Sync() (Result, error) {
+	c.runFiles, c.runBytes = 0, 0
 	res, more, err := c.syncOnce()
 	for err == nil && more && !res.Cancelled && res.Failed == 0 {
 		var next Result
@@ -516,33 +577,67 @@ func (c *Client) syncOnce() (Result, bool, error) {
 	if err != nil {
 		return res, false, err
 	}
-	fetch, err := section(c, v, "fetch", v.Plan.Fetch)
-	if err != nil {
-		return res, false, err
+	fetch, cursor := v.Plan.Fetch, v.Plan.Next["fetch"]
+	if !v.Plan.Stream { // every file is listed up front
+		if fetch, err = section(c, v, "fetch", v.Plan.Fetch); err != nil {
+			return res, false, err
+		}
+		cursor = nil
 	}
 	if res.State, err = section(c, v, "state", v.Plan.State); err != nil {
 		return res, false, err
 	}
+	planned := len(fetch)
 	var total int64
 	for _, it := range fetch {
 		total += it.Size
 	}
-	c.pr.update(func(p *Progress) { p.Phase, p.FilesTotal, p.BytesTotal = phaseRemove, len(fetch), total })
-	gone := []string{}
-	for _, d := range dels {
-		if cp := cardPath(d.Path); c.editedSince(cp) {
-			continue // edited on the player after the last look: kept, the edit goes up next time
-		}
-		if t, err := c.target(d.Path); err == nil {
-			os.Remove(t)
-			delete(c.st.Lists, cardPath(d.Path))
-			c.forget(c.st.Keys[d.Path]) // the server removed it: its playlist entries are not a user edit
-			gone = append(gone, d.Path)
-			delete(c.st.Files, d.Path)
-			delete(c.st.Keys, d.Path)
-			delete(c.st.Episodes, d.Path)
-		}
+	if v.Plan.Stream { // the files come as the server prepares them: the plan's totals
+		planned, total = v.Plan.Totals.FetchCount, v.Plan.Totals.FetchBytes
 	}
+	// nextPage lists the next files of a streaming plan (the server waits until it prepared some)
+	nextPage := func() (bool, error) {
+		for cursor != nil && *cursor != "" {
+			var page struct {
+				Items []item  `json:"items"`
+				Next  *string `json:"next"`
+			}
+			if err := c.call("GET", "sync/"+v.SessionID+"/plan?section=fetch&cursor="+*cursor, nil, &page); err != nil {
+				return false, err
+			}
+			fetch, cursor = append(fetch, page.Items...), page.Next
+			if len(page.Items) > 0 {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	before, beforeBytes := c.runFiles, c.runBytes
+	c.pr.update(func(p *Progress) {
+		p.Phase, p.FilesTotal = phaseRemove, before+planned+v.Plan.Totals.MoreCount
+		p.Files, p.Bytes, p.BytesBase = before, beforeBytes, beforeBytes
+		p.BytesTotal = beforeBytes + total + v.Plan.Totals.MoreBytes
+	})
+	gone := []string{}
+	removeAll := func(dels []item) []string {
+		var now []string
+		for _, d := range dels {
+			if cp := cardPath(d.Path); c.editedSince(cp) {
+				continue // edited on the player after the last look: kept, the edit goes up next time
+			}
+			if t, err := c.target(d.Path); err == nil {
+				os.Remove(t)
+				delete(c.st.Lists, cardPath(d.Path))
+				c.forget(c.st.Keys[d.Path]) // the server removed it: its playlist entries are not a user edit
+				now = append(now, d.Path)
+				delete(c.st.Files, d.Path)
+				delete(c.st.Keys, d.Path)
+				delete(c.st.Episodes, d.Path)
+			}
+		}
+		return now
+	}
+	gone = removeAll(dels)
 	if len(gone) > 0 {
 		if err := c.call("POST", "sync/"+v.SessionID+"/ack", map[string]any{"deleted": gone}, nil); err != nil {
 			return res, false, err
@@ -552,13 +647,23 @@ func (c *Client) syncOnce() (Result, bool, error) {
 	c.pr.update(func(p *Progress) { p.Phase, p.Removed, p.Started = phaseDownload, len(gone), time.Now() })
 	lists := []string{}
 	stopped := false // the server stopped the sync (Cancel on its device page): its ack answer says so
-	for i, it := range fetch {
+	for i := 0; ; i++ {
+		if i >= len(fetch) {
+			more, err := nextPage()
+			if err != nil {
+				return res, false, err
+			}
+			if !more {
+				break
+			}
+		}
+		it := fetch[i]
 		if stopped || (c.cancel != nil && c.cancel()) {
 			res.Failed += len(fetch) - i
 			res.Cancelled = true
 			break
 		}
-		c.progress(i, len(fetch), it.Path)
+		c.progress(before+i, before+planned+v.Plan.Totals.MoreCount, it.Path) // the whole sync, not the window
 		if c.editedSince(cardPath(it.Path)) {
 			res.Failed++ // never overwrite a playlist edit the server has not taken yet
 			continue
@@ -592,7 +697,7 @@ func (c *Client) syncOnce() (Result, bool, error) {
 		res.Fetched++
 		isList := strings.HasPrefix(cardPath(it.Path), "Playlists/")
 		c.pr.update(func(p *Progress) {
-			p.Files, p.Received = i+1, res.Fetched
+			p.Files, p.Received = before+i+1, res.Fetched
 			if isList {
 				p.Playlists++
 			}
@@ -609,7 +714,46 @@ func (c *Client) syncOnce() (Result, bool, error) {
 			c.st.Lists[cp] = keys
 		}
 	}
+	if v.Plan.Stream && !v.Plan.Complete && !res.Cancelled {
+		// every file is listed: the rest of the plan (deletes, the generated set) is final now
+		var fin view
+		if err := c.call("GET", "sync/"+v.SessionID, nil, &fin); err != nil {
+			return res, false, err
+		}
+		if fin.Status != "ready" {
+			res.Failed++ // the server's work stopped: the next sync goes on from here
+		} else {
+			fin.SessionID = v.SessionID
+			v = &fin
+			later, err := section(c, v, "delete", v.Plan.Delete)
+			if err != nil {
+				return res, false, err
+			}
+			done := map[string]bool{}
+			for _, g := range gone {
+				done[g] = true
+			}
+			var todo []item
+			for _, d := range later {
+				if !done[d.Path] {
+					todo = append(todo, d)
+				}
+			}
+			if now := removeAll(todo); len(now) > 0 {
+				if err := c.call("POST", "sync/"+v.SessionID+"/ack", map[string]any{"deleted": now}, nil); err != nil {
+					return res, false, err
+				}
+				gone = append(gone, now...)
+				res.Deleted = len(gone)
+			}
+			if res.State, err = section(c, v, "state", v.Plan.State); err != nil {
+				return res, false, err
+			}
+		}
+	}
 	res.AfterSync = v.Plan.AfterSync
+	c.runFiles += len(fetch)
+	c.runBytes += total
 	status := "complete"
 	if res.Cancelled {
 		status = "cancelled"

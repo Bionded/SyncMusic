@@ -210,6 +210,7 @@ async def test_windowed_delivery_keeps_the_outbox_small_and_resumes(server, tmp_
     await app.store.put_device(cfg)
     monkeypatch.setattr(client_sessions, "MB", 1)  # one byte: one file per window
     dev = await app.client_sessions.device(device_id)
+    rc.stream = False  # an older client: outbox windows
 
     view = await rc.start()
     item = next(f for f in view["plan"]["fetch"] if f["role"] == "track")
@@ -229,3 +230,30 @@ async def test_windowed_delivery_keeps_the_outbox_small_and_resumes(server, tmp_
     assert out["failed"] == 0 and len(tracks(rc.folder)) == 2
     assert not list(rc.folder.rglob("*.part"))
     assert not [p for p in dev.outbox() if p.endswith(".mp3")]
+
+
+async def test_streaming_delivery_in_one_session_resumes_a_dropped_download(
+    server, tmp_path, monkeypatch
+):
+    """A streaming client: one session lists every file as the server prepares it (here one ahead of the
+    acks), a download dropped in the middle resumes in the next sync and the outbox ends empty."""
+    from syncmusic.core import client_sessions
+
+    app, paired, music = server
+    rc = await paired(tmp_path / "phone")
+    monkeypatch.setattr(client_sessions, "STREAM_AHEAD_FILES", 1)
+    dev = await app.client_sessions.device(rc.state["device_id"])
+    view = await rc.start()
+    assert view["plan"]["stream"] and view["plan"]["more"] == 0
+    first = await anext(f async for f in rc._pages(view, "fetch") if f["role"] == "track")
+    assert not await rc.download(first, stop_after=1)  # the Wi-Fi dropped
+    await rc.http.post(
+        rc._url(f"sync/{view['session_id']}/finish"),
+        json={"status": "partial"},
+        headers=rc._headers(),
+    )
+    out = await rc.sync()
+    assert out["failed"] == 0 and len(tracks(rc.folder)) == 2
+    assert not list(rc.folder.rglob("*.part"))
+    assert not [p for p in dev.outbox() if p.endswith(".mp3")]
+    assert (await rc.sync())["fetched"] == 0

@@ -437,6 +437,19 @@ class Clients:
             (json.dumps(capabilities), device_id),
         )
 
+    async def update_client(self, device_id: str, changes: dict[str, Any]) -> None:
+        """Merge what the client reports later (its running app version, an update offer) into its info."""
+        r = await self.db.fetchone(
+            "SELECT client FROM client_pairings WHERE device_id = ?", (device_id,)
+        )
+        if r is None:
+            return
+        info = json.loads(r["client"]) | changes
+        await self.db.execute(
+            "UPDATE client_pairings SET client = ? WHERE device_id = ?",
+            (json.dumps(info), device_id),
+        )
+
     # --- listing -----------------------------------------------------------------------------------
 
     @staticmethod

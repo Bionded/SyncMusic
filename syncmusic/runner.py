@@ -15,6 +15,8 @@ from syncmusic.app import Application
 from syncmusic.facade import AppFacade
 from syncmusic.infra.config import BootstrapConfig
 
+KEEP_ALIVE_S = 75  # seconds an idle HTTP connection stays open
+
 log = logging.getLogger(__name__)
 
 
@@ -40,6 +42,9 @@ async def run_app(cfg: BootstrapConfig) -> Application:
             port=cfg.port,
             log_config=None,
             lifespan="on",
+            # Wi-Fi clients keep connections open between downloads and acks; a short keep-alive closes them
+            # under the client just as it sends the next request
+            timeout_keep_alive=KEEP_ALIVE_S,
             timeout_graceful_shutdown=5,  # a last resort: ApiServer ends the event streams first
         )
     )

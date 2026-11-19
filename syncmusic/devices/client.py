@@ -87,6 +87,28 @@ class ClientSettings(BaseModel):
     outbox_budget_mb: int = Field(2048, ge=0)
 
 
+class StreamCancelled(Exception):
+    """The streaming session ended while its sync job waited for the client (the job stops like a cancel)."""
+
+
+class Stream:
+    """A streaming client session: the sync job prepares items only a few ahead of what the client acked, so
+    the server never holds more than that, and the session lists every file as soon as the job wrote it."""
+
+    def __init__(self, ahead_files: int, ahead_bytes: int) -> None:
+        self.ahead_files = ahead_files
+        self.ahead_bytes = ahead_bytes
+        self.written: list[
+            tuple[str, str, str]
+        ] = []  # (device path, item key, role) in write order
+        self.stopped = False
+
+
+# device id -> its open streaming session (the job's device object and the session's are not the same)
+STREAMS: dict[str, Stream] = {}
+STREAM_POLL_S = 0.1
+
+
 class GeneratedFile(BaseModel):
     """A file the server builds for the client (a database, an index), not one of the synced items."""
 
@@ -583,6 +605,7 @@ class ClientDevice(FileDeviceMixin, Device):
 
         # the client's files keep their names taken although they left the outbox
         s.data["taken"] |= {paths.path_key(r, rules) for r in self.state.inventory}
+        s.data["deletes_before"] = list(self.state.deletes)
         return s
 
     def _place(self, src: Path, dest: Path) -> None:
@@ -596,6 +619,21 @@ class ClientDevice(FileDeviceMixin, Device):
         except OSError:  # another file system, or links not supported: a copy
             tmp.unlink(missing_ok=True)
         super()._place(src, dest)
+
+    async def put_track(self, s: DeviceSession, item: PreparedItem) -> DeviceTrackRef:
+        st = STREAMS.get(self.id)
+        while st is not None:  # wait until the client took enough of what waits for it
+            if st.stopped:
+                raise StreamCancelled("the client's sync session ended")
+            held = await asyncio.to_thread(self.outbox)
+            if not held or (len(held) < st.ahead_files and sum(held.values()) < st.ahead_bytes):
+                break
+            await asyncio.sleep(STREAM_POLL_S)
+        ref = await super().put_track(s, item)
+        if st is not None:
+            key = item.track.ref.key()
+            st.written += [(ref.path, key, "track"), *((x, key, "sidecar") for x in ref.sidecars)]
+        return ref
 
     async def rewrite_tags(
         self, s: DeviceSession, ref: DeviceTrackRef, item: PreparedItem
@@ -612,6 +650,15 @@ class ClientDevice(FileDeviceMixin, Device):
                 self.state.deletes.append(rel)
 
     async def commit(self, s: DeviceSession, manifest: Manifest) -> None:
+        # the client may have acked files while the job ran (a streaming session): its state on disk is newer,
+        # only the deletes this job queued are added to it
+        if self.id in STREAMS:
+            before = set(s.data.get("deletes_before", ()))
+            queued = [d for d in self.state.deletes if d not in before]
+            self.state = await asyncio.to_thread(self.load_state)
+            for d in queued:
+                if d in self.state.inventory and d not in self.state.deletes:
+                    self.state.deletes.append(d)
         # playlists the sync dropped: the client's copies go too
         old = set((s.manifest.playlist_paths if s.manifest else {}).values())
         new = s.data.get("playlist_paths", manifest.playlist_paths)

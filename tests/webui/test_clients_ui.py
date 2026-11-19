@@ -92,6 +92,23 @@ def test_client_device_page_shows_the_client_and_its_progress(chrome, web_server
     page.wait_for_timeout(500)  # the event stream is connected
     run_on(app, progress())
     page.locator("[data-client-sync]", has_text="file 1 of 4").wait_for()
+
+    async def later_window():  # a later window of the outbox: the card counts the whole sync
+        app.bus.publish(
+            "client.progress",
+            device_id=device_id,
+            done=1,
+            total=4,
+            bytes_done=1000,
+            bytes_total=4000,
+            run_done=9,
+            run_total=20,
+            run_bytes_done=9000,
+            run_bytes_total=20000,
+        )
+
+    run_on(app, later_window())
+    page.locator("[data-client-sync]", has_text="file 9 of 20").wait_for()
     httpx.post(f"{url}/api/v1/clients/{device_id}/revoke").raise_for_status()
     page.locator("[data-client-revoked]").wait_for()
     assert no_horizontal_scroll(page)

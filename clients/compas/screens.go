@@ -8,7 +8,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,37 +92,40 @@ type syncDone struct {
 }
 
 type App struct {
-	s          *screen
-	c          *Client
-	set        Settings
-	bl         *backlight
-	in         <-chan inEv
-	build      func() page // the current page, rebuilt on every draw
-	sel        int
-	rects      []rect
-	shown      string // last logged page, to log every page once
-	idle       time.Time
-	mode       int
-	k          combo
-	syncing    bool
-	stop       atomic.Bool
-	syncPage   func() page // the running sync's page (back to it after the preview)
-	lowBattery atomic.Bool // the sync stopped because the battery ran low
-	closing    bool        // forced exit: quit as soon as the sync stopped
-	quit       bool
-	online     atomic.Pointer[string]
-	update     atomic.Pointer[appUpdate] // a newer app release the server offers, nil = none
-	prog       chan [3]any               // done, total, what
-	done       chan syncDone
-	later      chan func() // work finished in a goroutine, applied on the loop
-	gen        int         // bumped when the user leaves a pairing page: late results are dropped
-	pdone      int
-	ptotal     int
-	pwhat      string
-	slow       int          // slow frames logged
-	hist       frameHist    // all drawn frames, logged at exit
-	frame      string       // what the last drawn frame showed (frameKey)
-	exitFn     func() error // what happens after the loop (restart, power off); nil = just exit
+	s               *screen
+	c               *Client
+	set             Settings
+	bl              *backlight
+	in              <-chan inEv
+	build           func() page // the current page, rebuilt on every draw
+	sel             int
+	rects           []rect
+	shown           string // last logged page, to log every page once
+	idle            time.Time
+	mode            int
+	k               combo
+	syncing         bool
+	stop            atomic.Bool
+	syncPage        func() page // the running sync's page (back to it after the preview)
+	lowBattery      atomic.Bool // the sync stopped because the battery ran low
+	closing         bool        // forced exit: quit as soon as the sync stopped
+	quit            bool
+	online          atomic.Pointer[string]
+	update          atomic.Pointer[appUpdate] // a newer app release the server offers, nil = none
+	powerAt         time.Time                 // when the Power key went down (zero = not held)
+	offFlag         atomic.Bool               // the screen is off (read by the Wi-Fi log goroutine)
+	newerThanServer string                    // the server's older app version when this app is newer ("" = not)
+	prog            chan [3]any               // done, total, what
+	done            chan syncDone
+	later           chan func() // work finished in a goroutine, applied on the loop
+	gen             int         // bumped when the user leaves a pairing page: late results are dropped
+	pdone           int
+	ptotal          int
+	pwhat           string
+	slow            int          // slow frames logged
+	hist            frameHist    // all drawn frames, logged at exit
+	frame           string       // what the last drawn frame showed (frameKey)
+	exitFn          func() error // what happens after the loop (restart, power off); nil = just exit
 }
 
 func (a *App) go_(build func() page) {
@@ -258,17 +260,58 @@ func (a *App) statusLine() string {
 	return st
 }
 
+// powerKey: a short press (released within a second) switches the screen off, or on again; a long press does
+// nothing here, so the player's own long-press power off keeps working. A sync goes on with the screen off.
+func (a *App) powerKey(down bool, now time.Time) {
+	if down {
+		a.powerAt = now
+		return
+	}
+	short := !a.powerAt.IsZero() && now.Sub(a.powerAt) < time.Second
+	a.powerAt = time.Time{}
+	if !short {
+		return
+	}
+	a.idle = now
+	if a.mode == screenOff {
+		a.setScreen(screenOn)
+	} else {
+		a.setScreen(screenOff)
+	}
+}
+
+// setScreen switches the backlight; switching off starts the Wi-Fi log while the screen stays off.
+func (a *App) setScreen(m int) {
+	was := a.mode
+	a.mode = m
+	if m == screenOn {
+		a.frame = ""
+	}
+	a.bl.set(m, a.set.DimPercent)
+	if m == screenOff && was != screenOff {
+		step("screen off: %s", wifiDiag())
+		a.offFlag.Store(true)
+		go watchWhileOff(a.c, a.offFlag.Load)
+	} else if m != screenOff && was == screenOff {
+		a.offFlag.Store(false)
+		step("screen on: %s", wifiDiag())
+	}
+}
+
 func (a *App) handle(e inEv, now time.Time) {
 	if !e.tap {
 		a.k.feed(e.code, e.down, now)
+	}
+	if !e.tap && !e.drag && e.code == keyPower {
+		a.powerKey(e.down, now)
+		return
 	}
 	if !e.tap && !e.drag && !e.down {
 		return // keys act on press
 	}
 	a.idle = now
 	if a.mode != screenOn { // the first input only wakes the screen
-		a.mode, a.frame = screenOn, ""
-		a.bl.set(screenOn, a.set.DimPercent)
+		a.setScreen(screenOn)
 		return
 	}
 	if e.drag {
@@ -352,11 +395,12 @@ func (a *App) loop() error {
 			a.forceExit()
 		}
 		if m := screenMode(a.set, a.mode, now.Sub(a.idle), a.syncing); m != a.mode {
-			a.mode = m
-			a.bl.set(m, a.set.DimPercent)
+			a.setScreen(m)
 		}
 	}
+	a.offFlag.Store(false)
 	a.bl.restore()
+	releaseWakeLock()
 	step("frame times: %s", a.hist.String())
 	profStop()
 	if a.exitFn != nil {
@@ -414,6 +458,9 @@ func (a *App) home() page {
 		ls = append(ls, line{text: T("home.wifi_off"), col: colErr})
 	}
 	bs := []button{{label: T("btn.sync"), act: a.startSync, kind: btnPrimary}}
+	if a.newerThanServer != "" {
+		ls = append(ls, line{text: T("home.newer", version, a.newerThanServer), col: colWarn})
+	}
 	if u := a.update.Load(); u != nil {
 		ls = append(ls, line{text: T("home.update", u.Version), col: colTeal2})
 		bs = append(bs, button{label: T("btn.update", u.Version), act: func() { a.installUpdate(*u) }})
@@ -470,6 +517,36 @@ func gbShort(n int64) string {
 		return fmt.Sprintf("%d GB", (n+5e8)/1e9)
 	}
 	return gb(n)
+}
+
+// offerUpdate: right after the app reached the server. A newer app on the server is offered once per start
+// (Update / Later, never installed without a press); an app newer than the server's only gets a notice.
+func (a *App) offerUpdate(u appUpdate) {
+	if u.ClientNewer && u.ServerVersion != "" {
+		a.newerThanServer = u.ServerVersion
+	}
+	if !u.Available {
+		return
+	}
+	a.update.Store(&u)
+	if a.syncing || a.build().title != T("home.title") {
+		return // the home page keeps the Update button; no interruption of a sync or pairing
+	}
+	a.go_(func() page {
+		return page{title: T("update.title"), lines: []line{
+			{text: T("update.offer", u.Version, version), col: colText},
+			{text: T("update.offer_hint"), col: colDim},
+		}, buttons: []button{
+			{label: T("btn.update_now"), kind: btnPrimary, act: func() {
+				a.c.AnswerUpdate(u.Version, "update")
+				a.installUpdate(u)
+			}},
+			{label: T("btn.later"), act: func() {
+				a.c.AnswerUpdate(u.Version, "later")
+				a.go_(a.home)
+			}},
+		}}
+	})
 }
 
 // installUpdate downloads and installs the app release the server offers; Compás asks to approve it on the next
@@ -837,6 +914,7 @@ func runApp() error {
 		later: make(chan func(), 4),
 	}
 	step("backlight and input started")
+	holdWakeLock()
 	a.online.Store(ptr(T("home.checking")))
 	c, err := open()
 	if err != nil {
@@ -878,15 +956,15 @@ func runApp() error {
 		a.runSync(true)
 	}
 	if c.st.Token != "" {
-		probe := &Client{st: State{Server: c.st.Server}, http: &http.Client{Timeout: 5 * time.Second}}
+		probe := &Client{st: State{Server: c.st.Server}, http: newHTTPClient(5 * time.Second)}
 		go func() { // is the server there? (shown on the home page)
 			if err := probe.call("GET", "hello", nil, nil); err != nil {
 				a.online.Store(ptr(T("home.offline")))
 				return
 			}
 			a.online.Store(ptr(T("home.online")))
-			if u, err := c.CheckUpdate(); err == nil && u.Available {
-				a.update.Store(&u)
+			if u, err := c.CheckUpdate(); err == nil {
+				a.later <- func() { a.offerUpdate(u) }
 			}
 		}()
 	}
@@ -899,7 +977,7 @@ func runApp() error {
 // listen: while the app is open, a long poll on the server's status; "Sync now" pressed on the server starts the
 // sync here at once (unless one runs or the user is pairing).
 func (a *App) listen() {
-	lp := &Client{st: State{Server: a.c.st.Server, Token: a.c.st.Token}, http: &http.Client{Timeout: 40 * time.Second}}
+	lp := &Client{st: State{Server: a.c.st.Server, Token: a.c.st.Token}, http: newHTTPClient(40 * time.Second)}
 	for {
 		var st struct {
 			Requested bool `json:"requested"`

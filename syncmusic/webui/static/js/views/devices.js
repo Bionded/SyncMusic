@@ -28,6 +28,10 @@ addStrings({
   "dev.cl_title": "Wi-Fi client",
   "dev.cl_app": "App",
   "dev.cl_os": "System",
+  "dev.cl_upd_offered": "update to {version} offered",
+  "dev.cl_upd_declined": "update to {version} declined",
+  "dev.cl_upd_accepted": "updating to {version}",
+  "dev.cl_newer": "newer than the server's app: update SyncMusic",
   "dev.cl_seen": "Last seen",
   "dev.cl_never": "not yet",
   "dev.cl_paired": "Paired",
@@ -673,7 +677,7 @@ function clientSession(s, id) {
   const p = s.progress || {};
   const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
   return s.status === "ready"
-    ? html`<span>${t("dev.cl_sync", { done: p.done, total: p.total, bytes: `${bytes(p.bytes_done || 0)} / ${bytes(p.bytes_total || 0)}` })}${p.rate_bps != null ? ` · ${t("dev.cl_rate", { rate: bytes(p.rate_bps) })}${p.eta_s != null ? ` · ${etaText(p.eta_s)}` : ""}` : ""}</span>
+    ? html`<span>${t("dev.cl_sync", { done: p.run_done ?? p.done, total: p.run_total ?? p.total, bytes: `${bytes(p.run_bytes_done ?? p.bytes_done ?? 0)} / ${bytes(p.run_bytes_total ?? p.bytes_total ?? 0)}` })}${p.rate_bps != null ? ` · ${t("dev.cl_rate", { rate: bytes(p.rate_bps) })}${p.eta_s != null ? ` · ${etaText(p.eta_s)}` : ""}` : ""}</span>
       <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>`
     : s.status === "needs_review"
       ? html`<span class="hint warn" data-client-review>${t("dev.cl_review", { reason: s.message })}</span>
@@ -683,11 +687,18 @@ function clientSession(s, id) {
     : html`<span>${t("dev.cl_planning")}</span>`;
 }
 
+// the client's own app compared with the app the server holds
+function appUpdateNote(cl) {
+  const o = cl.update_offer;
+  if (o && o.version) return t(`dev.cl_upd_${o.state}`, { version: o.version });
+  return cl.newer_than_server ? t("dev.cl_newer") : "";
+}
+
 // a paired Wi-Fi client: what it reported when it paired / last synced, and its sync while it runs
 function clientCard(c) {
   const cl = c.client || {}, caps = c.capabilities || {}, st = caps.storage || {};
   const rows = [
-    ["app", [cl.app, cl.app_version].filter(Boolean).join(" ")],
+    ["app", [[cl.app, cl.app_version].filter(Boolean).join(" "), appUpdateNote(cl)].filter(Boolean).join(" · ")],
     ["os", cl.os],
     ["seen", c.last_seen ? when(c.last_seen) : t("dev.cl_never")],
     ["paired", when(c.created_at)],

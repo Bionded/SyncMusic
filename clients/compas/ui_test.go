@@ -154,7 +154,7 @@ func TestBacklightDimOffAndRestore(t *testing.T) {
 		t.Fatalf("dim: %s", bright())
 	}
 	b.set(screenOff, 10)
-	if bright() != "0" || blank() != "1" {
+	if bright() != "0" || blank() != "0" { // brightness only: no framebuffer blank (keeps Wi-Fi up)
 		t.Fatalf("off: %s %s", bright(), blank())
 	}
 	b.restore()

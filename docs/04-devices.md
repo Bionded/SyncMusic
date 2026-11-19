@@ -212,8 +212,11 @@ prepares the files (with the device's processors) and the app downloads them whe
    what is new the next time it checks in (every 5 minutes by default) or when you sync it in the app.
 
 The device page shows what the app reported (app, system, formats it plays, free space, last seen) and the
-progress while the app downloads. A large sync comes in parts: the server prepares at most the device's
-**Outbox budget** (2 GB by default, 0 = no limit) at a time and the app syncs again for the next part. Plays, ratings, favourites and positions the app sends go back to your libraries
+progress of the whole sync while the app downloads. The server prepares (converts, retags) each file just before
+the app downloads it, so even a first sync of a large library needs almost no disk on the server and runs in one
+go; stop it and the next sync continues where it stopped. Apps that do not support this yet get a large sync in
+parts: the server prepares at most the device's **Outbox budget** (2 GB by default, 0 = no limit) at a time and
+the app syncs again for the next part. Plays, ratings, favourites and positions the app sends go back to your libraries
 with its next sync. **Rename** or **Revoke** a client under Settings → Wi-Fi clients; a revoked client keeps its
 device and history but can no longer sync until it is paired again. The connection is plain HTTP: use it only on a
 network you trust.

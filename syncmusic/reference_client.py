@@ -25,6 +25,7 @@ import os
 import platform
 import time
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,7 @@ class ReferenceClient:
         self._http = http
         self._own_http = http is None
         self.formats: list[str] = ["mp3", "aac", "flac", "ogg", "opus"]
+        self.stream = True  # off: the older protocol of outbox windows (each a session of its own)
 
     # --- state --------------------------------------------------------------------------------------
 
@@ -99,6 +101,8 @@ class ReferenceClient:
             "storage": {"total": st.f_blocks * st.f_frsize, "free": st.f_bavail * st.f_frsize},
             "features": {"playlists": True, "play_events": True},
             "layout": {"stores_paths": True},
+            # the whole plan in one session, files prepared just ahead of the downloads
+            "stream": self.stream,
         }
 
     # --- pairing ------------------------------------------------------------------------------------
@@ -193,8 +197,13 @@ class ReferenceClient:
         raise TimeoutError(f"no plan: {view['status']} {view.get('message', '')}")
 
     async def _section(self, view: dict[str, Any], section: str) -> list[dict[str, Any]]:
+        return [item async for item in self._pages(view, section)]
+
+    async def _pages(self, view: dict[str, Any], section: str) -> AsyncIterator[dict[str, Any]]:
+        """The items of a section page by page (a streaming session's fetch pages wait for the next files)."""
         plan = view["plan"]
-        items = list(plan[section])
+        for item in plan[section]:
+            yield item
         cursor = plan["next"].get(section)
         while cursor:
             _, page = await self._call(
@@ -202,9 +211,9 @@ class ReferenceClient:
                 f"sync/{view['session_id']}/plan",
                 params={"section": section, "cursor": cursor},
             )
-            items += page["items"]
+            for item in page["items"]:
+                yield item
             cursor = page["next"]
-        return items
 
     def _target(self, rel: str) -> Path:
         p = (self.folder / rel).resolve()
@@ -282,19 +291,22 @@ class ReferenceClient:
         await self.send_events()
         view = await self.start()
         sid = view["session_id"]
-        deletes = await self._section(view, "delete")
-        fetch = await self._section(view, "fetch")
         keys: dict[str, str] = self.state.setdefault("keys", {})
-        gone = []
-        for d in deletes:
-            self._target(d["path"]).unlink(missing_ok=True)
-            gone.append(d["path"])
-            keys.pop(d["path"], None)
-        if gone:
-            await self._call("POST", f"sync/{sid}/ack", json={"deleted": gone})
+        gone: list[str] = []
+
+        async def delete(items: list[dict[str, Any]]) -> None:
+            now = [d["path"] for d in items if d["path"] not in gone]
+            for rel in now:
+                self._target(rel).unlink(missing_ok=True)
+                keys.pop(rel, None)
+            if now:
+                gone.extend(now)
+                await self._call("POST", f"sync/{sid}/ack", json={"deleted": now})
+
+        await delete(await self._section(view, "delete"))
         got = failed = 0
         stopped = False  # the server stopped the sync: its ack answer says so
-        for item in fetch:
+        async for item in self._pages(view, "fetch"):
             if stopped:
                 failed += 1
                 continue
@@ -310,6 +322,14 @@ class ReferenceClient:
                 got += 1
             else:
                 failed += 1
+        if not view["plan"].get("complete", True) and not stopped:
+            # streaming: the rest of the plan (deletes, the generated set) is known once every file is listed
+            _, final = await self._call("GET", f"sync/{sid}")
+            if final.get("status") == "ready":
+                view = final
+                await delete(await self._section(view, "delete"))
+            else:
+                failed += 1  # the server's job stopped: the next sync goes on
         installed = False
         if view["plan"].get("generated") and not failed and not view["plan"].get("more"):
             installed = await self.install_generated(view["plan"]["generated"])

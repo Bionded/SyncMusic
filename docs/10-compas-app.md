@@ -29,7 +29,11 @@ by itself until everything is on the card.
 The app can update itself from your server. In **Settings → Devices → Compás app updates**, **Download newest**
 fetches the newest app from SyncMusic's release on GitHub after you confirm (its checksum is checked). Or put the new `syncmusic-compas-<version>.zip` (unchanged, as
 downloaded) into the `tools/` folder of the server's data directory, or next to the `syncmusic` program. The next
-time the app opens, its home page says **A new app version is ready** and offers **Update the app to …**. The app
+time the app opens and reaches the server, it asks: *The server has SyncMusic app X, this player runs Y. Update
+now?* **Update** installs it; **Later** keeps your version (the home page keeps an **Update the app to …** button)
+and the app asks again the next time it starts. Nothing is installed without your press. The device page shows the
+version the player runs and whether the update was offered, declined or accepted. If the player's app is newer
+than the server's, the home page says so: update the SyncMusic server, the app never installs an older version. The app
 downloads and checks every file first and replaces its program file last, so an interrupted update leaves a
 working app. The new version starts the next time you open SyncMusic; Compás asks once to approve it.
 
@@ -38,7 +42,12 @@ working app. The new version starts the next time you open SyncMusic; Compás as
 - **Exit** on the home page closes the app; every other page has a back key (‹, top left) or Exit / Cancel.
 - **Forced exit:** hold next or previous + volume up together for 3 seconds (volume up + volume down also works on players that can report both keys at once). A running sync stops at a safe point
   first: the player's library database is never left half installed.
+- **Power** (short press) switches the screen off, and on again, like in the player; a sync goes on with the screen
+  off. Holding Power still powers the player off.
 - When the screen is dimmed or off, the first press only wakes it (the touch screen is off while the screen is).
+- With the screen off the app stays connected to Wi-Fi, so a sync started from the server still arrives: it only
+  turns the backlight off and keeps the player awake while the app is open. That costs a little more battery than
+  the player's own screen off; close the app when you do not need it.
 
 ## Pairing
 The first start shows **Not paired yet**.

@@ -27,9 +27,17 @@ type appFile struct {
 }
 
 type appUpdate struct {
-	Available bool      `json:"available"`
-	Version   string    `json:"version"`
-	Files     []appFile `json:"files"`
+	Available     bool      `json:"available"`
+	Version       string    `json:"version"`
+	Files         []appFile `json:"files"`
+	ServerVersion string    `json:"server_version"` // the newest app the server holds ("" = none or an older server)
+	ClientNewer   bool      `json:"client_newer"`   // this app is newer than the server's: update the server
+}
+
+// AnswerUpdate tells the server what the user chose on the update prompt ("update" or "later"); an older
+// server without the endpoint is ignored.
+func (c *Client) AnswerUpdate(v, answer string) {
+	_ = c.call("POST", "app-update/answer", map[string]string{"version": v, "answer": answer}, nil)
 }
 
 // appDir: where the app is installed on the card.
