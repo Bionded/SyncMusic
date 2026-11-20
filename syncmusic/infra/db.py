@@ -6,6 +6,7 @@ rolls back and stops the start. The daemon refuses a database it does not know r
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Iterable
 from importlib import resources
@@ -122,12 +123,22 @@ class Database:
 
         from syncmusic.infra import dbbackup  # imports this module
 
+        folder = await self._configured_backup_dir() or self.backup_dir
         at = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        dst = self.backup_dir / f"syncmusic-{at}-before-upgrade.sqlite3.gz"
-        await asyncio.to_thread(self.backup_dir.mkdir, parents=True, exist_ok=True)
-        await asyncio.to_thread(dbbackup.copy, self.path, self.backup_dir, dst)
+        dst = folder / f"syncmusic-{at}-before-upgrade.sqlite3.gz"
+        await asyncio.to_thread(folder.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(dbbackup.copy, self.path, folder, dst)
         log.info("backed the database up to %s before upgrading from schema %d", dst, current)
         return dst
+
+    async def _configured_backup_dir(self) -> Path | None:
+        """The backup folder set in Settings (read straight from the not yet upgraded database), if any."""
+        try:
+            row = await self.fetchone("SELECT value FROM settings WHERE key = 'db_backup_dir'")
+            value = json.loads(row[0]) if row else None
+        except (aiosqlite.Error, ValueError, TypeError):
+            return None
+        return Path(value) if isinstance(value, str) and value else None
 
     async def _has_tables(self) -> bool:
         row = await self.fetchone(

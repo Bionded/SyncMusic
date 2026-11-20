@@ -4,10 +4,11 @@ The SyncMusic app runs on a HiBy R1 with the Compás firmware and syncs the play
 over Wi-Fi. A sync does the same as a sync over USB: it brings music, audiobooks, podcasts and playlists onto the
 SD card, removes what you no longer picked, and sends plays, star ratings, positions and playlist edits back.
 Star ratings follow the same rules as over USB (see *Devices → HiBy R1 with Compás*): your stars become the song's rating
-in your library, your library's ratings show on the player, and a favourite without a rating shows as 5 stars.
+in your library and your library's ratings show on the player. Players with star ratings (Compás 1.6.0 and newer)
+sync ratings only, older ones hearts (favourites) only; a favourite is never turned into 5 stars or back.
 Album stars sync the same way with Navidrome and other Subsonic servers.
-A large first sync comes in parts: the server prepares a few GB at a time and the app goes on with the next part
-by itself until everything is on the card.
+Even a large first sync runs in one session: the server prepares each file just before the app downloads it, track
+by track, so it needs almost no disk on the server. Stop a sync and the next one continues where it stopped.
 
 ![Home screen](img/compas-app-home.png) ![Sync](img/compas-app-sync.png)
 
@@ -34,7 +35,10 @@ by itself until everything is on the card.
    each update of the app, because the program file changed.
 
 ### Updates
-The app can update itself from your server. In **Settings → Devices → Compás app updates**, **Download newest**
+The app can update itself from your server. When an app connects and the server holds no newer app yet, the server
+downloads both app builds of its own release from GitHub by itself (checksums checked) and offers the update on that
+connection, or on the next one if the download takes longer; Settings → Tools (*Compás app updates*) and the device page
+say when the server holds no app. **Download newest** there
 fetches the newest app (both builds) from SyncMusic's release on GitHub after you confirm (its checksum is checked). Or put the new `syncmusic-compas-<version>-hard.zip` and/or `-soft.zip` (unchanged, as
 downloaded) into the `tools/` folder of the server's data directory, or next to the `syncmusic` program. The next
 time the app opens and reaches the server, it asks: *The server has SyncMusic app X, this player runs Y. Update
@@ -99,6 +103,12 @@ together.
 **Settings → Server → Forget this server** on the player removes the
 pairing; the music on the card stays. (Writing `<server address> <code>` into `.apps-data/syncmusic/pair.txt`
 over USB also pairs the app on its next start.)
+
+**Settings → Server → Reset the app** deletes only the app's own data (`.apps-data/syncmusic/`: the pairing, its
+settings and sync history; the startup log stays) and starts it like a new install. The app itself, the music, the
+playlists and the card's sync list (`/.syncmusic/`) stay. Connect to the server again: the server recognises the
+player by its card, so it is the same device — no new setup, the same templates and history — and the app gets its
+settings back (the server keeps a copy of them whenever you change one).
 
 ## Syncing
 **Sync now** on the home screen asks the server what to do and shows it first: new or changed files and their

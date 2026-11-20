@@ -157,3 +157,73 @@ def test_real_tool_builds_a_loadable_set(tmp_path):
     _, out, names = compas_tagset.build_cached(files, tmp_path / "gen", tool)
     assert json.loads((out / "manifest.json").read_text())["songs"] == len(files)
     assert any(n.startswith("database_idx.tcd.g1") for n in names)
+
+
+def _id3_file(path: Path, tag: int, audio: int) -> bytes:
+    """An ID3v2 tag of `tag` bytes, then `audio` bytes of 'audio', then an ID3v1 tag."""
+    n = tag - 10
+    size = bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
+    data = b"ID3\x04\x00\x00" + size + b"t" * n + os.urandom(audio) + b"TAG" + b"v" * 125
+    path.write_bytes(data)
+    return data
+
+
+def test_tag_copy_keeps_tags_and_end_sparse(tmp_path):
+    src = tmp_path / "a.mp3"
+    data = _id3_file(src, 300_000, 4_000_000)
+    os.utime(src, (1_700_000_000, 1_700_000_000))
+    dest = tmp_path / "shadow" / "a.mp3"
+    compas_tagset.tag_copy(src, dest)
+    got = dest.read_bytes()
+    head = 300_000 + compas_tagset.TAG_COPY_AUDIO
+    tail = compas_tagset.TAG_COPY_TAIL
+    assert len(got) == len(data) and dest.stat().st_mtime == 1_700_000_000
+    assert got[:head] == data[:head] and got[-tail:] == data[-tail:]
+    assert got[head:-tail] == bytes(len(data) - head - tail)
+    assert dest.stat().st_blocks * 512 < 1_000_000  # a hole, not a copy
+
+
+def test_tag_copy_of_mp4_keeps_every_box_but_the_media(tmp_path):
+    def box(kind: bytes, body: bytes) -> bytes:
+        return (8 + len(body)).to_bytes(4, "big") + kind + body
+
+    moov = box(b"moov", b"m" * 50_000)
+    data = box(b"ftyp", b"M4A " * 4) + box(b"mdat", os.urandom(3_000_000)) + moov
+    src = tmp_path / "a.m4a"
+    src.write_bytes(data)
+    dest = tmp_path / "b.m4a"
+    compas_tagset.tag_copy(src, dest)
+    assert dest.read_bytes().endswith(moov) and dest.stat().st_size == len(data)
+
+
+def test_shrink_turns_whole_kept_files_into_tag_copies(tmp_path):
+    root = tmp_path / "dev.shadow"
+    (root / "A").mkdir(parents=True)
+    data = _id3_file(root / "A" / "a.mp3", 1000, 3_000_000)
+    (root / "A" / "small.mp3").write_bytes(b"x" * 100)
+    freed = compas_tagset.shrink_tag_copies(root)
+    assert freed > 2_000_000
+    assert (root / "A" / "a.mp3").read_bytes()[:1000] == data[:1000]
+    assert (root / "A" / "small.mp3").read_bytes() == b"x" * 100
+    assert compas_tagset.shrink_tag_copies(root) == 0  # already shrunk
+
+
+async def test_a_delivered_file_is_kept_as_a_sparse_tag_copy(tmp_path):
+    cfg = DeviceConfig(
+        id="c2", type="client", name="Player", settings={"player_database": "compas"}
+    )
+    dev = ClientDevice(cfg, tmp_path / "box", None)
+    s = await dev.begin()
+    item = work_item(tmp_path, "Big", size=1000)
+    ref = await dev.put_track(s, item)
+    await dev.commit(s, Manifest(header=ManifestHeader(device_id=dev.id)))
+    src = dev.mount / ref.path
+    data = _id3_file(src, 2_000, 3_000_000)  # replace the outbox file with a big tagged one
+    os.utime(src, (1_700_000_000, 1_700_000_000))
+    dev.delivered(ref.path)
+    kept = dev._shadow / ref.path
+    st = kept.stat()
+    assert st.st_size == len(data) and int(st.st_mtime) == 1_700_000_000
+    assert kept.read_bytes()[:2_000] == data[:2_000]
+    assert st.st_blocks * 512 < len(data) // 2  # not a whole copy (no hard link either)
+    assert st.st_nlink == 1

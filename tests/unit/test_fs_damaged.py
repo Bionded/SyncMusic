@@ -236,3 +236,44 @@ async def test_skip_that_file_and_continue_after_a_repeated_io_error(env, tmp_pa
     app.sync._drop_skipped("flash", plan)
     assert [a.ref for a in plan.actions] == [keep]
     assert "Пісня" in plan.warnings[-1]
+
+
+async def test_a_failed_check_after_eject_marks_the_device_damaged(env, tmp_path, monkeypatch):
+    """Eject's read-only check after unmount found errors: the device is 'file system damaged' at once
+    (Check and repair in the header), not just a failed Eject with nothing offered."""
+    import pytest
+
+    from syncmusic.infra.blockdev import mount as mnt
+
+    app, c = env
+    await _register(c, tmp_path / "flash", name="Flash")
+
+    async def damaged(cfg):
+        raise mnt.DamagedFilesystemError(
+            "/dev/sdz: the file system has errors right after the sync "
+            "(/a.album: cluster is already allocated). Repair it on the device page before using the player."
+        )
+
+    monkeypatch.setattr(app.sync, "_eject", damaged)
+    with pytest.raises(mnt.DamagedFilesystemError):
+        await app.sync.eject("flash")
+    d = await _device(c)
+    assert "cluster is already allocated" in d["fs_damaged"]
+    assert "right after the sync" in d["eject_failed"]
+
+    async def busy(cfg):
+        raise mnt.BlockdevError("umount: target is busy")
+
+    app.sync._damaged.clear()
+    monkeypatch.setattr(app.sync, "_eject", busy)
+    with pytest.raises(mnt.BlockdevError):
+        await app.sync.eject("flash")
+    d = await _device(c)
+    assert d["eject_failed"] == "umount: target is busy" and d["fs_damaged"] is None
+
+    async def ok(cfg):
+        return None
+
+    monkeypatch.setattr(app.sync, "_eject", ok)
+    await app.sync.eject("flash")
+    assert (await _device(c))["eject_failed"] is None

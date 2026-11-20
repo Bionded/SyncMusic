@@ -1,4 +1,4 @@
-"""Acceptance on an emulated stock iPod Classic: the scenario of tests/hardware/test_classic_acceptance.py -
+"""Acceptance on an emulated stock iPod Classic: the scenario of tests/scenarios/classic.py -
 format with a name (partition table unchanged), music from Navidrome + podcasts from Audiobookshelf (compose stack),
 database re-read with pygpod, no-op re-run, incremental rule change both ways."""
 
@@ -18,7 +18,7 @@ from tests.emulated import (
     running_app,
 )
 from tests.factories import own_rules
-from tests.hardware.test_classic_acceptance import classic_scenario
+from tests.scenarios.classic import classic_scenario
 
 pytestmark = [pytest.mark.integration, pytest.mark.emulated, needs_sudo]
 

@@ -38,6 +38,8 @@ WRONG_PER_MINUTE = 5  # wrong codes per client address and minute, then `rate_li
 BURN_AFTER = 20  # wrong guesses while one code is open: that code is burnt
 ROTATE_GRACE = timedelta(hours=24)
 SEEN_EVERY_S = 60.0  # last_seen is written at most this often per client
+# a client heard from within this window counts as connected (the app talks at least every keep-alive)
+ALIVE_S = 180.0
 MAX_OPEN_REQUESTS = 5  # pairing requests waiting for the user at once
 REQUESTS_PER_MINUTE = 3  # pairing requests per client address and minute
 
@@ -150,6 +152,9 @@ class Clients:
         self.db = db
         self._wrong: dict[str, list[float]] = {}  # client address → monotonic times of wrong codes
         self._seen: dict[str, float] = {}  # device id → monotonic time last_seen was written
+        self._heard: dict[
+            str, float
+        ] = {}  # device id → monotonic time of its last request (this run)
         self._attempts: dict[str, list[float]] = {}  # client address → monotonic times of attempts
         self._requests: dict[str, PairRequestState] = {}  # pairing requests live in memory only
         self._asks: dict[
@@ -263,13 +268,20 @@ class Clients:
         old = await self.db.fetchone(
             "SELECT device_id FROM client_pairings WHERE client_uid = ?", (client.uid,)
         )
+        if old is None and client.card_uid:
+            # a reset app (new uid) on the same card: the same device, its old token stops working
+            old = await self.db.fetchone(
+                "SELECT device_id FROM client_pairings "
+                "WHERE json_extract(client, '$.card_uid') = ? ORDER BY last_seen DESC",
+                (client.card_uid,),
+            )
         if old is not None:
             device_id = str(old["device_id"])
             await self.db.execute(
-                "UPDATE client_pairings SET client = ?, capabilities = ?, token_sha256 = ?, "
-                "old_token_sha256 = NULL, old_token_until = NULL, revoked_at = NULL, last_seen = ? "
-                "WHERE device_id = ?",
-                (info, caps, _sha(token), _iso(now), device_id),
+                "UPDATE client_pairings SET client_uid = ?, client = ?, capabilities = ?, "
+                "token_sha256 = ?, old_token_sha256 = NULL, old_token_until = NULL, revoked_at = NULL, "
+                "last_seen = ? WHERE device_id = ?",
+                (client.uid, info, caps, _sha(token), _iso(now), device_id),
             )
         else:
             device_id = device_id or uuid.uuid4().hex[:12]
@@ -399,8 +411,15 @@ class Clients:
         await self._touch(device_id, now)
         return device_id
 
+    def alive(self, device_id: str) -> bool:
+        """The client made a request within ALIVE_S in this run: it counts as connected over Wi-Fi.
+        After a restart nobody is alive until the app talks again."""
+        heard = self._heard.get(device_id)
+        return heard is not None and time.monotonic() - heard < ALIVE_S
+
     async def _touch(self, device_id: str, now: datetime) -> None:
         mono = time.monotonic()
+        self._heard[device_id] = mono
         if mono - self._seen.get(device_id, -SEEN_EVERY_S) >= SEEN_EVERY_S:
             self._seen[device_id] = mono
             await self.db.execute(
@@ -457,6 +476,19 @@ class Clients:
         await self.db.execute(
             "UPDATE client_pairings SET client = ? WHERE device_id = ?",
             (json.dumps(info), device_id),
+        )
+
+    async def app_settings(self, device_id: str) -> dict[str, Any]:
+        """The app's own settings as it last reported them ({} = never reported)."""
+        r = await self.db.fetchone(
+            "SELECT app_settings FROM client_pairings WHERE device_id = ?", (device_id,)
+        )
+        return dict(json.loads(r["app_settings"])) if r and r["app_settings"] else {}
+
+    async def set_app_settings(self, device_id: str, settings: dict[str, Any]) -> None:
+        await self.db.execute(
+            "UPDATE client_pairings SET app_settings = ? WHERE device_id = ?",
+            (json.dumps(settings), device_id),
         )
 
     # --- listing -----------------------------------------------------------------------------------

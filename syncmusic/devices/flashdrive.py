@@ -153,7 +153,7 @@ class FlashDrive(FileDeviceMixin, Device):
         if fs is not None and fs not in FILESYSTEMS:
             raise ValueError(f"unsupported file system {fs!r} (one of {FILESYSTEMS})")
         registered = (
-            self.config.identity.format_guard_ids()
+            self.format_guard_ids()
         )  # a fixed USB disk (RM=0) passes the guard only for its registration
         part = await format_disk(guard, self.block_path, fs or "vfat", name, registered)  # type: ignore[arg-type]
         m = await mount(guard, part, self.id, self.ctx.config.mount_root, registered=registered)

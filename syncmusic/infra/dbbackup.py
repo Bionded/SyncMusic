@@ -19,6 +19,8 @@ from syncmusic.infra.db import Database
 EVERY = {"6h": timedelta(hours=6), "daily": timedelta(days=1), "weekly": timedelta(days=7)}
 NAME = re.compile(r"^syncmusic-(\d{8}-\d{6})-([a-z-]+)\.sqlite3\.gz$")
 
+KEEP_UPGRADE = 2
+
 
 def backups(folder: Path) -> list[tuple[Path, datetime, str]]:
     """(path, when, reason) of the backups in `folder`, newest first."""
@@ -40,8 +42,11 @@ def due(folder: Path, every: str, now: datetime) -> bool:
 
 
 def prune(folder: Path, keep: int) -> int:
-    """Delete all but the newest `keep` backups; returns how many went."""
-    old = backups(folder)[keep:]
+    """Delete all but the newest `keep` backups; returns how many went. Backups made before a database upgrade
+    are counted apart and the newest `KEEP_UPGRADE` of them stay: they are the way back from a bad upgrade."""
+    found = backups(folder)
+    upgrade = [b for b in found if b[2] == "before-upgrade"]
+    old = [b for b in found if b[2] != "before-upgrade"][keep:] + upgrade[KEEP_UPGRADE:]
     for p, _, _ in old:
         p.unlink(missing_ok=True)
     return len(old)

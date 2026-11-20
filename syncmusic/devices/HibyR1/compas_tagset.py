@@ -19,8 +19,10 @@ import json
 import os
 import re
 import shutil
+import struct
 import tempfile
 from pathlib import Path
+from typing import BinaryIO
 
 from syncmusic.devices.HibyR1 import compas_feedback as cf
 from syncmusic.devices.HibyR1 import compas_sdtool as sd
@@ -29,6 +31,9 @@ GEN_FILE = re.compile(r"^database_(?:idx|\d+)\.tcd\.g(\d+)(?:\..+)?$")
 IGNORE_FILE = "database.ignore"
 IGNORED_DIRS = ("Podcasts", "Audiobooks")
 MANIFEST = "manifest.json"
+# a tag copy keeps the tags and this much audio after them (stream parameters, the first frames) and the file's end
+TAG_COPY_AUDIO = 64 * 1024
+TAG_COPY_TAIL = 128 * 1024
 
 
 class TagsetError(Exception):
@@ -48,6 +53,92 @@ def set_id(files: dict[str, Path]) -> str:
     """The same card contents (path, size, even mtime) give the same id, so a set is built once."""
     rows = [[rel, p.stat().st_size, even_mtime(p)] for rel, p in sorted(files.items())]
     return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()[:32]
+
+
+def _audio_start(f: BinaryIO, size: int) -> int:
+    """Where the audio data starts after an ID3v2 tag or FLAC metadata blocks (0 for other files)."""
+    f.seek(0)
+    head = f.read(10)
+    if head[:3] == b"ID3" and len(head) == 10:
+        n = (head[6] << 21) | (head[7] << 14) | (head[8] << 7) | head[9]
+        return 10 + n + (10 if head[5] & 0x10 else 0)
+    if head[:4] == b"fLaC":
+        pos = 4
+        while pos + 4 <= size:
+            f.seek(pos)
+            b = f.read(4)
+            pos += 4 + int.from_bytes(b[1:4], "big")
+            if b[0] & 0x80:
+                break
+        return pos
+    return 0
+
+
+def _mp4_ranges(f: BinaryIO, size: int) -> list[tuple[int, int]]:
+    """Every top-level MP4 box whole (the tags and the sample tables, wherever they are) but the media data."""
+    out: list[tuple[int, int]] = []
+    pos = 0
+    while pos + 8 <= size:
+        f.seek(pos)
+        b = f.read(16)
+        n, kind = struct.unpack(">I4s", b[:8])
+        if n == 1 and len(b) == 16:
+            n = struct.unpack(">Q", b[8:16])[0]
+        elif n == 0:
+            n = size - pos
+        if n < 8:
+            return [(0, size)]
+        out.append((pos, pos + (min(n, TAG_COPY_AUDIO) if kind == b"mdat" else n)))
+        pos += n
+    return out
+
+
+def tag_ranges(src: Path) -> list[tuple[int, int]]:
+    """The byte ranges of an audio file the player's indexer reads: its tags, the stream headers and first frames
+    and the end of the file (ID3v1/APE tags, the last Ogg page)."""
+    size = src.stat().st_size
+    with src.open("rb") as f:
+        f.seek(4)
+        if f.read(4) == b"ftyp":
+            ranges = _mp4_ranges(f, size)
+        else:
+            ranges = [(0, _audio_start(f, size) + TAG_COPY_AUDIO)]
+    ranges.append((size - TAG_COPY_TAIL, size))
+    return [(max(0, a), min(size, b)) for a, b in ranges if min(size, b) > max(0, a)]
+
+
+def tag_copy(src: Path, dest: Path) -> None:
+    """A sparse copy of `src` holding only what the indexer reads (`tag_ranges`), with the same size and mtime:
+    the database built over it is the one built over the whole file, at a fraction of the disk."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(f".{dest.name}.tmp")
+    st = src.stat()
+    with src.open("rb") as i, tmp.open("wb") as o:
+        for a, b in tag_ranges(src):
+            i.seek(a)
+            o.seek(a)
+            o.write(i.read(b - a))
+        o.truncate(st.st_size)
+    os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+    tmp.replace(dest)
+
+
+def shrink_tag_copies(root: Path) -> int:
+    """Turn whole files under `root` (kept by older versions) into tag copies; the bytes freed. Blocking."""
+    freed = 0
+    if not root.is_dir():
+        return 0
+    for p in root.rglob("*"):
+        if not p.is_file() or p.is_symlink() or p.name.startswith("."):
+            continue
+        st = p.stat()
+        kept = sum(b - a for a, b in tag_ranges(p))
+        if st.st_blocks * 512 <= kept + 64 * 1024:
+            continue  # already a tag copy (or a small file)
+        tag_copy(p, p)
+        if st.st_nlink == 1:  # a hard link's data stays with its other name
+            freed += st.st_blocks * 512 - p.stat().st_blocks * 512
+    return freed
 
 
 def _link(src: Path, dest: Path) -> None:

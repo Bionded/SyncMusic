@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from fractions import Fraction
 
+import pytest
+
 from syncmusic.base.capabilities import DeviceCapabilities
 from syncmusic.core import registry
 from syncmusic.infra.ffmpeg import probe_json
@@ -95,3 +97,20 @@ def test_suggested_only_for_a_device_with_the_ipod_profile():
     assert Video.suggest(CAPS) is not None
     assert Video.suggest(DeviceCapabilities(supports_video=True)) is None
     assert Video({"video_kbps": 400}, None).settings_hash() != Video({}, None).settings_hash()
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize(
+    "head",
+    [
+        b"\x00\x00\x00\x04free",
+        b"\x00\x00\x00\x07free",
+        b"\x00\x00\x00\x01free" + (0).to_bytes(8, "big"),
+        b"\x00\x00\x00\x01free" + (8).to_bytes(8, "big"),
+        b"\x00\x00\x00\x01free" + (15).to_bytes(8, "big"),
+    ],
+)
+def test_moov_first_stops_on_a_broken_box_size(tmp_path, head):
+    broken = tmp_path / "broken.mp4"
+    broken.write_bytes(head + bytes(16))
+    assert moov_first(broken) is False

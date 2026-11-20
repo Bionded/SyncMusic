@@ -241,6 +241,7 @@ function showCounts(ctx, p) {
   const byRule = Object.fromEntries((p.per_rule || []).map((r) => [r.rule_id, r]));
   const lostBy = Object.fromEntries((p.left_out_per_rule || []).map((r) => [r.rule_id, r]));
   const groups = {};
+  const counted = new Set(p.template_ids || ctx.state.list); // a template added since says "Counting…", not "No matches"
   for (const id of ctx.state.list) {
     const tp = ctx.state.templates.find((x) => x.id === id);
     const hits = tp.rules.map((r) => byRule[r.id]).filter(Boolean);
@@ -248,7 +249,7 @@ function showCounts(ctx, p) {
     const el = root.querySelector(`[data-tpl-sum="${CSS.escape(id)}"]`);
     // everything it matches is brought by a template above: say so, not "No matches"
     const matched = hits.reduce((a, r) => a + (r.matched || 0), 0);
-    if (el) {
+    if (el && counted.has(id)) {
       el.textContent = items ? t("rules.sum", { items: t("count.item", { n: items }), size: bytes(size) })
         : matched ? t("rules.sum_above", { items: t("count.item", { n: matched }) }) : t("rules.sum_none");
     }
@@ -371,6 +372,7 @@ async function updatePreview(ctx, box) {
     previewAbort?.abort(); // a newer edit cancels the request in flight
     previewAbort = new AbortController();
     const p = await post(`/devices/${encodeURIComponent(ctx.state.cfg.id)}/rules/preview`, { rule_set: rs }, previewAbort.signal);
+    p.template_ids = rs.template_ids || []; // what it counted
     ctx.state.lastPreview = p;
     showCounts(ctx, p);
     show(previewBody(p, ctx.state.cfg.id), !p.connected ? badge("neutral", t("rules.preview_offline"))

@@ -14,9 +14,6 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 | New password | At least 8 characters. Setting it turns the login on and signs out every other browser. Lost it? On the host run syncmusic set-password. |
 | Sign out everywhere | Ends the session of every browser, this one too. API tokens keep working. |
 | API tokens | For scripts and the command line (environment variable SYNCMUSIC_TOKEN): sent as Authorization: Bearer <token>. |
-| Allow Wi-Fi clients | Phones and other apps that speak the SyncMusic client protocol can pair with this server and sync over the network. Off: every client request is refused (paired clients keep their pairing). |
-| Announce on the network | Clients find this server by themselves (mDNS). Off: enter the address in the client by hand. |
-| Allow pairing requests | A player can ask to connect without a code; you approve it on the Devices page. Off: clients need a pairing code. |
 
 ### New devices
 
@@ -54,6 +51,9 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 
 | Setting | What it does |
 |---|---|
+| Allow Wi-Fi clients | Phones and other apps that speak the SyncMusic client protocol can pair with this server and sync over the network. Off: every client request is refused (paired clients keep their pairing). |
+| Announce on the network | Clients find this server by themselves (mDNS). Off: enter the address in the client by hand. |
+| Allow pairing requests | A player can ask to connect without a code; you approve it on the Devices page. Off: clients need a pairing code. |
 | Pairing code valid for | How long a new pairing code can be used. |
 | Clients check in every | How often a paired client asks whether there is something new to sync. |
 
@@ -63,7 +63,7 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 |---|---|
 | ffmpeg | Empty: the ffmpeg on the PATH. Its ffprobe must be next to it. |
 | compas-sdtool | Builds the player's library during the sync, so the music, hearts and play counts are there right after unplugging. Empty: next to SyncMusic, then in the data folder's tools/. |
-| Compás app updates | Paired HiBy R1 players with the SyncMusic app update themselves from the newest app this server holds (next to SyncMusic or in the data folder's tools/). |
+| Compás app updates | Paired HiBy R1 players with the SyncMusic app update themselves from the newest app this server holds (next to SyncMusic or in the data folder's tools/); the app builds of the server's own release are downloaded by themselves when a player connects. |
 
 ### Storage & backups
 
@@ -122,6 +122,9 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 | Verify after writing | Reads the files back after flushing the device. |
 | Eject after a sync | So it can be unplugged right away. Not after a sync that failed or was cancelled. |
 | Stay ready between syncs | Unmounted whenever no sync or view uses it, so unplugging it or switching the player off cannot damage its files. Syncs mount it again by themselves. |
+| Unmount other mounts when connected | For systems that mount every USB drive on their own (Umbrel, a desktop's automount): during the first minute after SyncMusic mounted the player, other programs' mounts of it are unmounted. A mount in use is left alone. Two programs writing to one FAT volume can damage it. |
+| Make other mounts read-only when connected | For systems that mount every USB drive again on their own: during the first minute after SyncMusic mounted the player, other programs' mounts of it are made read-only, so they can still read it but only SyncMusic writes. Unmount other mounts wins when both are on. |
+| Use an existing mount | When another program (Umbrel, a desktop's automount) has already mounted the player, SyncMusic writes through that mount instead of mounting it a second time. Off: the player is refused until that mount is gone. Two mounts of one FAT volume can damage it. |
 
 ### Safety
 
@@ -129,9 +132,172 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 |---|---|
 | Ask before removing more than | An automatic full sync that removes more of the items on the device waits for you. |
 | Remove songs deleted from the library | Syncs remove items their library no longer has. Kept when a library returns nothing or loses many items at once. |
+| Back up the device database | Saved under device-backups in the cache folder: keep it when clearing the cache. Only: iPod (stock firmware). |
+| Backups to keep | Only: iPod (stock firmware). |
+| Safety margin (% of the device) |  |
+| Minimum safety margin (MB) | Space always left free on the device. |
+| Maximum safety margin (MB) | Upper limit of the margin on big devices (the minimum wins if larger). |
 
 ### Conversion cache
 
 | Setting | What it does |
 |---|---|
 | Sync without the cache | For libraries much larger than the cache: each file is held in memory only until it is on the device. Large files go to a temporary file on this computer's disk. |
+| Files held at once |  |
+| Memory for held files (MB) |  |
+| Largest file held in memory (MB) | Larger files (videos, long lossless albums) are written to a temporary file on this computer's disk and deleted after the copy. |
+
+### Ratings and playlists
+
+| Setting | What it does |
+|---|---|
+| Rating wins on conflict |  |
+| Playlist conflicts | When a playlist was reordered both on the player and in the library, or a playlist made on the player has the name of a library playlist. Only: Android player (MTP), HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player, Wi-Fi client. |
+
+### Gentle write mode
+
+| Setting | What it does |
+|---|---|
+| Files per batch | Only: USB flash drive, HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player. |
+| Pause between batches (s) | Only: USB flash drive, HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player. |
+| Write speed limit (MB/s) | Empty: no limit. Only: USB flash drive, HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player. |
+
+### Advanced
+
+| Setting | What it does |
+|---|---|
+| Combine audiobooks | A book of several files goes onto the device as one .m4b with a chapter per file (books above 3.8 GB as parts). Off: the files stay in the book's folder. Changing it replaces the book on the next sync. Default: on for an iPod, off for other players. |
+
+### Reverse sync
+
+| Setting | What it does |
+|---|---|
+| Enabled |  |
+| Play counts | Only: HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player, Wi-Fi client. |
+| Ratings and favourites | Stars and hearts go back as the player has them: a heart is never turned into stars or stars into a heart. Only: HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player, Wi-Fi client. |
+| Playback positions | Only: HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Wi-Fi client. |
+| Playlists | Only: Android player (MTP), HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player, Wi-Fi client. |
+
+## Per device type (a device's Settings tab, its own fields)
+
+The fields only one device type has, shown in its own card and under *Files on the device*.
+
+### Android player (MTP)
+
+| Setting | What it does |
+|---|---|
+| USB serial | The player's serial number as it reports it over USB; SyncMusic opens only this player. |
+| Storage |  |
+| Folder on the player | The folder on the player's storage the path layout starts in; empty or ./: the storage's top level. Wipe removes only the files SyncMusic put there. |
+| Playable formats | Comma-separated, e.g. mp3, aac, flac. |
+| Path layout | Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date} {library_path} (the path in the library, used by backups); {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths. |
+| Playlists |  |
+
+### USB flash drive
+
+| Setting | What it does |
+|---|---|
+| Playable formats | Comma-separated, e.g. mp3, aac, flac. |
+| Purpose |  |
+| Path layout | Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date} {library_path} (the path in the library, used by backups); {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths. |
+| Base folder | The folder on the drive the path layout starts in; empty: the drive's top level. A new folder is created by the first sync; after a change the next sync moves the files. |
+| File system | For the file name rules (vfat, exfat, ext4, ntfs); empty: detected. |
+| ASCII-only file names |  |
+| Car stereo / old player mode | For head units and old players: file and folder names in plain ASCII (Cyrillic and accents transliterated, other characters replaced) and short paths. After a change the next sync renames the files already on the drive. |
+| Longest path (characters, car mode) |  |
+| Longest file or folder name (characters, car mode) |  |
+| Most files in one folder (car mode) | Many head units show only the first 255 entries of a folder. The next files go to “Album (2)”, “Album (3)” … |
+| Lyrics |  |
+| Playlists |  |
+
+### FTP server
+
+| Setting | What it does |
+|---|---|
+| Server | Host name or IP address of the server, without ftp:// or smb://. |
+| Port |  |
+| User name |  |
+| Password |  |
+| Folder on the server | Where the device's files go, e.g. /music/car. SyncMusic keeps its manifest there too. |
+| Passive mode |  |
+| Encrypted (FTPS) |  |
+| Timeout (s) |  |
+| Space to use (GB) | Empty: on FTP the plan does not check the space (FTP cannot tell it), on an SMB share it uses the share's free space. |
+| Playable formats | Comma-separated, e.g. mp3, aac, flac. |
+| Path layout | Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date} {library_path} (the path in the library, used by backups); {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths. |
+| Playlists |  |
+
+### HiBy R1 - SonixOS
+
+| Setting | What it does |
+|---|---|
+| Playable formats | Comma-separated, e.g. mp3, aac, flac. |
+| Path layout | Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date} {library_path} (the path in the library, used by backups); {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths. |
+| File system | For the file name rules (vfat, exfat, ext4, ntfs); empty: detected. |
+| ASCII-only file names |  |
+| Lyrics |  |
+| Playlists |  |
+| Split genres | Whether a genre like 'Rock; Pop' is filed as two genres. The R1 keeps this setting itself (Settings → Library on the player) and files the genres again its own way after unplugging: choose Off or On only together with the same setting on the player. |
+| Split at |  |
+| Playlist folder | Where the playlists go on the device, e.g. Playlists. Changing it moves them on the next sync. |
+
+### HiBy R1 - Compás
+
+| Setting | What it does |
+|---|---|
+| Playable formats | Comma-separated, e.g. mp3, aac, flac. |
+| Path layout | Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date} {library_path} (the path in the library, used by backups); {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths. |
+| Lyrics |  |
+| Playlists |  |
+
+### iPod (stock firmware)
+
+| Setting | What it does |
+|---|---|
+| Album artwork |  |
+| Set the device clock | At eject, after the file system is unmounted. |
+| Time zone | The clock is set in this zone and play times are read in it. Empty: this server's time zone. |
+
+### Rockbox player
+
+| Setting | What it does |
+|---|---|
+| Playable formats | Comma-separated, e.g. mp3, aac, flac. |
+| Path layout | Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date} {library_path} (the path in the library, used by backups); {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths. |
+| File system | For the file name rules (vfat, exfat, ext4, ntfs); empty: detected. |
+| ASCII-only file names |  |
+| Lyrics |  |
+| Playlists |  |
+| Playlist folder | Where the playlists go on the device, e.g. Playlists. Changing it moves them on the next sync. |
+| Minimum played share for a play (0–1) |  |
+| Or minimum played time (s) |  |
+| Rotated play logs to keep |  |
+| Turn on the Rockbox play log |  |
+
+### Wi-Fi client
+
+| Setting | What it does |
+|---|---|
+| Path layout | Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date} {library_path} (the path in the library, used by backups); {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths. |
+| Playlists |  |
+| Minimum played share for a play (0–1) |  |
+| Or minimum played time (s) |  |
+| After a sync that changed something | What the client app does once new files are in place: nothing, refresh its library, or restart (players that read their library only at start). |
+| Player library built by the server | For players that cannot index their own files: the server builds the player's library database over the files it holds and the app installs it. Compás needs compas-sdtool on the server. |
+| The player may confirm a sync | A sync that needs a confirmation (many removals, not enough space) can be confirmed in the app on the player after it shows what will change (on by default for every app). Off: only here. |
+| Outbox budget (MB) | The most the server prepares for the player at once. Apps that do not stream get a larger sync in parts (the Compás app streams the whole sync track by track), so the server never holds a second copy of the whole library. 0 = no limit. |
+
+### SMB share
+
+| Setting | What it does |
+|---|---|
+| Server | Host name or IP address of the server, without ftp:// or smb://. |
+| Port |  |
+| User name |  |
+| Password |  |
+| Folder on the server (SMB: /share/folder) | A library only reads it; a device keeps its files and manifest there. |
+| Timeout (s) |  |
+| Space to use (GB) | Empty: on FTP the plan does not check the space (FTP cannot tell it), on an SMB share it uses the share's free space. |
+| Playable formats | Comma-separated, e.g. mp3, aac, flac. |
+| Path layout | Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date} {library_path} (the path in the library, used by backups); {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths. |
+| Playlists |  |

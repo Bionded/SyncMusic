@@ -112,6 +112,12 @@ class Conformance:
         _, body = await self.c._call("GET", "me")
         _expect(body["device_id"] == self.c.state["device_id"], "me is another device")
 
+    async def app_settings(self) -> None:
+        mine = {"conformance": True} | dict(self.c.state.get("settings", {}))
+        _, body = await self.c._call("PUT", "me/settings", json={"settings": mine})
+        _expect(body.get("settings") == mine, "the server did not keep the app settings")
+        await self.c.set_settings({k: v for k, v in mine.items() if k != "conformance"})
+
     async def sync_plan(self) -> None:
         try:
             self.view = await self.c.start(poll_s=1)
@@ -233,6 +239,7 @@ class Conformance:
             ("pair", self.pair),
             ("auth_required", self.auth_required),
             ("me", self.me),
+            ("app_settings", self.app_settings),
             ("sync_plan", self.sync_plan),
             ("plan_paging", self.plan_paging),
             ("file_download", self.file_download),

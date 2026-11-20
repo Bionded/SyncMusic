@@ -24,7 +24,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -96,8 +98,10 @@ async def download(
     sums_url: str,
     dest: Path,
     transport: httpx.AsyncBaseTransport | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> None:
-    """The asset into `dest`, checked against the release's SHA256SUMS; `dest` is removed on any failure."""
+    """The asset into `dest`, checked against the release's SHA256SUMS; `dest` is removed on any failure.
+    `progress(done, total)` is called after every chunk (total 0 when the server does not say)."""
     name, url = str(asset.get("name") or ""), str(asset.get("url") or "")
     if not name or not url or not sums_url:
         raise Refused("the release has no download for this install")
@@ -113,9 +117,14 @@ async def download(
             with dest.open("wb") as f:
                 async with c.stream("GET", url) as r:
                     r.raise_for_status()
+                    total = int(r.headers.get("content-length") or 0)
+                    done = 0
                     async for chunk in r.aiter_bytes(1 << 20):
                         f.write(chunk)
                         digest.update(chunk)
+                        done += len(chunk)
+                        if progress is not None:
+                            progress(done, total)
     except httpx.HTTPError as e:
         _remove(dest)
         raise Refused(f"the download failed: {type(e).__name__}") from e
@@ -229,3 +238,38 @@ def prune_runtimes(keep: set[str], runtime: Path = SERVICE_RUNTIME) -> None:
     for d in runtime.iterdir():
         if d.is_dir() and d.name not in keep and not d.name.startswith("."):
             shutil.rmtree(d, ignore_errors=True)
+
+
+def running_runtime() -> Path | None:
+    """The unpacked runtime this process runs from (`<runtime dir>/<id>`, whatever the install prefix), or
+    None when it does not run from a single-file binary."""
+    if running_binary() is None:
+        return None
+    here = Path(sys.prefix).resolve().parent  # <runtime dir>/<id>/python is sys.prefix
+    return here if (here / ".complete").is_file() else None
+
+
+def prune_old_runtimes(binary: Path, current: Path) -> tuple[list[str], int]:
+    """Remove the other unpacked runtimes next to `current` (the running one), keeping the ones of `binary`
+    and of its `.previous` (the rollback). Only complete unpacks go; dot-dirs (unpacks in progress) stay.
+    Returns the removed names and the bytes freed."""
+    keep = {current.name}
+    for p in (binary, Paths(binary).previous):
+        with contextlib.suppress(OSError, Refused):
+            keep.add(runtime_id(p))
+    removed: list[str] = []
+    freed = 0
+    for d in sorted(current.parent.iterdir()):
+        if (
+            d.name in keep
+            or d.name.startswith(".")
+            or d.is_symlink()
+            or not (d / ".complete").is_file()
+        ):
+            continue
+        size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file() and not f.is_symlink())
+        shutil.rmtree(d, ignore_errors=True)
+        if not d.exists():
+            removed.append(d.name)
+            freed += size
+    return removed, freed

@@ -17,6 +17,8 @@ See also the generated [Settings reference](08-settings-reference.md).
 
 ## Application settings (*Settings*)
 
+Settings shows one section at a time: pick it in the menu on the left (a list at the top on a phone). Each section has its own address (`#/settings/updates`, `#/settings/maint`, …) to link to. **Show all settings on one page** puts every section on one page again; the choice is remembered in this browser and also applies to a device's *Settings* tab. The search box always searches every section; Enter opens the section of the first hit.
+
 ### Sync (and Appearance under System)
 What a **newly registered** device starts with; each device can change them later.
 
@@ -40,7 +42,7 @@ What a **newly registered** device starts with; each device can change them late
 | `update_change_gap_min` | 15 | A library change starts a device update at most this often (minutes). |
 | `max_device_syncs` | no limit | Device syncs running at the same time. |
 | `concurrency` | CPUs − 1 | Conversion threads (takes effect after a restart). |
-| `compas_sdtool_path` | none | *HiBy R1 with Compás*: the compas-sdtool program (empty: next to SyncMusic, then `<data_dir>/tools/`). **Check tool** shows its version and library format; **Download** fetches it from SyncMusic's release after you confirm (checksum, architecture and version are checked). compas-sdtool is part of [Compás Tools](https://github.com/Starnished66/compas-tools) (GPL-3.0); see [THIRD-PARTY.md](../THIRD-PARTY.md). |
+| `compas_sdtool_path` | none | *HiBy R1 with Compás*: the compas-sdtool program (empty: next to SyncMusic, then `<data_dir>/tools/`). **Check tool** shows its version and library format; **Download** fetches it from SyncMusic's release after you confirm (checksum, architecture and version are checked). With SyncMusic's update check (daily and at start) the copy SyncMusic downloaded is kept at the build SyncMusic's release offers: the newer one is checked like a download and swapped in while no sync runs (the previous one stays as `….previous`); a tool you set here or put next to SyncMusic yourself is never replaced, the line under it only says what the release offers. compas-sdtool is part of [Compás Tools](https://github.com/Starnished66/compas-tools) (GPL-3.0); see [THIRD-PARTY.md](../THIRD-PARTY.md). |
 | `clients_allowed` | off | *Wi-Fi clients*: client apps may pair with this server and sync over the network. Off: the client API refuses every request and nothing is announced. Plain HTTP: use it only on a network you trust. |
 | `clients_mdns` | on | Announce the server on the local network (mDNS) while Wi-Fi clients are allowed, so apps find it without typing an address. |
 | `client_code_minutes` | 1 | How long a pairing code (8 digits) stays valid (single use; at most three are open at once). |
@@ -81,14 +83,16 @@ What a **newly registered** device starts with; each device can change them late
 | Key | Default | Meaning |
 |---|---|---|
 | `log_level` | from the config file | `DEBUG`, `INFO` or `WARNING`, changed without a restart. |
-| `auto_update` | off | Installing a new version (the single-file program and its service only): `off` - only tell you; `after_syncs` - once no sync runs (automatic syncs wait meanwhile); `now` - at once, running syncs stop and continue after the restart. A new version that does not start is replaced by the previous one again. |
+| `auto_update` | off | Installing a new version (the single-file program and its service only): `off` - only tell you; `after_syncs` - once no sync runs (automatic syncs wait meanwhile); `now` - at once, running syncs stop and continue after the restart. Automatic updates come from the daily check only: *Check now* never installs anything, it shows the new version and an *Update now* button. While a version installs, Settings → Updates shows the download (percent, size, speed), the check and the install; during the restart every open page shows *Restarting SyncMusic…* and reloads itself when the new version answers, then says which version runs. A new version that does not start is replaced by the previous one again (the page says so after the reload). |
 | `update_channel` | `stable` | Which GitHub releases count as updates: `stable` releases only, or `beta` - also the test builds made from every change. SyncMusic checks once a day and on *Check now*; it shows the new version, what changed and the download for your kind of install (Docker: pull the new image). The configuration file's `update_repo` (default `Bionded/SyncMusic`, `none` = no checks) names the repository - or the full `https://` address of a releases list in GitHub's format, for a mirror. |
 
 **Storage & resources** (under System) lists everything SyncMusic keeps on disk - the database, database
 backups, logs, library snapshots, the media and system cache, copies of players' databases, the tags read for
-*Player contents*, local copies of FTP/SMB folder libraries, temporary files and the unpacked program - each with its
+*Player contents*, local copies of FTP/SMB folder libraries, Wi-Fi player data, temporary files and the unpacked program - each with its
 size, its folder (copy button) and one action to clear it; copies of players' databases and server folders can be
-deleted per device or library. Clearing asks first and says how much it frees; parts a running sync may use can only be
+deleted per device or library. *Wi-Fi player data* is listed per player: *Clean* removes the files still waiting
+for it (prepared again at its next sync) and everything of a player that no longer exists, and keeps the copies its
+player database is built from (only each song's tags and stream headers, not the whole file). Data of deleted or merged Wi-Fi players is also removed by itself. *Unpacked program* keeps the running version and the one an update can go back to; *Remove old versions* deletes the rest, which SyncMusic also does by itself at start, every hour and after an update, wherever it is installed. Clearing asks first and says how much it frees; parts a running sync may use can only be
 cleared when no job runs. The database, the configuration and anything on a device are never offered for deletion.
 Below it: memory used, helper processes, CPU now and on average, uptime, threads, response delay and the in-memory caches,
 refreshed every few seconds, with *Free memory now* to drop what is rebuilt on demand (a pending plan that only keeps what is already on the device is dropped too; one with changes stays). The same is available as
@@ -113,6 +117,8 @@ across updates; a fresh install gets a new one.
 browser only; the sun/moon/monitor button in the top bar switches between the three as well.
 
 ## Device settings
+
+A device's *Settings* tab is split the same way: General, When to sync, After a sync and mounting, Safety, Listening data, Writing and Player and maintenance, one at a time (or all on one page). One Save bar saves the changes of every part.
 
 ### Settings tab - sync settings
 | Key | Default | Meaning |
@@ -142,6 +148,7 @@ browser only; the sun/moon/monitor button in the top bar switches between the th
 | `no_cache_files`, `no_cache_budget_mb`, `no_cache_file_max_mb` | 4, 1000, 256 | Its memory limits. |
 | `gentle_write` | off | Gentle write mode: write in batches with pauses. |
 | `unmount_foreign` | off | Unmount other programs' mounts of the player (a system automount) during the first minute after SyncMusic mounted it. |
+| `foreign_read_only` | off | Make other programs' mounts of the player read-only during the first minute after SyncMusic mounted it: they can still read it, only SyncMusic writes. `unmount_foreign` wins when both are on. |
 | `gentle_batch_files` | 25 | Files per batch. |
 | `gentle_pause_s` | 2 | Pause after each batch (seconds). |
 | `gentle_rate_mb_s` | none | Write speed limit in gentle mode (MB/s). |

@@ -4,10 +4,12 @@ settings and their events."""
 # ruff: noqa: F811 - pytest fixtures imported from test_api_sync
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
+from syncmusic.core.sync import SyncError
 from syncmusic.devices._filedevice import FileDeviceMixin
 from syncmusic.infra.blockdev import mount as mnt
 from syncmusic.infra.blockdev.identify import BlockDeviceInfo
@@ -673,6 +675,27 @@ async def test_space_after_eject_answers_409_without_mounting(env, monkeypatch, 
     assert dev["ejected"] is False
 
 
+async def test_deleting_an_ejected_device_forgets_the_eject(env, monkeypatch, tmp_path):
+    """an ejected device deleted while its disk is still attached, then unplugged and registered again under the
+    same id: the new record is not 'ejected' (the unplug no longer knew the deleted id)."""
+    app, c = env
+
+    async def nothing(*a, **kw):
+        return None
+
+    monkeypatch.setattr(mnt, "unmount", nothing)
+    monkeypatch.setattr(mnt, "eject", nothing)
+    await _disk_device(app, on_connect="manual")
+    assert (await c.post("/api/v1/devices/zorvex/eject")).status_code == 204
+    assert (await c.delete("/api/v1/devices/zorvex")).status_code == 204
+    await app.sync.on_disk_removed("sdz")
+    await _disk_device(app, on_connect="manual")
+    dev = next(
+        d for d in (await c.get("/api/v1/devices")).json()["registered"] if d["id"] == "zorvex"
+    )
+    assert dev["ejected"] is False
+
+
 async def test_mount_lost_during_apply_stops_the_sync(env, monkeypatch, tmp_path):
     """The device's mount vanishes after the first put (lazy umount, udisks, ...): the mountpoint is
     a plain directory on the system disk from then on. The apply must stop writing and fail, not
@@ -746,6 +769,39 @@ async def test_mount_made_by_format_is_live_and_unmounted_on_close(env, monkeypa
     assert calls == [], "the mount made by format was not recognised as live"
     await app.sync.close()
     assert [m.owned for m in unmounted] == [True]
+
+
+async def test_format_holds_the_device_lock(env, monkeypatch):
+    """format keeps the device lock from the unmount to the new mount: an eject or a second format meanwhile
+    is refused as busy instead of mounting the disk during mkfs."""
+    from syncmusic.devices.flashdrive import FlashDrive
+
+    app, c = env
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def fmt(self, name, fs=None):
+        started.set()
+        await release.wait()
+        return "/dev/sdz1"
+
+    async def nop(*a, **kw):
+        return None
+
+    monkeypatch.setattr(FlashDrive, "format", fmt)
+    monkeypatch.setattr(mnt, "unmount", nop)
+    await _disk_device(app, on_connect="manual")
+    task = asyncio.create_task(app.sync.format("zorvex", confirm="Zorvex", fs="vfat"))
+    await asyncio.wait_for(started.wait(), 5)
+    assert app.jobs.device_lock("zorvex").locked()
+    with pytest.raises(SyncError) as e:
+        await app.sync.format("zorvex", confirm="Zorvex", fs="vfat")
+    assert e.value.code == "busy"
+    with pytest.raises(SyncError) as e:
+        await app.sync.eject("zorvex")
+    assert e.value.code == "busy"
+    release.set()
+    await asyncio.wait_for(task, 5)
+    assert not app.jobs.device_lock("zorvex").locked()
 
 
 async def test_ipod_registered_by_directory_syncs(env, tmp_path):

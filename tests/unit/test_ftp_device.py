@@ -3,6 +3,9 @@ login, an interrupted session cleaned up by the next one, a dropped connection o
 
 from __future__ import annotations
 
+import ftplib
+import io
+
 import pytest
 from pydantic import ValidationError
 
@@ -87,3 +90,71 @@ async def test_one_session_per_device_whatever_the_instances(tmp_path):
         assert await dev.read_manifest() is None
     assert {id(d._conn) for d in [first, *others]} == {id(first._conn)}
     assert first._conn.ftp is others[-1]._conn.ftp
+
+
+class _FakeFtp:
+    """Files in a dict; renames onto an existing name and (optionally) every rename of the upload refused."""
+
+    def __init__(self, refuse_upload_rename: bool):
+        self.files: dict[str, bytes] = {}
+        self.refuse = refuse_upload_rename
+        self.closed = 0
+
+    def mkd(self, path):
+        raise ftplib.error_perm("550 exists")
+
+    def storbinary(self, cmd, data):
+        self.files[cmd.removeprefix("STOR ")] = data.read()
+
+    def rename(self, src, dst):
+        if dst in self.files or (self.refuse and ".sdtmp-" in src and "old-" not in src):
+            raise ftplib.error_perm("553 refused")
+        self.files[dst] = self.files.pop(src)
+
+    def delete(self, path):
+        if self.files.pop(path, None) is None:
+            raise ftplib.error_perm("550 no such file")
+
+    def close(self):
+        self.closed += 1
+
+
+def test_put_replaces_a_file_on_a_server_refusing_rename_onto_it(tmp_path):
+    dev = _anonymous(tmp_path)
+    ftp = _FakeFtp(refuse_upload_rename=False)
+    target = dev._abs("manifest.json")
+    ftp.files[target] = b"old"
+    dev._put(ftp, "manifest.json", io.BytesIO(b"new"))
+    assert ftp.files == {target: b"new"}
+
+
+def test_put_keeps_the_old_file_when_the_rename_fails(tmp_path):
+    dev = _anonymous(tmp_path)
+    ftp = _FakeFtp(refuse_upload_rename=True)
+    target = dev._abs("manifest.json")
+    ftp.files[target] = b"old"
+    with pytest.raises(ftplib.error_perm):
+        dev._put(ftp, "manifest.json", io.BytesIO(b"new"))
+    assert ftp.files[target] == b"old"
+
+
+def test_refused_login_closes_the_connection(tmp_path, monkeypatch):
+    made: list[_FakeFtp] = []
+
+    class Refusing(_FakeFtp):
+        def __init__(self, timeout):
+            super().__init__(False)
+            made.append(self)
+
+        def connect(self, host, port):
+            pass
+
+        def login(self, user, password):
+            raise ftplib.error_perm("530 Login incorrect")
+
+    monkeypatch.setattr(ftplib, "FTP", Refusing)
+    dev = _anonymous(tmp_path)
+    for _ in range(3):
+        with pytest.raises(ftplib.error_perm):
+            dev._connect()
+    assert [f.closed for f in made] == [1, 1, 1]

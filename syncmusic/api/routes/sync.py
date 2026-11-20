@@ -526,9 +526,17 @@ def router(facade: AppFacade) -> APIRouter:
         return await facade.clear_health_errors(device_id)
 
     @r.post("/devices/{device_id}/integrity", status_code=202)
-    async def integrity_check(device_id: str, deep: bool = False) -> dict[str, Any]:
-        """Check the device against its manifest, every file read back (`deep`: decoded too), as a job."""
-        return await facade.integrity_check(device_id, deep)
+    async def integrity_check(
+        device_id: str, deep: bool = False, mode: str | None = None
+    ) -> dict[str, Any]:
+        """Check the device against its manifest as a job. `mode`: quick (sizes, default), full (every file read
+        back) or deep (also decoded; same as `deep=true`)."""
+        return await facade.integrity_check(device_id, deep, mode)
+
+    @r.get("/devices/{device_id}/integrity/estimate")
+    async def integrity_estimate(device_id: str) -> dict[str, Any]:
+        """What a full check reads: {files, bytes, mb_s, full_s} (speed and seconds null when unknown)."""
+        return await facade.integrity_estimate(device_id)
 
     @r.get("/devices/{device_id}/integrity")
     async def integrity_last(device_id: str) -> dict[str, Any] | None:
@@ -563,6 +571,11 @@ def router(facade: AppFacade) -> APIRouter:
         """Flush and unmount the device everywhere (also host automounts); busy → 409 `mount_busy`,
         `?lazy=true` detaches busy mounts."""
         return {"unmounted": await facade.unmount_everywhere(device_id, lazy)}
+
+    @r.post("/devices/{device_id}/mounts/read-only")
+    async def foreign_read_only(device_id: str) -> dict[str, Any]:
+        """Remount other programs' mounts of the device read-only; the app's own mount stays writable."""
+        return {"read_only": await facade.foreign_read_only(device_id)}
 
     @r.post("/devices/{device_id}/repair", status_code=202)
     async def repair_device(device_id: str, resume: bool = False) -> dict[str, Any]:

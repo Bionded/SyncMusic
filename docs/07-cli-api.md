@@ -2,19 +2,22 @@
 
 ## Command line
 The same `syncmusic` program starts the service and talks to a running one. Every command has `--help` with
-examples; the commands that talk to a running instance take `--url` (default: from the config, e.g.
-`http://127.0.0.1:8765`) and most take `--json` for machine-readable output.
+examples; the commands that talk to a running instance take `--url` and most take `--json` for machine-readable
+output. `--url` defaults to the environment variable `SYNCMUSIC_URL`, else `http://127.0.0.1:8765`; `status`,
+`update`, `doctor` and `diagnostics` instead fall back to the address from `--host`/`--port` or the config file
+when neither `--url` nor `SYNCMUSIC_URL` is set.
 
 ### Starting and stopping
 | Command | What it does |
 |---|---|
 | `syncmusic` / `syncmusic run` | Start in the foreground (web, desktop or daemon mode: `--mode`). |
 | `syncmusic -d` | Start in the background (pid and log file in the data dir). |
-| `syncmusic stop` | Stop the background instance. |
+| `syncmusic stop [--timeout S]` | Stop the background instance; a running sync stops after the current file. Waits up to `--timeout` seconds (default 300) and fails if it still runs. |
 | `syncmusic status` | Health of the running instance and its devices. |
 | `syncmusic doctor [--json]` | Check the install (ffmpeg, space, folders, device access, udev, clock, port, libraries) with a fix per problem; exit code 1 on a failure. |
 | `sudo syncmusic --install [--user NAME]` / `--uninstall [--purge]` | Install or remove the systemd service. |
 | `syncmusic update [--check] [--channel stable\|beta] [--now]` | Look for a newer release and install it into the running instance (single-file program and its service; waits for running syncs unless `--now`). |
+| `syncmusic diagnostics [-o FILE]` | Download the running instance's diagnostics bundle (versions, settings, libraries, devices, recent reports and logs; secrets masked) as a zip for a bug report; default file name from the server, in the current folder. |
 | `syncmusic config init [--output FILE] [--force]` | Write a commented default config file. |
 
 Path options for `run`, `-d` and `--install`: `--config`, `--host`, `--port`, `--data-dir`, `--cache-dir`,

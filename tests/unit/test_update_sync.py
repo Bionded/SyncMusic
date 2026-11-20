@@ -680,3 +680,60 @@ async def test_auto_eject_handles_blockdev_errors(
     assert not any(isinstance(r, BaseException) for r in results)
     events = [q.get_nowait().type for _ in range(q.qsize())]
     assert ("device.eject_failed" in events) is failed
+
+
+async def test_update_that_changes_the_device_drops_a_plan_under_review(env, music, tmp_path):
+    """a plan made before an update sync wrote to the device is stale: Apply asks for a fresh plan."""
+    app, c = env
+    flash = tmp_path / "flash"
+    await _register(c, flash, name="Flash")
+    plan = (await c.post("/api/v1/devices/flash/plan", json={})).json()
+    await _apply(app, c, plan["id"], first_sync="keep")
+    (music / "Скрябін" / "02 Зачини за мною двері.mp3").unlink()
+    await _job(app, await c.post("/api/v1/libraries/music/refresh"))
+    r = await c.patch("/api/v1/devices/flash", json={"delete_threshold_pct": 50})
+    assert r.status_code == 200, r.text
+    stale = (await c.post("/api/v1/devices/flash/plan", json={})).json()
+    report = await _job(app, await c.post("/api/v1/devices/flash/update"))
+    assert report["counts"]["remove"] == 1, report
+    r = await c.post(f"/api/v1/plans/{stale['id']}/apply", json={"confirm": True})
+    assert r.status_code == 404, r.text
+
+
+async def test_cancel_while_writing_the_database_keeps_the_job_succeeded(
+    env, music, tmp_path, monkeypatch
+):
+    """everything is on the device once the final writes start: a cancel then does not mark the job cancelled."""
+    from syncmusic.core.applier import Applier
+
+    app, c = env
+    flash = tmp_path / "flash"
+    await _register(c, flash, name="Flash")
+    plan = (await c.post("/api/v1/devices/flash/plan", json={})).json()
+    real = Applier._commit
+
+    async def commit(self, *a, **kw):
+        for job in app.jobs.jobs():
+            if job.kind == "sync" and job.status == "running":
+                app.jobs.cancel(job.id)
+        return await real(self, *a, **kw)
+
+    monkeypatch.setattr(Applier, "_commit", commit)
+    r = await c.post(f"/api/v1/plans/{plan['id']}/apply", json={"first_sync": "keep"})
+    job = await app.jobs.wait(r.json()["id"])
+    assert job.result["status"] == "succeeded", job.result
+    assert job.status == "succeeded" and job.progress == 1.0
+
+
+async def test_two_applies_of_one_plan_at_once_start_one_sync(env, music, tmp_path):
+    app, c = env
+    flash = tmp_path / "flash"
+    await _register(c, flash, name="Flash")
+    plan = (await c.post("/api/v1/devices/flash/plan", json={})).json()
+    url = f"/api/v1/plans/{plan['id']}/apply"
+    r1, r2 = await asyncio.gather(
+        c.post(url, json={"first_sync": "keep"}), c.post(url, json={"first_sync": "keep"})
+    )
+    assert sorted([r1.status_code, r2.status_code]) == [202, 404], (r1.text, r2.text)
+    ok = r1 if r1.status_code == 202 else r2
+    await app.jobs.wait(ok.json()["id"])

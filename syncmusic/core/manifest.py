@@ -10,7 +10,8 @@ read as "fewer items", which would turn managed files into unknown ones.
 Appended tail: a later commit that changes only items (checkpoints, update syncs) appends an `append` marker line
 and then `item` lines (the last line for a key wins) and `delete` lines (`lib` + `item_id`) instead of rewriting the
 whole file. A torn last line after an `append` marker is dropped (the commit it belonged to did not finish); before
-the marker the rule above holds.
+the marker the rule above holds. The marker carries the number of lines of its commit (`n`); a commit cut off at a
+line boundary (fewer lines follow its marker) is dropped as a whole.
 
 Backup: every write is repeated into `manifest.jsonl.bak` (the same bytes, after the manifest is on disk). When the
 manifest does not parse (damaged file system, torn write), `read` falls back to the backup with a warning; the next
@@ -280,6 +281,32 @@ def dumps(manifest: Manifest, ctx: Context | None = None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _drop_unfinished_commit(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop the last appended commit when fewer lines follow its marker than the marker announces (`n`):
+    the append was cut off at a line boundary. Markers without `n` (older writers) are kept as they are."""
+    for at in range(len(rows) - 1, 0, -1):
+        if rows[at].get("type") == "append":
+            n = rows[at].get("n")
+            if isinstance(n, int) and len(rows) - at - 1 < n:
+                log.warning("manifest: dropping an unfinished appended commit")
+                return rows[:at]
+            break
+    return rows
+
+
+def _unfinished(text: str) -> bool:
+    """True when the last appended commit of `text` is cut off (the file must be compacted before appending)."""
+    at = text.rfind('\n{"type":"append"')
+    if at < 0:
+        return False
+    lines = [ln for ln in text[at + 1 :].splitlines() if ln.strip()]
+    try:
+        n = json.loads(lines[0]).get("n")
+    except (json.JSONDecodeError, AttributeError):
+        return True
+    return isinstance(n, int) and len(lines) - 1 < n
+
+
 def loads(text: str, *, allow_newer: bool = False, ctx: Context | None = None) -> Manifest:
     """Parse a manifest. `allow_newer` = the user chose "try anyway" for a newer manifest version."""
     ctx = ctx or _context
@@ -304,6 +331,7 @@ def loads(text: str, *, allow_newer: bool = False, ctx: Context | None = None) -
             raise ManifestError(f"manifest line {no} is not an object")
         in_tail = in_tail or row.get("type") == "append"
         rows.append(row)
+    rows = _drop_unfinished_commit(rows)
     if not rows or rows[0].get("type") != "header":
         raise ManifestError("manifest has no header line")
     version = rows[0].get("manifest_version")
@@ -525,7 +553,13 @@ def _read_main(root: Path, *, allow_newer: bool) -> Manifest | None:
     manifest = loads(text, allow_newer=allow_newer)
     if not allow_newer:
         at = text.find('\n{"type":"append"')
-        tail = -1 if not raw.endswith(b"\n") else 0 if at < 0 else text.count("\n", at + 1)
+        tail = (
+            -1
+            if not raw.endswith(b"\n") or _unfinished(text)
+            else 0
+            if at < 0
+            else text.count("\n", at + 1)
+        )
         _remember(root, key, manifest, tail)
     return manifest
 
@@ -618,11 +652,8 @@ def _tail_lines(base: Manifest, tail: int, manifest: Manifest, ctx: Context) -> 
         return None
     manifest.lib_keys = keys
     manifest.header = base.header.model_copy()
-    return [
-        '{"type":"append"}',
-        *(_item_line(e, keys) for e in changed),
-        *(_delete_line(k, keys) for k in deleted),
-    ]
+    body = [*(_item_line(e, keys) for e in changed), *(_delete_line(k, keys) for k in deleted)]
+    return [json.dumps({"type": "append", "n": len(body)}, separators=(",", ":")), *body]
 
 
 def write(root: Path, manifest: Manifest, *, compact: bool = False) -> None:

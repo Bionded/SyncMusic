@@ -85,7 +85,8 @@ codes are also limited per minute and a code guessed at too often is burnt.
             "os_version": "15", "app": "MyPlayer", "app_version": "1.0"},
  "capabilities": {…}}
 ```
-→ `201 {"device_id": "…", "token": "smc_…", "instance": {…}, "poll_s": 300, "continued": false, "settings": {}}`
+→ `201 {"device_id": "…", "token": "smc_…", "instance": {…}, "poll_s": 300, "continued": false, "settings": {},
+"templates": [{"id": "…", "name": "…", "on": true}]}`
 
 - `uid`: generate it once per install (a UUID) and keep it. Pairing the same install again **continues** the same
   device (same id and history; `continued: true`).
@@ -93,6 +94,11 @@ codes are also limited per minute and a code guessed at too often is burnt.
   first line of `/.syncmusic/manifest.jsonl` (or `manifest.jsonl.bak`) on that storage. A storage without one gets
   a manifest holding only a header (`{"type":"header","manifest_version":2,"device_id":"<uuid>","device_uid":"<uuid>",
   "created_at":…,"updated_at":…}`). The same card synced over USB or in a card reader carries the same id.
+  An install with a new `uid` (its data was reset or lost) whose `card_uid` belongs to a paired client
+  **continues that device** too (`continued: true`); the old install's token stops working.
+- `settings`: the client app's own settings as it last sent them with `PUT me/settings` (`{}` = none kept). A
+  client that gets a non-empty object takes it over (it paired before and lost its data); with `{}` it sends its
+  current settings. `templates`: the same list as `GET templates`, so the app shows what the device gets at once.
 - Store the token safely; the server keeps only its hash and cannot show it again.
 - After pairing the user chooses on the server what the device gets (templates); until then a sync has nothing to
   plan.
@@ -110,7 +116,7 @@ client then gets the server's name from `me` and `status`). Then poll `GET pair-
 `X-Pair-Secret: <secret>` every `poll_s` seconds:
 - `202 {"status": "pending"}` — the user has not answered yet;
 - `200 {"status": "approved", "device_id": …, "token": …, "instance": …, "poll_s": …, "continued": …,
-  "settings": {}}` — the same answer as `POST pair`; it is handed out **once**;
+  "settings": {…}, "templates": […]}` — the same answer as `POST pair`; it is handed out **once**;
 - `403 request_rejected` or `410 request_expired` — stop (a request is valid as long as a pairing code).
 
 The same install asking again replaces its earlier request. Requests live in the server's memory: a restart drops
@@ -122,6 +128,8 @@ a client shows a page like *Finish setting up this player on the server* and pol
 before (the same `uid`) continues its device and is `done` at once.
 
 Other routes for a paired client: `GET me` (`device_id`, `name`, `registration`, `instance`, `poll_s`), `PATCH me {"name": "…"}`,
+`PUT me/settings {"settings": {…}}` (the app's own settings, any JSON object up to 16 KB: send it after every
+change; the server only stores it and hands it back on pairing),
 `POST me/token/rotate` → `{"token": "…"}` (the old token stays valid until the new one is first used, or for 24 h,
 so a client that crashes between the two calls keeps working).
 
@@ -335,7 +343,7 @@ ack, `finish`, keep files at their `path`. A client that sends no events is vali
 
 ## Conformance checks
 `python -m syncmusic.client_conformance <server> <pairing code> <folder>` pairs a throwaway client and checks what
-the server answers: `hello`, a wrong code, pairing, missing and wrong tokens, `me`, starting a sync and reading the
+the server answers: `hello`, a wrong code, pairing, missing and wrong tokens, `me`, keeping the app settings (`me/settings`), starting a sync and reading the
 plan, paging, a download and its SHA-256, a ranged download, an unknown file, acks and finish (acknowledged files are
 not planned again), a resent event, token rotation. Checks that need files report `SKIP` until the user links
 templates to the new device on the server; run it again with `-` instead of a code to reuse the pairing kept in

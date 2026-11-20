@@ -113,3 +113,45 @@ func TestADamagedUpdateLeavesTheAppUnchanged(t *testing.T) {
 		t.Fatal("unsafe path accepted")
 	}
 }
+
+func TestAnUpdateCutDuringTheMovesIsFinishedAtStart(t *testing.T) {
+	c := updateClient(t, "")
+	// state after a power cut: list written, icon.png already moved, the program still staged
+	stage := filepath.Join(c.data, "update")
+	_ = os.MkdirAll(stage, 0o755)
+	_ = os.WriteFile(filepath.Join(stage, appName), []byte("new binary"), 0o644)
+	_ = os.WriteFile(filepath.Join(c.appDir(), "icon.png"), []byte("new icon"), 0o644)
+	_ = os.WriteFile(c.pendingPath(), []byte(`["icon.png","`+appName+`"]`), 0o644)
+	if err := c.FinishUpdate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{appName: "new binary", "icon.png": "new icon"} {
+		if b, _ := os.ReadFile(filepath.Join(c.appDir(), name)); string(b) != body {
+			t.Fatalf("%s: %q", name, b)
+		}
+	}
+	if fi, _ := os.Stat(filepath.Join(c.appDir(), appName)); fi.Mode()&0o100 == 0 {
+		t.Fatal("binary not executable")
+	}
+	for _, p := range []string{stage, c.pendingPath()} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("%s left behind", p)
+		}
+	}
+}
+
+func TestADownloadCutShortIsDroppedAtStart(t *testing.T) {
+	c := updateClient(t, "")
+	stage := filepath.Join(c.data, "update")
+	_ = os.MkdirAll(stage, 0o755)
+	_ = os.WriteFile(filepath.Join(stage, appName), []byte("half"), 0o644)
+	if err := c.FinishUpdate(); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(c.appDir(), appName)); string(b) != "old binary" {
+		t.Fatalf("binary replaced: %q", b)
+	}
+	if _, err := os.Stat(stage); !os.IsNotExist(err) {
+		t.Fatal("staging folder left behind")
+	}
+}

@@ -196,3 +196,15 @@ async def test_a_stuck_backup_times_out(tmp_path, monkeypatch):
             await dbbackup.make(db, tmp_path / "backups", "auto", timeout=0.1)
     finally:
         await db.close()
+
+
+def test_prune_keeps_the_newest_before_upgrade_backups(tmp_path):
+    now = datetime(2026, 10, 30, 12, tzinfo=UTC)
+    for h in range(8):
+        reason = "before-upgrade" if h in (3, 5, 7) else "auto"
+        at = now - timedelta(days=h)
+        (tmp_path / f"syncmusic-{at:%Y%m%d-%H%M%S}-{reason}.sqlite3.gz").write_bytes(b"x")
+    assert dbbackup.prune(tmp_path, 3) == 3  # 2 auto + the oldest before-upgrade
+    left = [(at.day, reason) for _, at, reason in dbbackup.backups(tmp_path)]
+    assert [d for d, r in left if r == "before-upgrade"] == [27, 25]
+    assert len([r for _, r in left if r == "auto"]) == 3

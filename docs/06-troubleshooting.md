@@ -44,6 +44,14 @@ cannot be read, the device page shows *Sync records damaged*. **Rebuild from fil
 libraries by path and tags, so nothing is copied again. Wiping the device is the other way out. Players reached over
 the network or MTP cannot be rebuilt this way.
 
+## Check and repair the file system
+Every USB player has **Settings → Danger zone → Check and repair file system**: it unmounts the player and runs the
+file system check (FAT/exFAT; only the data partition, never the partition table or an iPod's firmware), fixing
+what it finds. When something went wrong - Eject failed, the check right after unmounting found errors, the file
+system is damaged - the same **Check and repair** button appears at the top of the device page, next to Eject and
+Sync, on every tab. Files the repair had to cut short are written again by the next sync; run an integrity check
+afterwards to see them.
+
 ## "Also mounted by another program" / "unmount it first"
 Some systems mount every USB drive they see on their own (Umbrel's external storage, a desktop's automount through
 udisks or GNOME, `usbmount`). The player is then mounted twice: once by SyncMusic and once by the system. Check and
@@ -53,7 +61,7 @@ mountpoint, flushes pending writes and unmounts them all. If a program still has
 it (`name (process id)`); close it, or choose **Detach anyway**, which removes the mount at once and releases the
 file system when that program lets go.
 
-The device page shows **Also mounted by the system** while such a mount exists. Two programs writing to one FAT volume
+The device page shows **Also mounted by the system** while such a mount exists; **Make read-only** there turns the other mounts read-only (the system can still read the player, only SyncMusic writes), and the device setting *Make other mounts read-only when connected* does it every time. Copies of SyncMusic's own mount that a container or the system shows under another path (Umbrel shows it again under `/mnt/root/…`) are not counted as other mounts. Two programs writing to one FAT volume
 at the same time can damage it. The device setting **Unmount other mounts when connected** (Sync → Advanced, off by
 default) removes other programs' mounts during the first minute after SyncMusic mounted the player. Better still, turn
 the system's automount off for your players: on Umbrel unmount or ignore the drive under external storage, on a desktop disable
@@ -100,6 +108,11 @@ errors (when, which file or operation). Copy what you need, run an integrity che
 **Acknowledge** (on the dashboard row or the card) hides the warning until a newer error or slow sync happens.
 After you replaced or reformatted the storage, **Clear error history** in the card forgets the old errors (write
 speeds are kept); a Format offers the same.
+
+The integrity check comes in three kinds: **Quick** (default) compares sizes and finds missing files and files from
+other programs in seconds; **Full** reads every file back; **Deep** also decodes each one. The card shows how much
+a full check reads and, once SyncMusic knows the device's speed, about how long it takes. Every check can be
+cancelled at any point; a cancelled check keeps what it found so far.
 
 ## "Unknown device type"
 

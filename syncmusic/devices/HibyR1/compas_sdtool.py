@@ -19,6 +19,8 @@ import contextlib
 import json
 import os
 import platform
+import shutil
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -245,3 +247,80 @@ async def install(
         for f in (part, meta_part):
             f.unlink(missing_ok=True)
     return ToolInfo(final, got.version, got.build, got.database_format)
+
+
+# --- automatic updates (with SyncMusic's own update check) --------------------------------------------------------
+
+
+def held_build(data_dir: Path) -> str | None:
+    """The build of the copy SyncMusic downloaded into `<data dir>/tools/` (its release metadata), None without."""
+    try:
+        meta = json.loads((data_dir / "tools" / f"{asset_name()}.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    build = meta.get("build") if isinstance(meta, dict) else None
+    return str(build) if build else None
+
+
+async def release_build(
+    releases: list[Release], running: str, transport: httpx.AsyncBaseTransport | None = None
+) -> str | None:
+    """The build the release for this machine offers (its checked metadata file), None when none offers it."""
+    found = pick(releases, running)
+    if found is None:
+        return None
+    _release, _binary, meta_asset, sums = found
+    fd, name = tempfile.mkstemp(prefix="sdtool-meta-")
+    os.close(fd)
+    part = Path(name)
+    try:
+        await self_update.download(meta_asset, sums, part, transport)
+        build = json.loads(part.read_text("utf-8")).get("build")  # noqa: ASYNC240 - a small file
+    except self_update.Refused as e:
+        raise SdtoolError(str(e)) from e
+    except (OSError, ValueError, AttributeError) as e:
+        raise SdtoolError(f"the release's {NAME} metadata is unreadable: {e}") from e
+    finally:
+        part.unlink(missing_ok=True)  # noqa: ASYNC240
+    return str(build) if build else None
+
+
+async def check_update(
+    releases: list[Release],
+    running: str,
+    data_dir: Path,
+    setting: str | None,
+    idle: bool,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> dict[str, Any]:
+    """Keep SyncMusic's own copy of the tool at the build the release offers. `status`: `updated`, `up_to_date`,
+    `waiting` (a job runs: tried again once none does), `custom` (the user's own tool is never replaced: only
+    `available` says what the release has), `not_held` (none downloaded yet: Download in Settings, or the Compás
+    device page offers it), `no_release`, `error`. Never raises."""
+    out: dict[str, Any] = {"status": "error", "held": held_build(data_dir), "available": None}
+    try:
+        available = await release_build(releases, running, transport)
+    except SdtoolError as e:
+        return {**out, "error": str(e)}
+    out["available"] = available
+    managed = data_dir / "tools" / asset_name()
+    tool = locate(setting, data_dir)
+    if available is None:
+        out["status"] = "no_release"
+    elif setting or (tool is not None and tool != managed):
+        out["status"] = "custom"
+    elif tool is None:
+        out["status"] = "not_held"
+    elif out["held"] == available:
+        out["status"] = "up_to_date"
+    elif not idle:
+        out["status"] = "waiting"
+    else:
+        previous = managed.with_name(managed.name + ".previous")
+        try:
+            shutil.copy2(managed, previous)
+            got = await install(releases, running, data_dir, transport)
+        except (SdtoolError, OSError) as e:
+            return {**out, "error": str(e)}
+        out.update(status="updated", held=got.build, previous=out["held"])
+    return out

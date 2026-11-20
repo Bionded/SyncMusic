@@ -110,6 +110,8 @@ def moov_first(path: Path) -> bool:
                 size = int.from_bytes(f.read(8), "big") - 8
             elif size == 0:
                 return False
+            if size < 8:  # a broken box would seek backwards forever
+                return False
             f.seek(size - 8, 1)
 
 

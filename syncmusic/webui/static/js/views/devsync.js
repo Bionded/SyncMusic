@@ -84,7 +84,7 @@ const radios = (name, values, current, label, text) => html`<div class="segr" ro
   html`<label><input type="radio" name="${name}" value="${v}" ${v === current ? "checked" : ""}><span>${text(v)}</span></label>`)}</div>`;
 
 // settings of the type's sync schema that join a group of their own; the rest goes to Advanced
-const MOUNT = ["use_existing_mount", "unmount_foreign"];
+const MOUNT = ["use_existing_mount", "unmount_foreign", "foreign_read_only"];
 const SAFETY = ["safety_margin_pct", "safety_margin_min_bytes", "safety_margin_max_bytes", "backup_device_db", "backup_keep"];
 const LISTEN = ["rating_priority", "playlist_conflicts"];
 

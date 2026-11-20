@@ -1,6 +1,7 @@
 // Devices: list of registered devices and unknown drives, and the device page with the tabs Overview,
 // Libraries, Rules, Processors, Settings (Sync behaviour + Device), History. Destructive actions (format, delete) are
 // in a danger zone and need a typed name / a confirmation; nothing is shown as done before the service says so.
+import { local } from "../storage.js";
 import { html, bytes, when, setHtml } from "../dom.js";
 import { t, addStrings } from "../i18n.js";
 import { helpTip, DOCS_BASE } from "../help.js";
@@ -32,6 +33,7 @@ addStrings({
   "dev.cl_upd_declined": "update to {version} declined",
   "dev.cl_upd_accepted": "updating to {version}",
   "dev.cl_newer": "newer than the server's app: update SyncMusic",
+  "dev.cl_no_build": "no app update on this server yet (Settings → Tools → Compás app updates)",
   "dev.cl_seen": "Last seen",
   "dev.cl_never": "not yet",
   "dev.cl_paired": "Paired",
@@ -134,6 +136,10 @@ addStrings({
   "dev.set_part.safety": "Safety",
   "dev.set_part.listen": "Listening data",
   "dev.set_part.writing": "Writing",
+  "dev.set_part.more": "Player and maintenance",
+  "dev.set_groups": "Settings sections",
+  "dev.set_all": "Show all settings on one page",
+  "dev.set_one": "One section at a time",
   "dev.tab.history": "History",
   "hist.activity": "What it did",
   "dev.sync": "Sync",
@@ -151,12 +157,18 @@ addStrings({
   "dev.manifest_rebuilt": "Moved aside: the next sync starts as a first sync.",
   "dev.fs_damaged_text": "Reading or writing the device failed ({error}). Automatic syncs are paused until the file system is repaired, the device is wiped or reconnected.",
   "dev.repair": "Repair and continue",
+  "dev.check_repair": "Check and repair",
+  "dev.dz_repair": "Check and repair file system",
+  "dev.dz_repair_text": "Unmounts the player and runs the file system check, fixing what it finds (only the data partition). Run it when Eject fails, after the player was pulled out while writing, or when files read back wrong; an integrity check afterwards shows what the next sync writes again.",
   "dev.skip_file": "Skip that file and continue",
   "dev.skipping": "Skipping the file and repairing {name}",
   "dev.repair_wipe": "Wipe…",
   "dev.repairing": "Checking and repairing {name}…",
   "dev.dz_unmount": "Unmount everywhere",
   "dev.foreign_title": "Also mounted by the system",
+  "dev.foreign_ro": "Make read-only",
+  "dev.foreign_ro_done": "Other programs can only read {name} now",
+  "dev.foreign_ro_text": "Another program mounted it at {paths}, read-only: it can read the player while only SyncMusic writes to it.",
   "dev.firmware_title": "This player now runs another firmware",
   "dev.firmware_text": "It is registered for {old}, but it now runs {new}. Switch the device type to sync it the way this firmware expects; the music on it stays.",
   "dev.firmware_switch": "Switch to {new}",
@@ -247,7 +259,15 @@ addStrings({
   "dev.integrity_never": "No integrity check yet. It reads every file SyncMusic wrote back from the device and lists what is missing, broken or not from SyncMusic. Nothing is changed.",
   "dev.integrity_when": "Integrity check {when}",
   "dev.integrity_run": "Run integrity check",
-  "dev.integrity_deep": "Also decode every file (slow)",
+  "dev.integrity_mode": "Check",
+  "dev.integrity_mode.quick": "Quick - sizes and missing files",
+  "dev.integrity_mode.full": "Full - read every file back",
+  "dev.integrity_mode.deep": "Deep - read back and decode (slowest)",
+  "dev.integrity_estimate": "{size} in {n} files - a full check takes about {dur}.",
+  "dev.integrity_estimate_one": "{size} in {n} file - a full check takes about {dur}.",
+  "dev.integrity_estimate_size": "A full check reads {size} in {n} files.",
+  "dev.integrity_estimate_size_one": "A full check reads {size} in {n} file.",
+  "dev.integrity_hours": "{n} h",
   "dev.integrity_started": "Checking {name}…",
   "dev.integrity_failed": "The check stopped: {error}",
   "dev.integrity_ok": "Everything SyncMusic wrote reads back fine.",
@@ -621,6 +641,12 @@ async function load(ctx) {
   [ctx.state.integrity, ctx.state.health] = info.network || info.usb_mtp ? [undefined, null] : await Promise.all([
     get(`/devices/${encodeURIComponent(id)}/integrity`).catch(() => null),
     get(`/devices/${encodeURIComponent(id)}/health`).catch(() => null)]);
+  // only the Overview shows it: its late redraw on another tab would undo what the user ticked there
+  const overview = !ctx.params.tab || ctx.params.tab === "overview";
+  if (overview && ctx.state.integrity !== undefined && !ctx.state.integrityEstimate) {
+    // sizes from the manifest: never holds up the page
+    get(`/devices/${encodeURIComponent(id)}/integrity/estimate`).then((e) => { ctx.state.integrityEstimate = e; ctx.rerender(); }).catch(() => {});
+  }
   // a skipped/failed update older than a full sync that wrote the device does not drive the line
   const superseded = ["failed", "skipped"].includes(info.last_update?.status) && info.update?.state === "ok";
   ctx.state.update = { last: superseded ? { status: "succeeded", finished_at: info.update.last_at } : info.last_update,
@@ -676,7 +702,10 @@ async function renderDevice(ctx) {
       <span>${t("dev.sdtool_text")}</span></span>
       <button type="button" class="btn small" data-action="downloadSdtool">${t("sdtool.download")}</button></div>` : ""}
     ${live?.foreign_mounts?.length ? html`<div class="dev-note" role="status" data-foreign-mounts><span class="dev-note-text">${icon("info", { size: 16 })}<b>${t("dev.foreign_title")}</b>
-      <span>${t("dev.foreign_text", { paths: live.foreign_mounts.join(", ") })}</span></span>
+      <span>${live.foreign_mounts.every((p) => (live.foreign_read_only || []).includes(p)) ? t("dev.foreign_ro_text", { paths: live.foreign_mounts.join(", ") })
+        : t("dev.foreign_text", { paths: live.foreign_mounts.join(", ") })}</span></span>
+      ${live.foreign_mounts.every((p) => (live.foreign_read_only || []).includes(p)) ? ""
+        : html`<button type="button" class="btn small" data-action="foreignReadOnly" ${live.busy ? "disabled" : ""}>${t("dev.foreign_ro")}</button>`}
       <button type="button" class="btn small" data-action="unmountAll" ${live.busy ? "disabled" : ""}>${t("dev.unmount")}</button></div>` : ""}
     ${syncing ? progressStrip(cfg, live.busy, ctx.state.job) : ""}
     ${client ? clientCard(client) : ""}
@@ -713,7 +742,8 @@ function clientSession(s, id) {
 function appUpdateNote(cl) {
   const o = cl.update_offer;
   if (o && o.version) return t(`dev.cl_upd_${o.state}`, { version: o.version });
-  return cl.newer_than_server ? t("dev.cl_newer") : "";
+  if (cl.newer_than_server) return t("dev.cl_newer");
+  return cl.no_server_build ? t("dev.cl_no_build") : "";
 }
 
 // a paired Wi-Fi client: what it reported when it paired / last synced, and its sync while it runs
@@ -771,6 +801,7 @@ function deviceHeader(ctx, syncing) {
       ${live?.offline_since ? html`<div class="dev-upd dev-offline muted" data-offline-since>${icon("clock", { size: 14 })}<span>${t("dev.offline_since", { when: when(live.offline_since) })}</span></div>` : ""}
       ${connected && live.window_wait ? html`<div class="dev-upd muted" data-window-wait>${icon("clock", { size: 14 })} ${windowWaitText(live.window_wait)}</div>` : ""}</div>
     <div class="dev-head-actions">
+      ${!server && connected && (live.fs_damaged || live.eject_failed) ? html`<button type="button" class="btn" data-action="repairFs" data-head-repair title="${live.fs_damaged || live.eject_failed}" ${idle ? "" : "disabled"}>${icon("shield", { size: 16 })}${t("dev.check_repair")}</button>` : ""}
       ${server ? "" : html`<button class="btn" data-action="eject" ${idle && !cfg.mount_path ? "" : "disabled"} title="${connected ? "" : t("dev.sync_offline")}">${icon("eject", { size: 16 })}${t("dev.eject")}</button>`}
       ${primary}</div></div>`;
 }
@@ -863,14 +894,15 @@ function booksCard(deviceId, books) {
       <span class="dev-book-state">${state(b)}</span></div>`)}</section>`;
 }
 
-/** The device after its pending plan, as the plan's After line reads it: `planned` is the bytes the plan
- * needs incl. its reserve (negative when it frees more); without a known capacity only what SyncMusic wrote plus
- * the plan's net bytes. */
+/** The device after its pending plan: `planned` is the bytes the plan needs incl. its reserve (negative when it
+ * frees more); the reserve is taken off again, so used/free are what the files take after the sync. */
 function planned(space) {
   if (space.planned === null || space.planned === undefined) return "";
+  // the reserve is space kept free, not data: it is never shown as used
+  const net = space.planned - (space.planned_reserve || 0);
   const text = space.unknown
-    ? t("dev.planned_used", { used: bytes(Math.max(0, (space.used || 0) + space.planned - (space.planned_reserve || 0))) })
-    : t("dev.planned_text", { used: bytes(Math.max(0, space.capacity - (space.free - space.planned))), free: bytes(Math.max(0, space.free - space.planned)) });
+    ? t("dev.planned_used", { used: bytes(Math.max(0, (space.used || 0) + net)) })
+    : t("dev.planned_text", { used: bytes(Math.max(0, space.capacity - (space.free - net))), free: bytes(Math.max(0, space.free - net)) });
   return html`<div class="muted" data-planned>${t("dev.planned")}: ${text}</div>`;
 }
 
@@ -968,9 +1000,20 @@ function healthCard(ctx, idle) {
             ${list("missing")}${list("broken")}${list("foreign")}${list("orphans")}
             ${r.wasted_bytes ? html`<div class="muted">${t("dev.integrity_wasted", { size: bytes(r.wasted_bytes) })}</div>` : ""}`}`}
     <div class="dev-health-acts">
-      <label class="ds-check"><input type="checkbox" id="integrityDeep"><span>${t("dev.integrity_deep")}</span></label>
+      <div class="field"><label for="integrityMode">${t("dev.integrity_mode")}</label><select id="integrityMode">
+        ${["quick", "full", "deep"].map((m) => html`<option value="${m}">${t(`dev.integrity_mode.${m}`)}</option>`)}</select></div>
+      ${estimateLine(ctx.state.integrityEstimate)}
       <div class="toolbar">${r?.broken?.length ? html`<button type="button" class="btn small danger" data-action="integrityFix" ${idle ? "" : "disabled"}>${t("dev.integrity_fix", { n: r.broken.length })}</button>` : ""}
         <button type="button" class="btn small" data-action="integrityRun" ${idle ? "" : "disabled"}>${t("dev.integrity_run")}</button></div></div></section>`;
+}
+
+// how long a full read-back takes: '370 GB in 15 427 files - a full check takes about 3 h'
+function estimateLine(e) {
+  if (!e?.bytes) return "";
+  const dur = !e.full_s ? "" : e.full_s < 3600 ? t("dev.took_min", { n: Math.max(1, Math.round(e.full_s / 60)) })
+    : t("dev.integrity_hours", { n: Math.round(e.full_s / 360) / 10 });
+  return html`<small class="muted" data-integrity-estimate>${dur ? t("dev.integrity_estimate", { size: bytes(e.bytes), n: e.files, dur })
+    : t("dev.integrity_estimate_size", { size: bytes(e.bytes), n: e.files })}</small>`;
 }
 
 // a Wipe / Format after the last full sync: the device is empty, its old report no longer describes it
@@ -1255,6 +1298,10 @@ function dangerZone(cfg, type, live, idle, home) {
     rows.push(row(html`data-dz="format"`, t("dev.dz_format"), html`${t(formatText(type.type))} <span class="muted">${fsSummary(type)}</span>`,
       html`<button type="button" class="btn danger" data-action="format" ${off}>${t("dev.format")}</button>`));
   }
+  if (!type.network && !type.usb_mtp && !cfg.mount_path) {
+    rows.push(row(html`data-dz="repair"`, t("dev.dz_repair"), t("dev.dz_repair_text"),
+      html`<button type="button" class="btn" data-action="repairFs" data-resume="false" ${live?.connected && idle ? "" : "disabled"}>${t("dev.check_repair")}</button>`));
+  }
   if (!type.network && !cfg.mount_path) {
     rows.push(row(html`data-dz="unmount"`, t("dev.dz_unmount"), t("dev.unmount_text"),
       html`<button type="button" class="btn" data-action="unmountAll" ${live?.connected && idle ? "" : "disabled"}>${t("dev.unmount")}</button>`));
@@ -1438,7 +1485,11 @@ export function mounted(ctx, root) {
     });
     unsavedBar(both, { save: () => saveBoth(ctx, both, syncForm), discard: () => ctx.rerender() });
     const search = root.querySelector("[data-ds-search]");
-    search?.addEventListener("input", () => filterCards(root, search.value));
+    groupSettings(root, ctx);
+    search?.addEventListener("input", () => {
+      root.querySelector("[data-ds-groups-host]")?.toggleAttribute("data-searching", search.value.trim().length > 0); // the search covers every section
+      filterCards(root, search.value);
+    });
     if (search && ctx.query.get("q")) { search.value = ctx.query.get("q"); filterCards(root, search.value); } // from the app search
   }
   if (ctx.query.get("format") === "1" && ctx.params.id && !ctx.state.formatAsked) {
@@ -1446,6 +1497,50 @@ export function mounted(ctx, root) {
     const btn = root.querySelector('[data-action="format"], [data-action="wipe"]'); // Rockbox: wipe
     if (btn && !btn.disabled) btn.click();
   }
+}
+
+// the Settings tab one section at a time (like Settings): a menu of its parts, "Show all settings on one page"
+// (remembered per browser, shared with Settings), the search always over every part
+const ALL_KEY = "sm.settingsAll";
+function groupSettings(root, ctx) {
+  const panel = root.querySelector("[role=tabpanel]");
+  const form = panel?.querySelector("[data-devset]");
+  if (!form || panel.querySelector("[data-ds-groups]")) return;
+  const groups = [];
+  let cur = null;
+  for (const n of form.children) {
+    if (n.matches(".ds-part")) { cur = n.id.replace("dsPart_", ""); groups.push([cur, n.textContent]); }
+    if (cur) n.dataset.dsGroup = cur;
+  }
+  const after = panel.querySelector(".ds-after");
+  if (after?.children.length) { after.dataset.dsGroup = "more"; groups.push(["more", t("dev.set_part.more")]); }
+  if (groups.length < 2) return;
+  panel.setAttribute("data-ds-groups-host", "");
+  const all = () => local.get(ALL_KEY) === "all";
+  const nav = document.createElement("div");
+  nav.className = "ds-groups";
+  nav.dataset.nosave = "";
+  setHtml(nav, html`<div class="seg" role="tablist" aria-label="${t("dev.set_groups")}" data-ds-groups>${groups.map(([id, label]) =>
+    html`<button type="button" role="tab" data-ds-group-btn="${id}">${label}</button>`)}</div>
+    <button type="button" class="btn ghost small" data-ds-all>${t(all() ? "dev.set_one" : "dev.set_all")}</button>`);
+  panel.querySelector(".ds-search").after(nav);
+  const show = (id) => {
+    ctx.state.dsGroup = id;
+    panel.toggleAttribute("data-one", !all());
+    for (const el of panel.querySelectorAll("[data-ds-group]")) el.toggleAttribute("data-ds-shown", el.dataset.dsGroup === id);
+    for (const b of nav.querySelectorAll("[data-ds-group-btn]")) b.setAttribute("aria-selected", String(b.dataset.dsGroupBtn === id));
+  };
+  const want = ctx.query.get("group") || ctx.state.dsGroup;
+  show(groups.some(([id]) => id === want) ? want : groups[0][0]);
+  nav.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-ds-group-btn]");
+    if (b) { show(b.dataset.dsGroupBtn); if (all()) panel.querySelector(`#dsPart_${b.dataset.dsGroupBtn}, .ds-after[data-ds-group="${b.dataset.dsGroupBtn}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
+    if (e.target.closest("[data-ds-all]")) {
+      local.set(ALL_KEY, all() ? "one" : "all");
+      e.target.closest("[data-ds-all]").textContent = t(all() ? "dev.set_one" : "dev.set_all");
+      show(ctx.state.dsGroup);
+    }
+  });
 }
 
 // --- actions ---------------------------------------------------------------------------------------------------
@@ -1592,9 +1687,9 @@ export const actions = {
     openFeedback(ctx.state.cfg, () => ctx.rerender());
   },
   async integrityRun(el, ctx) {
-    const deep = el.closest("[data-health]").querySelector("#integrityDeep").checked;
+    const mode = el.closest("[data-health]").querySelector("#integrityMode").value;
     el.disabled = true;
-    await post(`/devices/${encodeURIComponent(ctx.state.cfg.id)}/integrity${deep ? "?deep=true" : ""}`);
+    await post(`/devices/${encodeURIComponent(ctx.state.cfg.id)}/integrity?mode=${mode}`);
     toast(t("dev.integrity_started", { name: ctx.state.cfg.name }));
   },
   async healthAck(el, ctx) {
@@ -1653,7 +1748,9 @@ export const actions = {
   },
   async repairFs(el, ctx) { // fsck on the data partition; the job view shows what it fixed
     const { cfg } = ctx.state;
-    const start = () => post(`/devices/${encodeURIComponent(cfg.id)}/repair?resume=true`);
+    // from Settings: only the check; from a stopped sync: the sync continues after it
+    const resume = el.dataset.resume !== "false" && !el.hasAttribute("data-head-repair");
+    const start = () => post(`/devices/${encodeURIComponent(cfg.id)}/repair?resume=${resume}`);
     await openJob(el, ctx, cfg.id, async () => {
       try {
         return await start();
@@ -1673,6 +1770,15 @@ export const actions = {
     const { cfg } = ctx.state;
     await openJob(el, ctx, cfg.id, () => post(`/devices/${encodeURIComponent(cfg.id)}/skip-failed-file`),
       t("dev.skipping", { name: cfg.name }));
+  },
+  async foreignReadOnly(el, ctx) { // other programs keep reading, only SyncMusic writes
+    el.disabled = true;
+    try {
+      await post(`/devices/${encodeURIComponent(ctx.state.cfg.id)}/mounts/read-only`);
+      toast(t("dev.foreign_ro_done", { name: ctx.state.cfg.name }));
+    } finally {
+      ctx.rerender();
+    }
   },
   async unmountAll(el, ctx) {
     el.disabled = true;

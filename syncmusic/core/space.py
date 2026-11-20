@@ -256,19 +256,24 @@ def plan_with_space(
         for a in plan.actions
         if a.kind in (ActionKind.ADD, ActionKind.REPLACE)
     }
+    rule_of = {a.ref.key(): a.rules[0] for a in plan.actions if a.rules}
     dropped = trim_to_fit(plan, free - reserve)
+    # the trimmed plan holds fewer items: its commit reserve (device DB + manifest) is smaller
+    reserve = (0 if capacity >= UNKNOWN_SPACE else margin) + commit_reserve(items_after(plan))
     trimmed = space_report(plan, capacity=capacity, free=free, reserve=reserve, rule_names=names)
     kept = {r.rule_id: r for r in trimmed.per_rule}
     trimmed.per_rule = []
     for rid, before in full.items():
         after = kept.get(rid)
         items, size = (after.items, after.bytes) if after else (0, 0)
+        # a dropped replace stays on the device as its old version: count it as dropped, not as kept
+        lost = sum(1 for k in dropped if rule_of.get(k) == rid)
         trimmed.per_rule.append(
             before.model_copy(
                 update={
                     "items": items,
                     "bytes": size,
-                    "dropped_items": before.items - items,
+                    "dropped_items": max(before.items - items, lost),
                     "dropped_bytes": before.bytes - size,
                 }
             )

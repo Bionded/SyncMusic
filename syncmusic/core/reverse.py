@@ -711,6 +711,13 @@ class ReverseSync:
                     ListeningChange(kind="star", ref=ref.key(), value=starred, previous=not starred)
                 )
                 await self._took(r.kind, ref, r.data, out)
+            else:  # the library turned out not to keep favourites: say so instead of dropping it unseen
+                log.warning(
+                    "%s: library %s keeps no favourites, %s dropped", lib_id, lib_id, ref.key()
+                )
+                msg = "Favourites changed on the player were not sent: the library keeps no favourites"
+                if msg not in out.report.warnings:
+                    out.report.warnings.append(msg)
             await self.store.delivered(r.id)
         elif r.kind == "position":
             pos, finished = float(r.data["position_s"]), bool(r.data.get("finished"))

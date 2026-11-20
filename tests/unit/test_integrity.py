@@ -137,10 +137,103 @@ def test_io_error_stops(tmp_path, monkeypatch):
         },
     )
 
-    def failing(path: Path) -> None:
+    def failing(path: Path, cancelled=None) -> None:
         raise OSError(errno.EIO, "Input/output error")
 
     monkeypatch.setattr(integrity, "_read_all", failing)
     rep = integrity.check(tmp_path, m, DeviceContents())
     assert rep["io_error"] == "a.mp3: Input/output error" and rep["checked"] == 1
     assert integrity.summary(rep).startswith("stopped: the device's storage failed")
+
+
+async def test_quick_is_default_full_reads_back(env, tmp_path):
+    app, c = env
+    dev, _ = await _synced(app, c, tmp_path)
+    quick = await app.jobs.wait(
+        (await c.post(f"/api/v1/devices/{dev['id']}/integrity")).json()["id"]
+    )
+    assert quick.result["mode"] == "quick" and quick.result["bytes_read"] == 0
+    r = await c.post(f"/api/v1/devices/{dev['id']}/integrity", params={"mode": "full"})
+    full = await app.jobs.wait(r.json()["id"])
+    assert full.result["mode"] == "full" and full.result["bytes_read"] > 0
+    est = (await c.get(f"/api/v1/devices/{dev['id']}/integrity/estimate")).json()
+    assert est["files"] >= 2 and est["bytes"] > 0
+    bad = await c.post(f"/api/v1/devices/{dev['id']}/integrity", params={"mode": "nope"})
+    assert bad.status_code >= 400
+
+
+async def test_slow_preparation_shows_progress_and_cancels(env, tmp_path, monkeypatch):
+    import asyncio
+
+    from syncmusic.core import integrity_jobs
+
+    app, c = env
+    dev, _ = await _synced(app, c, tmp_path)
+    monkeypatch.setattr(integrity_jobs, "STEP_POLL_S", 0.05)
+    device = await app.sync.open_device(dev["id"])
+
+    async def slow_manifest():
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(type(device), "read_manifest", lambda self: slow_manifest())
+    job_id = (await c.post(f"/api/v1/devices/{dev['id']}/integrity")).json()["id"]
+    await asyncio.sleep(0.3)
+    info = app.jobs.get(job_id)
+    assert info.message.startswith("reading the manifest")
+    app.jobs.cancel(job_id)
+    job = await asyncio.wait_for(app.jobs.wait(job_id), 2)
+    assert job.status == "cancelled"
+
+
+def test_cancel_during_read_back_keeps_partial_report(tmp_path):
+    from syncmusic.core.models import (
+        DeviceContents,
+        ItemRef,
+        Manifest,
+        ManifestEntry,
+        ManifestHeader,
+    )
+
+    names = [f"{i}.mp3" for i in range(5)]
+    for n in names:
+        (tmp_path / n).write_bytes(b"x")
+    m = Manifest(
+        header=ManifestHeader(device_id="d"),
+        items={
+            n: ManifestEntry(ref=ItemRef(library_id="l", item_id=n), device_ref=n, path=n, size=1)
+            for n in names
+        },
+    )
+    calls = iter([False, False, True])
+    rep = integrity.check(
+        tmp_path, m, DeviceContents(), read_back=False, cancelled=lambda: next(calls, True)
+    )
+    assert rep["cancelled"] and rep["checked"] == 2
+    assert integrity.summary(rep).startswith("cancelled after 2 files")
+
+
+def test_cancel_stops_a_long_deep_decode(tmp_path, monkeypatch):
+    import time
+
+    from syncmusic.infra import ffmpeg
+
+    fake = tmp_path / "ffmpeg"
+    fake.write_text("#!/bin/sh\nexec sleep 30\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(ffmpeg, "FFMPEG", str(fake))
+    started = time.monotonic()
+    got = ffmpeg.decode_problem(
+        tmp_path / "a.mp3", cancelled=lambda: time.monotonic() - started > 0.3
+    )
+    assert got is None and time.monotonic() - started < 5
+
+
+async def test_estimate_with_damaged_manifest_and_backup(env, tmp_path):
+    app, c = env
+    dev, _ = await _synced(app, c, tmp_path)
+    state = tmp_path / "flash" / ".syncmusic"
+    for name in ("manifest.jsonl", "manifest.jsonl.bak"):
+        (state / name).write_bytes(b"\x00garbage{not json")
+    r = await c.get(f"/api/v1/devices/{dev['id']}/integrity/estimate")
+    assert r.status_code == 200, r.text
+    assert r.json()["files"] == 0 and r.json()["bytes"] == 0

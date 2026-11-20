@@ -488,13 +488,13 @@ class Rockbox(FileDeviceMixin, Device):
                     part,
                     self.ctx.config.mount_root,
                     save,
-                    registered=self.config.identity.format_guard_ids(),
+                    registered=self.format_guard_ids(),
                 )
         except BaseException:
             await asyncio.to_thread(shutil.rmtree, backup, True)
             raise
         try:
-            registered = self.config.identity.format_guard_ids()
+            registered = self.format_guard_ids()
             await fmt.make_filesystem(guard, part, "vfat", name, registered)
             m = await mnt.mount(
                 guard, part, self.id, self.ctx.config.mount_root, registered=registered

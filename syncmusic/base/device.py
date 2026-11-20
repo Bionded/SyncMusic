@@ -101,6 +101,17 @@ class Device(ABC):
         self.settings = self.Settings.model_validate(config.settings)
         # /dev path of the disk when mounted from a block device (set by the sync service); None = plain tree
         self.block_path: str | None = None
+        # serial of the disk detection matched to this device (a card in another card reader), set with
+        # `block_path`: Format accepts it like Eject and Repair do
+        self.detected_serial: str | None = None
+
+    def format_guard_ids(self) -> list[str] | None:
+        """Identities the guard accepts for a format: the registered serials plus the detected disk's serial
+        (never fs UUIDs: the format replaces them), or None (removable-only check) without any serial."""
+        ids = self.config.identity.serials()
+        if self.detected_serial and self.detected_serial not in ids:
+            ids.append(self.detected_serial)
+        return [*ids, *(u for u in [self.config.identity.fs_uuid] if u)] if ids else None
 
     @classmethod
     @abstractmethod

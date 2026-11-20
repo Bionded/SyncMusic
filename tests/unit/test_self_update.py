@@ -71,8 +71,16 @@ async def test_download_checks_the_checksum(tmp_path):
     files = {good.name: good.read_bytes(), "SHA256SUMS": _sums(good).encode()}
     asset = {"name": good.name, "url": f"https://example.org/{good.name}"}
     dest = tmp_path / "dl"
-    await su.download(asset, "https://example.org/SHA256SUMS", dest, Releases(files))
+    seen: list[tuple[int, int]] = []
+    await su.download(
+        asset,
+        "https://example.org/SHA256SUMS",
+        dest,
+        Releases(files),
+        lambda d, t: seen.append((d, t)),
+    )
     assert dest.read_bytes() == b"new binary"
+    assert seen and seen[-1][0] == len(b"new binary")
     files[good.name] = b"tampered"
     with pytest.raises(su.Refused, match="checksum mismatch"):
         await su.download(asset, "https://example.org/SHA256SUMS", dest, Releases(files))
@@ -183,8 +191,16 @@ async def test_api_install_and_restart(env, monkeypatch, tmp_path):
     r = (await c.post("/api/v1/updates/install", json={"when": "after_syncs"})).json()
     assert r == {"waiting": True, "version": "0.2.1"} and app.update_pending and not restarted
     await app.jobs.wait(blocker_done.id)
+    events = app.bus.subscribe()
     r = (await c.post("/api/v1/updates/install", json={"when": "now"})).json()
     assert r == {"installing": "0.2.1"} and restarted == [True] and app.restart == "exec"
+    steps = []
+    while not events.empty():
+        ev = events.get_nowait()
+        if ev.type == "app.update_progress":
+            steps.append(ev.data["step"])
+    assert steps[0] == "downloading" and steps[-2:] == ["installing", "restarting"]
+    assert (await c.get("/api/v1/updates")).json()["progress"]["step"] == "restarting"
     assert su.runtime_id(binary) == "2-web-x-new" and su.Paths(binary).previous.exists()
     assert (app.config.data_dir / "update.json").exists()
     assert (await c.post("/api/v1/updates/install", json={"when": "later"})).status_code == 400
@@ -228,6 +244,9 @@ async def test_auto_update_policies(env, monkeypatch, tmp_path):
     assert installs == ["0.2.1"] and not app.update_pending and not app.sync.hold_automatic
     await c.patch("/api/v1/settings", json={"auto_update": "now"})
     app._update_announced = None
+    r = await c.post("/api/v1/updates/check")  # the user's Check only checks, whatever the setting
+    assert r.json()["available"] and installs == ["0.2.1"]
+    app._update_announced = None
     hold = app.jobs.submit("test", "hold", lambda ctx: _sleep(0.3))
     await app.check_updates()  # right away, even with a job running
     assert installs == ["0.2.1", "0.2.1"]
@@ -237,3 +256,87 @@ async def test_auto_update_policies(env, monkeypatch, tmp_path):
     app._update_announced = None
     await app.check_updates()  # Docker: never installs itself
     assert len(installs) == 2
+
+
+async def test_a_failed_automatic_update_is_tried_again_at_the_next_check(
+    env, monkeypatch, tmp_path
+):
+    from syncmusic.infra import updates
+    from tests.unit.test_updates import FakeGitHub
+
+    app, c = env
+    monkeypatch.setattr(app.config, "update_repo", "example/SyncMusic")
+    monkeypatch.setattr(_build, "BUILD_NUMBER", None)
+    monkeypatch.setattr(updates, "__version__", "0.2.0")
+    monkeypatch.setattr(updates, "running_version", lambda: "0.2.0")
+    monkeypatch.setenv("SYNCMUSIC_INSTALL_TYPE", "standalone")
+    monkeypatch.setenv("SYNCMUSIC_BINARY", str(tmp_path / "syncmusic"))
+    app.update_checker.transport = FakeGitHub()
+    installs = []
+
+    async def flaky_install():
+        installs.append(app.updates.latest)
+        if len(installs) == 1:
+            raise OSError("connection reset while downloading")
+        return app.updates.latest
+
+    monkeypatch.setattr(app, "install_update", flaky_install)
+    await c.patch("/api/v1/settings", json={"auto_update": "now"})
+    await app.check_updates()  # the download fails
+    await app.check_updates()  # the next check tries the same version again
+    assert installs == ["0.2.1", "0.2.1"]
+
+
+async def test_a_failed_runtime_clean_up_after_an_update_is_logged(
+    env, monkeypatch, tmp_path, caplog
+):
+    from syncmusic.infra import self_update as su
+
+    app, _c = env
+    binary = tmp_path / "syncmusic"
+    binary.write_bytes(b"ID=new-runtime\n")
+    monkeypatch.setattr(su, "running_binary", lambda: binary)
+    monkeypatch.setattr(su, "running_runtime", lambda: tmp_path / "rt" / "new-runtime")
+
+    def broken(*a):
+        raise PermissionError("read-only runtime dir")
+
+    monkeypatch.setattr(su, "prune_old_runtimes", broken)
+    monkeypatch.setattr(su, "HEALTHY_AFTER_S", 0)
+    monkeypatch.setattr(su, "outcome", lambda *a: ("updated", {"from": "0.2.0", "to": "0.2.1"}))
+    app.updates.install_type = "service"
+    events = app.bus.subscribe()
+    app._update_outcome()
+    await app._trial
+    assert "old runtimes not removed: read-only runtime dir" in caplog.text
+    seen = [events.get_nowait() for _ in range(events.qsize())]
+    assert any(e.type == "app.updated" for e in seen)
+
+
+def test_old_runtimes_pruned_in_any_install_prefix(tmp_path, monkeypatch):
+    """A home/custom-prefix install: every complete runtime but the running one, the binary's and its
+    rollback's goes; unpacks in progress and foreign folders stay."""
+    rt = tmp_path / "home" / "app" / "runtime"
+    for d in ("1-old", "2-older", "3-prev", "4-cur", "5-running"):
+        (rt / d / "python" / "bin").mkdir(parents=True)
+        (rt / d / ".complete").touch()
+        (rt / d / "python" / "bin" / "python3").write_bytes(b"x" * 1000)
+    (rt / ".unpack.abc").mkdir()
+    (rt / "notes").mkdir()  # not a complete unpack
+    binary = _binary(tmp_path / "syncmusic", "4-cur", "true")
+    _binary(tmp_path / "syncmusic.previous", "3-prev", "true")
+    monkeypatch.setenv("SYNCMUSIC_BINARY", str(binary))
+    monkeypatch.setattr(su.sys, "prefix", str(rt / "5-running" / "python"))
+    current = su.running_runtime()
+    assert current == (rt / "5-running").resolve()
+    removed, freed = su.prune_old_runtimes(binary, current)
+    assert removed == ["1-old", "2-older"] and freed == 2000
+    assert sorted(p.name for p in rt.iterdir()) == [
+        ".unpack.abc",
+        "3-prev",
+        "4-cur",
+        "5-running",
+        "notes",
+    ]
+    monkeypatch.delenv("SYNCMUSIC_BINARY")
+    assert su.running_runtime() is None  # a venv install has no runtime to prune

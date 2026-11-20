@@ -220,6 +220,7 @@ class JobRunner:
         self.device_job_limit: int | None = None
         self._slots_used = 0
         self._slots_changed: asyncio.Condition | None = None
+        self._wakers: set[asyncio.Task[None]] = set()  # slot-waiter wake-ups in flight
         self._history_limit = HISTORY_LIMIT
         # called with every finished job (the app stores it so the history survives a restart)
         self.on_finished: Callable[[JobInfo], Awaitable[None]] | None = None
@@ -254,7 +255,13 @@ class JobRunner:
             async with cond:
                 cond.notify_all()
 
-        asyncio.get_running_loop().create_task(wake())
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # outside the loop: the next slot release wakes them
+            return
+        task = loop.create_task(wake())
+        self._wakers.add(task)  # keep a reference until it ran
+        task.add_done_callback(self._wakers.discard)
 
     async def _take_slot(self, ctx: JobContext) -> bool:
         """Wait for a free device-sync slot (returns False when the job was cancelled while waiting)."""
@@ -381,6 +388,26 @@ class JobRunner:
                 t.cancel()
         self.executor.shutdown(wait=False, cancel_futures=True)
 
+    @staticmethod
+    async def _take_device_lock(ctx: JobContext, lock: asyncio.Lock) -> asyncio.Lock | None:
+        """Wait for the device lock; a cancel while queued behind another job stops the wait (returns None)."""
+        acquire = asyncio.ensure_future(lock.acquire())
+        cancelled = asyncio.ensure_future(ctx._cancel.wait())
+        try:
+            await asyncio.wait({acquire, cancelled}, return_when=asyncio.FIRST_COMPLETED)
+        except BaseException:  # the job's task itself cancelled (shutdown): never keep the lock
+            acquire.cancel()
+            if acquire.done() and not acquire.cancelled():
+                lock.release()
+            raise
+        finally:
+            cancelled.cancel()
+            if not acquire.done():
+                acquire.cancel()
+        if acquire.done() and not acquire.cancelled():
+            return lock  # held, even when a cancel came at the same moment: _run releases it
+        return None
+
     async def _run(self, ctx: JobContext, fn: JobFn) -> None:
         info = ctx.info
         lock = None
@@ -397,11 +424,10 @@ class JobRunner:
                 ),  # a sync's steps follow its phase
             }
         )
-        if info.device_id is not None:
-            lock = self.device_lock(info.device_id)
-            await lock.acquire()
         try:
-            if info.kind in SLOT_KINDS:
+            if info.device_id is not None:
+                lock = await self._take_device_lock(ctx, self.device_lock(info.device_id))
+            if info.kind in SLOT_KINDS and not ctx.cancelled:
                 slot = await self._take_slot(ctx)
             if ctx.cancelled:
                 info.status = JobStatus.CANCELLED

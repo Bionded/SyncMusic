@@ -46,3 +46,39 @@ func TestInstallCardManifest(t *testing.T) {
 		t.Fatalf("card id after the install: %q", id)
 	}
 }
+
+// Files a USB sync wrote (listed in the card's manifest) are reported as held, so the first Wi-Fi sync after a
+// USB sync sends only what is new; deleted rows, missing files and the user's own files are not reported.
+func TestInventoryIncludesTheCardManifestsFiles(t *testing.T) {
+	card := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(card, filepath.FromSlash(rel))
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte(body), 0o644)
+	}
+	write(".syncmusic/manifest.jsonl", `{"type":"header","manifest_version":2,"device_uid":"card-1"}
+{"type":"item","lib":"a","item_id":"1","path":"Music/A/one.flac","size":3}
+{"type":"item","lib":"a","item_id":"2","path":"Music/A/two.flac","size":3}
+{"type":"item","lib":"a","item_id":"3","path":"Music/A/gone.flac","size":3}
+{"type":"delete","lib":"a","item_id":"2"}
+{"type":"playlist","name":"Mix","path":"Playlists/Mix.m3u8"}
+`)
+	write("Music/A/one.flac", "one")
+	write("Music/A/two.flac", "two")
+	write("Music/Mine/own.mp3", "own")
+	write("Playlists/Mix.m3u", "#EXTM3U\n")
+	c := &Client{root: card, st: State{Files: map[string]int64{}}}
+	got := map[string]int64{}
+	for _, it := range c.inventory() {
+		got[it["path"].(string)] = it["size"].(int64)
+	}
+	want := map[string]int64{"Music/A/one.flac": 3, "Playlists/Mix.m3u8": 8}
+	if len(got) != len(want) {
+		t.Fatalf("inventory %v, want %v", got, want)
+	}
+	for p, n := range want {
+		if got[p] != n {
+			t.Fatalf("inventory %v, want %v", got, want)
+		}
+	}
+}

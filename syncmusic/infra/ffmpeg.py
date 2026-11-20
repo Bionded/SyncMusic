@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -185,9 +186,14 @@ def probe_json(path: str | os.PathLike[str], timeout_s: float = 60) -> dict[str,
     return data
 
 
-def decode_problem(path: str | os.PathLike[str], timeout_s: float = 600) -> str | None:
+def decode_problem(
+    path: str | os.PathLike[str],
+    timeout_s: float = 600,
+    cancelled: Callable[[], bool] | None = None,
+) -> str | None:
     """Decode the whole file and discard the result (the integrity check's deep read): the first error
-    ffmpeg reports, or None when it decodes cleanly."""
+    ffmpeg reports, or None when it decodes cleanly. `cancelled` is polled about once a second; when it turns
+    true ffmpeg is stopped and None is returned (the caller checks `cancelled` itself)."""
     cmd = [
         *nice_prefix(),
         FFMPEG,
@@ -202,12 +208,27 @@ def decode_problem(path: str | os.PathLike[str], timeout_s: float = 600) -> str 
         "-",
     ]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
-    except (OSError, subprocess.SubprocessError) as e:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    except OSError as e:
         return f"cannot be decoded: {type(e).__name__}"
-    lines = [x for x in out.stderr.splitlines() if x.strip()]
-    if out.returncode != 0 or decode_errors(out.stderr):
-        return f"cannot be decoded: {lines[0] if lines else f'exit {out.returncode}'}"[:300]
+    deadline = time.monotonic() + timeout_s
+    stderr = ""
+    while True:
+        try:
+            _, stderr = proc.communicate(timeout=1.0)
+            break
+        except subprocess.TimeoutExpired:
+            if (cancelled is not None and cancelled()) or time.monotonic() > deadline:
+                proc.kill()
+                proc.communicate()
+                return (
+                    None
+                    if cancelled is not None and cancelled()
+                    else "cannot be decoded: TimeoutExpired"
+                )
+    lines = [x for x in stderr.splitlines() if x.strip()]
+    if proc.returncode != 0 or decode_errors(stderr):
+        return f"cannot be decoded: {lines[0] if lines else f'exit {proc.returncode}'}"[:300]
     return None
 
 

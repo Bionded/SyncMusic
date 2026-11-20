@@ -6,6 +6,7 @@
 // Ticking an album / artist / playlist ticks its items; the selection bar's "Remove from device…" deletes them (a
 // sync job) and - ticked by default - excludes them in the device's own template so the next sync does not bring
 // them back. ▶ plays the file on the device.
+import { local } from "../storage.js";
 import { html, bytes } from "../dom.js";
 import { t, addStrings } from "../i18n.js";
 import { get, post } from "../api.js";
@@ -98,7 +99,7 @@ const SORTS = ["default", "album", "year", "added", "size"];
 function viewOf(tab) {
   if (!GRID_TABS.includes(tab)) return "list";
   let saved = {};
-  try { saved = JSON.parse(localStorage.getItem(VIEW_KEY) || "{}"); } catch { /* a broken value: defaults */ }
+  try { saved = JSON.parse(local.get(VIEW_KEY) || "{}"); } catch { /* a broken value: defaults */ }
   return saved[tab] || (tab === "albums" ? "grid" : "list"); // spoken word: each episode shows where it stands
 }
 
@@ -339,10 +340,10 @@ function pickRange(el) {
 export const contentsActions = {
   pcView(el, ctx) {
     let saved = {};
-    try { saved = JSON.parse(localStorage.getItem(VIEW_KEY) || "{}"); } catch { /* start over */ }
+    try { saved = JSON.parse(local.get(VIEW_KEY) || "{}"); } catch { /* start over */ }
     const params = new URLSearchParams(ctx.query);
     const tab = document.querySelector('.tab[aria-selected="true"][data-pc-tab]')?.dataset.pcTab || params.get("tab");
-    localStorage.setItem(VIEW_KEY, JSON.stringify({ ...saved, [tab]: el.dataset.view }));
+    local.set(VIEW_KEY, JSON.stringify({ ...saved, [tab]: el.dataset.view }));
     ctx.rerender();
   },
   pcSort(el, ctx) {

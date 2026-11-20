@@ -711,6 +711,7 @@ class Applier:
                             )
                             break
                         except TimeoutError:  # a long prepare: say what it waits for
+                            self.check_cancelled()  # a cancel does not wait for the prepare to end for the prepare to end
                             if msg := self._merge_status(window):
                                 # the merged share of this item moves the bar and the ETA; only the first
                                 # status goes to the job log, the rest just update the Now line
@@ -745,6 +746,7 @@ class Applier:
                         continue
                     self._fail(report, a, step, e, str(e))
                     self._forget_lost(a, manifest)
+                    done += weight[id(a)]  # the bar still reaches the end
                     launch()
                     continue
                 finally:
@@ -806,6 +808,11 @@ class Applier:
                 if slot.task is not None:
                     slot.task.cancel()
             await asyncio.gather(*(sl.task for sl in window if sl.task), return_exceptions=True)
+            for sl in (
+                window
+            ):  # a prepare that failed (or was cancelled by the job) nobody waits for any more
+                if sl.ready.done() and not sl.ready.cancelled():
+                    sl.ready.exception()
 
     def _merge_status(self, window: deque[_Slot]) -> str | None:
         """The audiobook merges of this sync's prepares in flight, for the status line."""

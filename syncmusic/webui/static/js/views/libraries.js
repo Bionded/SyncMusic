@@ -1,6 +1,7 @@
 // Libraries: list with connection health, add (Subsonic-compatible, folder, Audiobookshelf) with a
 // connection test, edit (secrets stay masked), refresh the index, remove (refused while a device uses it), browse /
 // search / filter the index and add selected items, albums or artists to a device (its "Manual selection" rule).
+import { local } from "../storage.js";
 import { html, bytes, setHtml } from "../dom.js";
 import { t, addStrings } from "../i18n.js";
 import { get, post, patch, del } from "../api.js";
@@ -619,7 +620,7 @@ async function renderBrowse(ctx, lib) {
       counts = res.tab_counts;
     }
   } catch (e) { error = e; }
-  const view = spec.grid && localStorage.getItem(VIEW_KEY) !== "list" ? "grid" : "list";
+  const view = spec.grid && local.get(VIEW_KEY) !== "list" ? "grid" : "list";
   ctx.state.browse = { tab, spec, rows: res ? res.items : [], lib };
   const pages = res ? Math.max(1, Math.ceil(res.total / PAGE)) : 1;
   const base = `#/libraries/${lid}/browse`;
@@ -1046,7 +1047,7 @@ export const actions = {
     browseTo(ctx, { as: el.value, page: "0" });
   },
   setView(el, ctx) {
-    localStorage.setItem(VIEW_KEY, el.dataset.view);
+    local.set(VIEW_KEY, el.dataset.view);
     ctx.rerender();
   },
   selectAll(el) {

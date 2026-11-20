@@ -128,6 +128,7 @@ async def test_star_to_sink(starred):
     assert sink.calls == [("star", "lib/t1", starred)]
     assert store.calls == [("delivered", 7, None, None)]
     assert out.report.stars_pushed == 1 and took == [("star", "lib/t1")]
+    assert out.report.warnings == []
 
 
 async def test_star_without_support_is_dropped():
@@ -135,6 +136,9 @@ async def test_star_without_support_is_dropped():
     out, took = await _run(store, sink, NONE, _row("star", {"ref": REF.key(), "starred": True}))
     assert sink.calls == [] and store.calls == [("delivered", 7, None, None)]
     assert out.report.stars_pushed == 0 and took == []
+    assert out.report.warnings == [
+        "Favourites changed on the player were not sent: the library keeps no favourites"
+    ]
 
 
 @pytest.mark.parametrize("finished", [True, False])

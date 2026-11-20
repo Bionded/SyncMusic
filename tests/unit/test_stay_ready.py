@@ -372,3 +372,25 @@ async def test_a_host_root_view_of_our_mount_does_not_stop_writing(env, tmp_path
     monkeypatch.setattr(mnt, "mounts_of", lambda dev: list(table))
     await app.sync._mount_check(cfg)()
     assert "flash" not in app.sync._errors
+
+
+async def test_an_unplug_cancels_the_waiting_unmount(env, tmp_path, monkeypatch):
+    """the idle wait of a mount that is gone (ejected, unplugged) must not fire on the next connection: it
+    would unmount the reconnected device under a plan that is reading it."""
+    from types import SimpleNamespace
+
+    app, c = env
+    unmounted = await _ready_device(app, c, tmp_path, monkeypatch)
+    monkeypatch.setattr(app.sync, "READY_IDLE_S", 0.3)
+    app.sync._schedule_ready_unmount("flash")
+    task = app.sync._ready_tasks["flash"]
+
+    async def removed(name):
+        return None
+
+    monkeypatch.setattr(app.sync.detector, "disk_removed", removed)
+    app.sync.detector.connected["sdz"] = SimpleNamespace(device_id="flash")
+    await app.sync.on_disk_removed("sdz")
+    await asyncio.sleep(0.5)
+    assert task.cancelled() and "flash" not in app.sync._ready_tasks
+    assert unmounted == []

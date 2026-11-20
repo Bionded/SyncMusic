@@ -1,7 +1,7 @@
-"""Acceptance on an emulated flash drive: the scenario of tests/hardware/test_flash_acceptance.py - every
+"""Acceptance on an emulated flash drive: the scenario of tests/scenarios/flash.py - every
 file system: format, first sync, no-op re-run, rule change, tiny space limit and forced partial sync - against the
-compose stack's Navidrome. Then the mount vanishing mid-apply (tests/hardware/test_mount_lost.py) and the match by a
-probe-mounted manifest (tests/hardware/test_probe_mount.py)."""
+compose stack's Navidrome. Then the mount vanishing mid-apply (tests/scenarios/mount_lost.py) and the match by a
+probe-mounted manifest (tests/scenarios/probe_mount.py)."""
 
 from __future__ import annotations
 
@@ -26,9 +26,9 @@ from tests.emulated import (
     unplug,
 )
 from tests.factories import own_rules
-from tests.hardware.test_flash_acceptance import flash_scenario
-from tests.hardware.test_mount_lost import mount_lost_scenario
-from tests.hardware.test_probe_mount import probe_manifest_scenario
+from tests.scenarios.flash import flash_scenario
+from tests.scenarios.mount_lost import mount_lost_scenario
+from tests.scenarios.probe_mount import probe_manifest_scenario
 
 pytestmark = [pytest.mark.integration, pytest.mark.emulated, needs_sudo]
 

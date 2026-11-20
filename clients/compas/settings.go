@@ -95,6 +95,44 @@ func (s Settings) save(dir string) error {
 	return writeAtomic(filepath.Join(dir, "settings.json"), b)
 }
 
+// restoreSettings, after pairing: the settings the server kept for this player (it paired before, e.g. after
+// a reset of the app) replace the local ones; a server without a copy gets ours.
+func (c *Client) restoreSettings(raw json.RawMessage) {
+	var kept map[string]any
+	if json.Unmarshal(raw, &kept) == nil && len(kept) > 0 {
+		s := defaultSettings()
+		if json.Unmarshal(raw, &s) == nil {
+			if !validAfter(s.AfterSync) {
+				s.AfterSync = afterAsk
+			}
+			if err := s.save(c.data); err == nil {
+				step("settings: restored from the server")
+				return
+			}
+		}
+	}
+	c.pushSettings(loadSettings(c.data))
+}
+
+func validAfter(v string) bool {
+	for _, a := range afterChoices {
+		if a == v {
+			return true
+		}
+	}
+	return false
+}
+
+// pushSettings gives the server a copy of the app's settings (best effort: it is sent again on the next change).
+func (c *Client) pushSettings(s Settings) {
+	if c.st.Token == "" {
+		return
+	}
+	if err := c.call("PUT", "me/settings", map[string]any{"settings": s}, nil); err != nil {
+		step("settings: not sent to the server: %v", err)
+	}
+}
+
 func seconds(n int) string {
 	switch {
 	case n == 0:

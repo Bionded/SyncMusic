@@ -159,7 +159,7 @@ async def test_an_appended_tail_cut_short(tmp_path, library, preparer, where):
     assert len(lines) - marker - 1 == len(later)
     if where == "tail_mid_line":
         _cut(dev, b"".join(lines[:-1]) + lines[-1][: len(lines[-1]) // 2])
-        expect = len(TRACKS) - 1
+        expect = len(TRACKS) - len(later)  # the unfinished commit is dropped as a whole
     else:
         _cut(dev, b"".join(lines[:marker]))
         expect = len(TRACKS) - len(later)

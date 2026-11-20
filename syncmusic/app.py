@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -24,7 +25,7 @@ from syncmusic.core.prepare import Preparer
 from syncmusic.core.snapshots import SnapshotCache
 from syncmusic.core.sync import SCHEDULE_TICK_S, SyncService
 from syncmusic.devices.HibyR1 import compas_sdtool
-from syncmusic.infra import dbbackup, ffmpeg, self_update, storage
+from syncmusic.infra import client_apps, dbbackup, ffmpeg, self_update, storage
 from syncmusic.infra.announce import Announcer, txt_record
 from syncmusic.infra.auth import Auth
 from syncmusic.infra.blockdev.guard import Guard
@@ -40,7 +41,7 @@ from syncmusic.infra.jobs import JobInfo, JobRunner
 from syncmusic.infra.log import BusLogHandler
 from syncmusic.infra.notify import Notifications
 from syncmusic.infra.store import Store
-from syncmusic.infra.updates import Checker, UpdateState
+from syncmusic.infra.updates import Checker, UpdateState, running_version
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +99,9 @@ class Application:
         self.updates = UpdateState()
         self._update_checked: float | None = None
         self.update_checker = Checker(config.cache_dir / "update-releases.json")
+        self.app_fetch = (
+            client_apps.AutoFetch()
+        )  # the Compás app builds of this release, fetched by themselves
         # installing an update: the runner stops the app through `on_restart`, then exits for the unit to restart it
         # ("exit") or starts the new binary in its place ("exec")
         self.restart: str | None = None
@@ -106,6 +110,11 @@ class Application:
         self._trial: asyncio.Task[None] | None = None
         self._update_pending = False
         self._update_announced: str | None = None
+        # the running install's step for Settings → Updates and every open page (`app.update_progress`)
+        self.update_progress: dict[str, Any] | None = None
+        self._progress_sent = 0.0
+        # the last automatic compas-sdtool check (Settings → Devices), see compas_sdtool.check_update
+        self.sdtool_update: dict[str, Any] | None = None
 
     async def _device_name(self, device_id: str) -> str | None:
         cfg = await self.store.device(device_id)
@@ -136,6 +145,7 @@ class Application:
         await self.sync.add_tag_steps()
         await self.sync.load()
         self.sync.wifi_ids = {p.device_id for p in await self.clients.list() if not p.revoked}
+        self.sync.wifi_alive = self.clients.alive
         if self.config.detect_devices:
             await self.watcher.start()
         try:
@@ -176,6 +186,10 @@ class Application:
                     await self.housekeeping()
                 if self.update_pending and not any(j.finished_at is None for j in self.jobs.jobs()):
                     await self._install_pending()
+                if (self.sdtool_update or {}).get("status") == "waiting" and not any(
+                    j.finished_at is None for j in self.jobs.jobs()
+                ):
+                    await self.check_sdtool()
                 if (
                     self._update_checked is None
                     or time.monotonic() - self._update_checked > UPDATE_CHECK_EVERY_S
@@ -184,9 +198,10 @@ class Application:
             except Exception:  # noqa: BLE001 - logged; the next tick tries again
                 log.exception("housekeeping")
 
-    async def check_updates(self) -> UpdateState:
+    async def check_updates(self, install: bool = True) -> UpdateState:
         """Ask the releases of `update_repo` for the newest version of the update channel; a newer one than the
-        running version is announced once (`app.update_available`)."""
+        running version is announced once (`app.update_available`). `install=False` (the user's Check) only
+        checks: automatic updates are left to the scheduled checks."""
         self._update_checked = time.monotonic()
         settings = await self.store.app_settings()
         repo = self.config.update_repo.strip()
@@ -194,11 +209,13 @@ class Application:
             self.updates = UpdateState(channel=settings.update_channel)
             return self.updates
         self.updates = await self.update_checker.check(repo, settings.update_channel)
+        if not self.updates.error:
+            await self.check_sdtool()
         if self.updates.error:
             log.warning("update check: %s", self.updates.error)
         elif self.updates.available and self.updates.latest != self._update_announced:
             self._update_announced = self.updates.latest
-            if settings.auto_update != "off" and self.can_self_update():
+            if install and settings.auto_update != "off" and self.can_self_update():
                 log.info("automatic update to %s (%s)", self.updates.latest, settings.auto_update)
                 if settings.auto_update == "now" or not any(
                     j.finished_at is None for j in self.jobs.jobs()
@@ -210,6 +227,32 @@ class Application:
                 "app.update_available", latest=self.updates.latest, notes=len(self.updates.notes)
             )
         return self.updates
+
+    async def check_sdtool(self) -> None:
+        """Keep the downloaded compas-sdtool at the build SyncMusic's release offers (only while no job runs; a
+        user-set tool is never replaced). Never raises: the result is shown in Settings → Devices."""
+        repo = self.config.update_repo.strip()
+        try:
+            releases = await self.update_checker.releases(repo)
+            settings = await self.store.app_settings()
+            got = await compas_sdtool.check_update(
+                releases,
+                running_version(),
+                self.config.data_dir,
+                settings.compas_sdtool_path,
+                idle=not any(j.finished_at is None for j in self.jobs.jobs()),
+                transport=self.update_transport,
+            )
+        except Exception as e:  # noqa: BLE001 - offline or a broken release: shown, tried at the next check
+            got = {"status": "error", "error": f"{type(e).__name__}: {e}"}
+        got["checked"] = datetime.now(UTC).isoformat(timespec="seconds")
+        if got["status"] == "updated":
+            log.info("compas-sdtool updated from %s to %s", got.get("previous"), got.get("held"))
+        elif got["status"] == "error" and (self.sdtool_update or {}).get("error") != got.get(
+            "error"
+        ):
+            log.warning("compas-sdtool update check: %s", got.get("error"))
+        self.sdtool_update = got
 
     @property
     def update_pending(self) -> bool:
@@ -226,6 +269,29 @@ class Application:
         return self.updates.install_type in ("service", "standalone", "desktop") and (
             self_update.running_binary() is not None
         )
+
+    async def prune_runtimes(self) -> int:
+        """Remove the unpacked runtimes of old versions next to the running one (any install prefix); the
+        installed binary's and its rollback's stay. At start, hourly and after a confirmed update."""
+        binary, current = self_update.running_binary(), self_update.running_runtime()
+        if binary is None or current is None:
+            return 0
+        try:
+            removed, freed = await asyncio.to_thread(
+                self_update.prune_old_runtimes, binary, current
+            )
+        except Exception as e:  # noqa: BLE001 - only clean-up
+            log.warning("old runtimes not removed: %s", e)
+            return 0
+        if removed:
+            log.info(
+                "removed %d old runtime(s) from %s (%s), %d MB freed",
+                len(removed),
+                current.parent,
+                ", ".join(removed),
+                freed // 1_000_000,
+            )
+        return freed
 
     @property
     def update_marker(self) -> Path:
@@ -250,11 +316,7 @@ class Application:
         async def healthy() -> None:
             await asyncio.sleep(self_update.HEALTHY_AFTER_S)
             self_update.confirm(self.update_marker, paths)
-            if self.updates.install_type == "service" and paths is not None:
-                keep = {
-                    self_update.runtime_id(p) for p in (paths.binary, paths.previous) if p.exists()
-                }
-                await asyncio.to_thread(self_update.prune_runtimes, keep)
+            await self.prune_runtimes()
             log.info("updated from %s to %s", info["from"], info["to"])
             self.bus.publish("app.updated", version=info["to"], previous=info["from"])
 
@@ -264,7 +326,10 @@ class Application:
         self.update_pending = False
         try:
             await self.install_update()
-        except self_update.Refused as e:
+        except Exception as e:  # noqa: BLE001 - reported; the next check tries this version again
+            self._update_announced = None
+            if not isinstance(e, self_update.Refused):
+                log.exception("update to %s failed", self.updates.latest)
             log.warning("update not installed: %s", e)
             self.bus.publish(
                 "app.update_failed",
@@ -286,24 +351,46 @@ class Application:
             )
         paths = self_update.Paths(binary)
         new = paths.download
-        await self_update.download(u.asset, u.sums, new, self.update_transport)
+        latest = u.latest
         try:
-            service = u.install_type == "service"
-            runtime_id = await asyncio.to_thread(self_update.unpack, new, service)
-            await self.backup_db("update")
-            self_update.swap(paths, new)
-        finally:
-            new.unlink(missing_ok=True)
-        if service:
-            await asyncio.to_thread(
-                self_update.retarget_sudoers, self_update.service_helper(runtime_id)
+            self._progress("downloading", latest, done=0, total=0, force=True)
+            await self_update.download(
+                u.asset,
+                u.sums,
+                new,
+                self.update_transport,
+                lambda done, total: self._progress("downloading", latest, done=done, total=total),
             )
-        self_update.write_marker(self.update_marker, u.running, u.latest)
+            try:
+                self._progress("installing", u.latest, force=True)
+                service = u.install_type == "service"
+                runtime_id = await asyncio.to_thread(self_update.unpack, new, service)
+                await self.backup_db("update")
+                self_update.swap(paths, new)
+            finally:
+                new.unlink(missing_ok=True)
+            if service:
+                await asyncio.to_thread(
+                    self_update.retarget_sudoers, self_update.service_helper(runtime_id)
+                )
+            self_update.write_marker(self.update_marker, u.running, u.latest)
+        except BaseException as e:
+            self._progress("failed", u.latest, error=str(e) or type(e).__name__, force=True)
+            raise
         log.info("update %s installed; restarting", u.latest)
+        self._progress("restarting", u.latest, previous=u.running, force=True)
         self.restart = "exit" if service else "exec"
         if self.on_restart is not None:
             self.on_restart()
         return u.latest
+
+    def _progress(self, step: str, version: str, *, force: bool = False, **extra: Any) -> None:
+        """Store the install step and announce it (download progress at most twice a second)."""
+        self.update_progress = {"step": step, "version": version, **extra}
+        now = time.monotonic()
+        if force or now - self._progress_sent >= 0.5:
+            self._progress_sent = now
+            self.bus.publish("app.update_progress", **self.update_progress)
 
     async def _job_finished(self, job: JobInfo) -> None:
         """Store the finished job, freeze the survivors for the garbage collector when no other job runs, then hand the memory the
@@ -349,6 +436,8 @@ class Application:
             datetime.now(UTC) - timedelta(days=settings.history_days)
         )
         files = await asyncio.to_thread(prune_logs, self.config.logs, settings.log_days)
+        await self.sync.sweep_network_files()
+        await self.prune_runtimes()
         notes = 0
         if settings.notification_days:
             notes = await self.store.prune_notifications(

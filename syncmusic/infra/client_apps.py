@@ -5,9 +5,14 @@ that reports an older version of the same app gets the files of the newest zip a
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
+import logging
 import re
+import time
 import zipfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,7 +21,9 @@ import httpx
 
 from syncmusic.infra import self_update
 from syncmusic.infra.self_update import running_binary
-from syncmusic.infra.updates import Release, is_newer, version_key
+from syncmusic.infra.updates import Release, is_newer, running_version, version_key
+
+log = logging.getLogger(__name__)
 
 # the apps the server knows; a client names its app in `app` (its pairing info)
 KNOWN_APPS = frozenset({"syncmusic-compas"})
@@ -201,3 +208,82 @@ async def install(
     finally:
         part.unlink(missing_ok=True)
     return AppRelease(app, version, final, rel.files, var)
+
+
+RETRY_S = 3600  # a failed automatic download is tried again after this long
+
+
+def own_release(releases: list[Release], running: str) -> list[Release]:
+    """The release of the running server version (empty for a build no release matches)."""
+    want = version_key(running)
+    return [r for r in releases if want is not None and version_key(r.version) == want]
+
+
+class AutoFetch:
+    """Fetches the app builds of the server's own release by itself, so a connecting app is offered its update without
+    anyone pressing Download. One download at a time; done once per server version, a failure is retried after
+    RETRY_S and logged once."""
+
+    def __init__(self) -> None:
+        self.state = "idle"  # idle / downloading / done / failed / unavailable
+        self.error: str | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._failed_at: float | None = None
+        self._logged: str | None = None
+
+    def needed(self, held: AppRelease | None, client_version: str) -> bool:
+        """True when the server holds nothing newer than the client and has not fetched its release's builds yet."""
+        if self.state in ("done", "unavailable"):
+            return False
+        if self._failed_at is not None and time.monotonic() - self._failed_at < RETRY_S:
+            return False
+        return held is None or not is_newer(held.version, client_version)
+
+    async def ensure(
+        self,
+        app: str,
+        data_dir: Path,
+        releases: Callable[[], Awaitable[list[Release]]],
+        wait_s: float = 0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        """Start (or join) the download; wait at most `wait_s` for it, it carries on in the background after that."""
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run(app, data_dir, releases, transport))
+        if wait_s > 0:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(self._task), wait_s)
+
+    async def _run(
+        self,
+        app: str,
+        data_dir: Path,
+        releases: Callable[[], Awaitable[list[Release]]],
+        transport: httpx.AsyncBaseTransport | None,
+    ) -> None:
+        self.state, self.error = "downloading", None
+        running = running_version()
+        try:
+            own = own_release(await releases(), running)
+            if not own:
+                self.state = "unavailable"
+                self.error = f"no SyncMusic release {running} to take the {app} builds from"
+                self._log_once(self.error)
+                return
+            for variant in VARIANTS:
+                try:
+                    await install(own, app, data_dir, transport, variant)
+                except AppDownloadError as e:
+                    if variant == VARIANTS[0] or "no SyncMusic release" not in str(e):
+                        raise
+            self.state, self._failed_at = "done", None
+            log.info("downloaded the %s builds of release %s", app, running)
+        except (AppDownloadError, httpx.HTTPError, OSError, ValueError) as e:
+            self.state, self._failed_at = "failed", time.monotonic()
+            self.error = str(e) or type(e).__name__
+            self._log_once(f"the {app} builds could not be downloaded: {self.error}")
+
+    def _log_once(self, msg: str) -> None:
+        if msg != self._logged:
+            self._logged = msg
+            log.warning("%s", msg)

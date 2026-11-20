@@ -4,6 +4,7 @@
 // processors, optional format right after (typed-name confirmation on the device page). Rules and processors are a
 // real choice: an existing template, a new template for this device (a copy, named after it), or rules /
 // processors of this device only. Nothing is preselected: the user picks both.
+import { local } from "../storage.js";
 import { html, bytes, setHtml } from "../dom.js";
 import { t, addStrings } from "../i18n.js";
 import { get, post, patch } from "../api.js";
@@ -298,7 +299,7 @@ function wizard(root, form, ctx) {
   const submit = form.querySelector('button[type="submit"]');
   const toggle = form.querySelector("[data-reg-all]");
   let step = 0;
-  const all = () => localStorage.getItem(ALL_KEY) === "all";
+  const all = () => local.get(ALL_KEY) === "all";
   const show = () => {
     const one = !all();
     form.classList.toggle("reg-wizard", one);
@@ -336,7 +337,7 @@ function wizard(root, form, ctx) {
     if (b && !b.disabled) go(Number(b.dataset.regGoto));
   });
   toggle.addEventListener("click", () => {
-    localStorage.setItem(ALL_KEY, all() ? "steps" : "all");
+    local.set(ALL_KEY, all() ? "steps" : "all");
     show();
   });
   form.addEventListener("keydown", (e) => {

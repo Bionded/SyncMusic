@@ -91,20 +91,42 @@ def manifest_device_id(disk: BlockDeviceInfo) -> str | None:
 def match_registered(
     disk: BlockDeviceInfo, configs: list[DeviceConfig], manifest_id: str | None = None
 ) -> tuple[DeviceConfig, str] | None:
-    """(config, matched_by) for the first match in the order usb_serial → manifest id → fs uuid."""
+    """(config, matched_by) for the first match in the order usb_serial → manifest id → fs uuid. A serial
+    match is dropped when the disk's manifest names another registration: a card reader gives every card the
+    same serial, so card B in the reader must not be taken for card A."""
+    uuids = {n.uuid for n in _nodes(disk) if n.uuid}
     if disk.serial:
-        for c in configs:
-            if disk.serial in c.identity.serials():
-                return c, "usb_serial"
+        hits = [c for c in configs if disk.serial in c.identity.serials()]
+        if manifest_id:
+            hits = [c for c in hits if not _other_manifest(c, manifest_id)]
+        # several cards registered through one reader: the one whose file system is on the disk
+        hits.sort(key=lambda c: not (c.identity.fs_uuid and c.identity.fs_uuid in uuids))
+        if hits:
+            return hits[0], "usb_serial"
     if manifest_id:
         for c in configs:
             if manifest_id in (c.id, c.identity.manifest_device_id):
                 return c, "manifest"
-    uuids = {n.uuid for n in _nodes(disk) if n.uuid}
     for c in configs:
         if c.identity.fs_uuid and c.identity.fs_uuid in uuids:
             return c, "fs_uuid"
     return None
+
+
+def _other_manifest(c: DeviceConfig, manifest_id: str) -> bool:
+    """The manifest on the disk belongs to another registration than `c` (only known when `c` has its uid)."""
+    uid = c.identity.manifest_device_id
+    return uid is not None and manifest_id not in (c.id, uid)
+
+
+def serial_match_is_certain(disk: BlockDeviceInfo, configs: list[DeviceConfig]) -> bool:
+    """One registration has the disk's serial and nothing on the disk contradicts it (its fs UUID, when
+    known, is there): no probe mount needed. Otherwise the manifest decides (card readers)."""
+    hits = [c for c in configs if disk.serial and disk.serial in c.identity.serials()]
+    if len(hits) != 1:
+        return False
+    uuid = hits[0].identity.fs_uuid
+    return not uuid or uuid in {n.uuid for n in _nodes(disk) if n.uuid}
 
 
 def probe_disk(disk: BlockDeviceInfo, mount: Path | None = None) -> list[ProbeResult]:
@@ -179,7 +201,7 @@ class Detector:
         mounted_probes: list[ProbeResult] = []
         if manifest_id is None and existing_mount(disk) is None and self.manifest_probe is not None:
             match = match_registered(disk, configs)
-            if match is not None and match[1] == "usb_serial":
+            if match is not None and serial_match_is_certain(disk, configs):
                 return match, []
             try:
                 found = await self.manifest_probe(disk)

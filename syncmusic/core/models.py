@@ -355,7 +355,8 @@ class DeviceIdentity(BaseModel):
         return [*self.serials(), *([self.fs_uuid] if self.fs_uuid else [])]
 
     def format_guard_ids(self) -> list[str] | None:
-        """Identities for a format (new fs UUID): the serials, or None (removable-only check) without a serial."""
+        """Identities for a format (new fs UUID): the serials, or None (removable-only check) without a serial.
+        `Device.format_guard_ids` adds the detected disk's serial."""
         return self.guard_ids() if self.serials() else None
 
 
@@ -409,6 +410,9 @@ class SyncSettings(BaseModel):
     # unmount other programs' mounts of the device (a host automounter) during the first minute after the app
     # mounted it; disk devices only
     unmount_foreign: bool = False
+    # remount other programs' mounts of the device read-only during the first minute after the app mounted it (they
+    # keep reading, only SyncMusic writes); `unmount_foreign` wins when both are on; disk devices only
+    foreign_read_only: bool = False
     # a partition another program (Umbrel, a desktop automounter) already mounted is used where it is, never
     # mounted a second time; off: such a device is refused until that mount is gone
     use_existing_mount: bool = True

@@ -80,3 +80,15 @@ def merge(
                     out.insert(len(out) - out[::-1].index(prev) if prev in out else 0, k)
             prev = k
     return out
+
+
+def union(first: list[str], second: list[str]) -> list[str]:
+    """Two playlists of the same name with no common base: `first` in its order, then what only `second` has.
+    An entry both have is kept once per side's highest count (never doubled)."""
+    extra = Counter(second) - Counter(first)
+    out = list(first)
+    for k in second:
+        if extra[k] > 0:
+            out.append(k)
+            extra[k] -= 1
+    return out

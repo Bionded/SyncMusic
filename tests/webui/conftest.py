@@ -136,10 +136,15 @@ def _close_pages():
             page.context.close()
 
 
-def open_page(chrome, url: str, width: int = 1280, height: int = 800):
+def open_page(chrome, url: str, width: int = 1280, height: int = 800, settings_all: bool = True):
     """A page on `url` with console errors collected in `page.errors` (asserted empty by the tests); closed (with
-    its own context) when the test ends."""
+    its own context) when the test ends. `settings_all`: Settings and a device's Settings tab start with every
+    section on one page (False: the default one section at a time)."""
     page = chrome.new_page(viewport={"width": width, "height": height})
+    mode = "all" if settings_all else "one"
+    page.add_init_script(
+        f"if (localStorage.getItem('sm.settingsAll') === null) localStorage.setItem('sm.settingsAll', '{mode}')"
+    )
     _open_pages.append(page)
     page.errors = []
     page.on("pageerror", lambda e: page.errors.append(str(e)))

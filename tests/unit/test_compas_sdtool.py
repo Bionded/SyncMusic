@@ -240,3 +240,49 @@ async def test_settings_api_status_and_download(env, tmp_path, monkeypatch):  # 
     assert (
         got["error"] is None and got["database_format"] == 8 and got["build"] == "tools-a+player-b"
     )
+
+
+async def test_automatic_update_keeps_the_downloaded_copy_current(tmp_path):
+    binary = ("#!/bin/sh\n" + INFO_ONLY).encode()
+    releases, transport = _release_server(
+        binary, {"build": "tools-a+player-b", "database_format": 8}
+    )
+    data = tmp_path / "data"
+
+    async def check(setting=None, idle=True):
+        return await sd.check_update(releases, "0.3.0", data, setting, idle, transport)
+
+    assert (await check())[
+        "status"
+    ] == "not_held"  # nothing downloaded yet: Download stays the user's
+    tools = data / "tools"
+    tools.mkdir(parents=True)
+    old = tools / sd.asset_name()
+    old.write_text("#!/bin/sh\necho old\n")
+    old.chmod(0o755)
+    (tools / f"{sd.asset_name()}.json").write_text('{"build": "tools-old+player-old"}')
+    got = await check(idle=False)  # a job runs: not now
+    assert got["status"] == "waiting" and got["available"] == "tools-a+player-b"
+    assert sd.held_build(data) == "tools-old+player-old"
+    custom = tmp_path / "my-sdtool"
+    custom.write_text("#!/bin/sh\n")
+    custom.chmod(0o755)
+    assert (await check(setting=str(custom)))["status"] == "custom"  # the user's own: notice only
+    assert sd.held_build(data) == "tools-old+player-old"
+    got = await check()
+    assert got["status"] == "updated" and got["previous"] == "tools-old+player-old"
+    assert sd.held_build(data) == "tools-a+player-b"
+    assert (tools / f"{sd.asset_name()}.previous").read_text().endswith("echo old\n")
+    assert (await check())["status"] == "up_to_date"
+
+
+async def test_automatic_update_offline_does_not_raise(tmp_path):
+    import httpx
+
+    releases, _ = _release_server(b"#!/bin/sh\n", {"build": "x", "database_format": 8})
+
+    def down(request):
+        raise httpx.ConnectError("offline")
+
+    got = await sd.check_update(releases, "0.3.0", tmp_path, None, True, httpx.MockTransport(down))
+    assert got["status"] == "error" and "download failed" in got["error"]

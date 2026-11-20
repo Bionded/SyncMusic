@@ -23,7 +23,7 @@ from syncmusic.base.device import Device
 from syncmusic.base.feedback import FeedbackRejected, FeedbackSink
 from syncmusic.base.library import Library
 from syncmusic.core.models import ItemRef, Manifest, ReverseReport, SyncPlan
-from syncmusic.core.playlist_merge import merge
+from syncmusic.core.playlist_merge import merge, union
 
 Policy = Literal["ask", "merge", "replace", "ignore", "rename"]
 
@@ -75,8 +75,17 @@ async def push_playlists(
     )
     suffix = f" ({device_name or device.id})"
     choices = choices or {}
+    renamed = _missing_on_device(manifest, lists, report)
     changed = await _create(
-        device, manifest, lists, libraries, report, policy, suffix, choices, dry
+        device,
+        manifest,
+        {k: v for k, v in lists.items() if k not in renamed},
+        libraries,
+        report,
+        policy,
+        suffix,
+        choices,
+        dry,
     )
     for name in dict.fromkeys([*manifest.playlists, *manifest.playlist_created]):
         policy_of = choices.get(name, policy)
@@ -89,6 +98,34 @@ async def push_playlists(
             f"{unknown} playlist entries on the device are no synced song: left out"
         )
     return changed
+
+
+def _missing_on_device(
+    manifest: Manifest, lists: Mapping[str, list[str]], report: ReverseReport
+) -> set[str]:
+    """Warn about synced playlists that are gone from the device: renames and deletions there are not taken over,
+    the next sync writes the playlist back. A new device playlist with exactly the songs of a gone one is taken
+    for its rename: returned, so it is not also saved as a new library playlist."""
+    managed = dict.fromkeys([*manifest.playlists, *manifest.playlist_created])
+    new = {n: k for n, k in lists.items() if n not in managed and k}
+    renamed: set[str] = set()
+    for name in managed:
+        base = manifest.playlist_refs.get(name)
+        if base is None or name in lists:
+            continue
+        twin = next((n for n, k in new.items() if k == base and n not in renamed), None)
+        if twin is not None:
+            renamed.add(twin)
+            report.warnings.append(
+                f"playlist {name!r} was renamed to {twin!r} on the device: renames are not taken over, the sync "
+                f"writes {name!r} back (rename it in the library instead)"
+            )
+        else:
+            report.warnings.append(
+                f"playlist {name!r} was deleted on the device: the sync writes it back (remove it from the "
+                "library or the rules instead)"
+            )
+    return renamed
 
 
 async def _push_edit(
@@ -156,7 +193,8 @@ async def _push_edit(
     foreign = [r for r in refs if r.library_id != ref.library_id]
     if foreign:
         report.warnings.append(
-            f"playlist {name!r}: {len(foreign)} songs of other libraries left out of the library's copy"
+            f"playlist {name!r}: {len(foreign)} songs added on the device come from another library; "
+            "a library playlist holds only its own library's songs, so they are left out here and on the device"
         )
         refs = [r for r in refs if r.library_id == ref.library_id]
     try:
@@ -235,8 +273,8 @@ async def _create(
                     pid = existing[name]
                     if policy_of == "merge":
                         current = await lib.get_playlist(pid) or []
-                        union = merge([], [r.key() for r in own], [r.key() for r in current])
-                        own = [ItemRef.parse(k) for k in union or []]
+                        both = union([r.key() for r in own], [r.key() for r in current])
+                        own = [ItemRef.parse(k) for k in both]
                     await lib.save_playlist(name, own, pid)
             elif dry:
                 continue

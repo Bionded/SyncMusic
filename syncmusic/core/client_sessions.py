@@ -44,6 +44,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 SESSION_HOURS = 24
+# a streaming session whose client neither pages nor acks for this long is ended (its job stops)
+STREAM_IDLE_S = 1800.0  # long enough for one large file on slow Wi-Fi
 PAGE_MAX = 500
 # events that arrive in a burst (a client uploading its offline backlog) are handed on once
 EVENTS_DEBOUNCE_S = 20.0
@@ -177,6 +179,9 @@ class ClientSession(BaseModel):
     planned: tuple[int, int] = (0, 0)  # streaming: files and bytes the plan fetches
     metas: dict[str, dict[str, Any]] = {}  # streaming: item key -> what the client shows for it
     seen: int = 0  # streaming: entries of the job's written list already looked at
+    last_seen: float = Field(
+        default_factory=time.monotonic
+    )  # the client's last call for this session
 
     def totals(self) -> dict[str, int]:
         count, size = len(self.fetch), sum(int(f["size"]) for f in self.fetch)
@@ -322,6 +327,7 @@ class ClientSessions:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._deliver: dict[str, asyncio.Task[None]] = {}  # device id -> debounced event delivery
         self.events_debounce_s = EVENTS_DEBOUNCE_S
+        self._debouncing: set[str] = set()  # devices whose delivery still waits out the debounce
         self._locks: dict[str, asyncio.Lock] = {}  # one state change of a client at a time
         self._fid_cache: dict[
             tuple[str, str, int, int], str
@@ -375,9 +381,13 @@ class ClientSessions:
             log.info("client %s: device %r created", device_id, name)
 
     def _expire(self) -> None:
-        now = _now()
-        for sid in [s.id for s in self.sessions.values() if s.expires_at <= now]:
-            _stop_stream(self.sessions.pop(sid))
+        now, mono = _now(), time.monotonic()
+        for s in list(self.sessions.values()):
+            idle = s.stream and s.status == "ready" and mono - s.last_seen > STREAM_IDLE_S
+            if s.expires_at <= now or idle:
+                if idle:
+                    log.info("client %s: no word from it for a while, its sync ends", s.device_id)
+                _stop_stream(self.sessions.pop(s.id))
 
     def open_for(self, device_id: str) -> ClientSession | None:
         self._expire()
@@ -473,6 +483,8 @@ class ClientSessions:
             running = sync.ctx.jobs.running_for_device(s.device_id)
             if running is not None:
                 await sync.ctx.jobs.wait(running.id)
+        if not sync.ctx.jobs.device_busy(s.device_id):  # nothing writes the outbox now
+            await asyncio.to_thread((await self.device(s.device_id)).prune_outbox)
         if s.mode == "update":
             job = await sync.update_sync(s.device_id)
         else:
@@ -611,8 +623,9 @@ class ClientSessions:
             raise ClientError("invalid", "bad cursor", 400)
         end_at = time.monotonic() + STREAM_PAGE_WAIT_S
         while True:
+            s.last_seen = time.monotonic()  # a client waiting on this page is alive
             await self._stream_refresh(s)
-            if s.status != "ready":
+            if s.status != "ready" or self.sessions.get(s.id) is not s:
                 raise ClientError("server_error", s.message or "the sync stopped", 500)
             if len(s.fetch) > start or s.job_done or time.monotonic() >= end_at:
                 break
@@ -802,6 +815,7 @@ class ClientSessions:
         s = self.sessions.get(session_id)
         if s is None or s.device_id != device_id:
             raise ClientError("session_expired", "no such sync session (expired or finished)", 410)
+        s.last_seen = time.monotonic()
         return s
 
     def view(self, s: ClientSession, limit: int = PAGE_MAX) -> dict[str, Any]:
@@ -862,6 +876,8 @@ class ClientSessions:
             start = int(cursor or 0)
         except ValueError:
             raise ClientError("invalid", "bad cursor", 400) from None
+        if start < 0:
+            raise ClientError("invalid", "bad cursor", 400)
         limit = max(1, min(limit, PAGE_MAX))
         end = start + limit
         return {"items": items[start:end], "next": str(end) if end < len(items) else None}
@@ -896,6 +912,7 @@ class ClientSessions:
         self._expire()
         for s in self.sessions.values():
             if s.device_id == device_id and s.status == "ready":
+                s.last_seen = time.monotonic()
                 if fid in s.fids:
                     rel = s.fids[fid]
                     return self._outbox_root(device_id) / rel, rel
@@ -908,6 +925,7 @@ class ClientSessions:
         self._expire()
         for s in self.sessions.values():
             if secrets.compare_digest(s.ticket, ticket) and s.status == "ready":
+                s.last_seen = time.monotonic()
                 if fid in s.fids:
                     rel = s.fids[fid]
                     return s.device_id, self._outbox_root(s.device_id) / rel, rel
@@ -970,6 +988,9 @@ class ClientSessions:
         for rel in body.deleted:
             if rel not in deletes:
                 raise ClientError("not_in_plan", f"delete {rel!r} is not in this plan", 409)
+        for fail in body.failed:
+            if fail.path not in fetch and fail.path not in deletes:
+                raise ClientError("not_in_plan", f"{fail.path!r} is not in this plan", 409)
         async with self._lock(device_id):
             dev = await self.device(device_id)
 
@@ -990,7 +1011,7 @@ class ClientSessions:
             await asyncio.to_thread(work)
         s.acked(time.monotonic())
         for fail in body.failed:
-            s.failed[fail.path] = f"{fail.error}: {fail.message}".rstrip(": ")
+            s.failed[fail.path] = f"{fail.error}: {fail.message[:500]}".rstrip(": ")
             log.warning("client %s could not take %s: %s", device_id, fail.path, fail.error)
         progress = s.progress()
         self.sync.ctx.bus.publish("client.progress", device_id=device_id, **progress)
@@ -1000,6 +1021,8 @@ class ClientSessions:
         """The client is done with the session (complete, partial or cancelled): what it acked stays committed,
         what it did not stays in the outbox for the next session."""
         s = self.get(device_id, session_id)
+        if s.status == "planning":
+            raise ClientError("not_ready", "the plan is not ready yet", 409)
         async with self._lock(device_id):
             dev = await self.device(device_id)
             dev.state.inventory_cursor += 1
@@ -1043,7 +1066,19 @@ class ClientSessions:
         if s is None:
             return False
         s.cancel = True
+        _stop_stream(s)  # a streaming job waiting for a client that no longer acks stops now
         return True
+
+    def drop_device(self, device_id: str) -> None:
+        """The client was revoked: every session of it ends at once (tickets stop working, jobs stop)."""
+        for s in [s for s in self.sessions.values() if s.device_id == device_id]:
+            self.sessions.pop(s.id, None)
+            _stop_stream(s)
+            for key in (s.id, f"{s.id}:job"):
+                t = self._tasks.pop(key, None)
+                if t is not None and key == s.id:
+                    t.cancel()  # still planning; a running job ends through its stream
+        self._run.pop(device_id, None)
 
     def _lock(self, device_id: str) -> asyncio.Lock:
         return self._locks.setdefault(device_id, asyncio.Lock())
@@ -1053,12 +1088,24 @@ class ClientSessions:
     def events_arrived(self, device_id: str) -> None:
         """New listening data: hand it to the libraries soon (debounced), not only at the client's next sync."""
         old = self._deliver.get(device_id)
+        running = None
         if old is not None and not old.done():
-            old.cancel()
-        self._deliver[device_id] = asyncio.create_task(self._deliver_events(device_id))
+            if device_id in self._debouncing:
+                old.cancel()  # still waiting: this one replaces it
+            else:
+                running = old  # already handing events on: let it finish, then this one follows
+        self._deliver[device_id] = asyncio.create_task(self._deliver_events(device_id, running))
 
-    async def _deliver_events(self, device_id: str) -> None:
-        await asyncio.sleep(self.events_debounce_s)
+    async def _deliver_events(
+        self, device_id: str, after: asyncio.Task[None] | None = None
+    ) -> None:
+        if after is not None:
+            await asyncio.wait([after])
+        self._debouncing.add(device_id)
+        try:
+            await asyncio.sleep(self.events_debounce_s)
+        finally:
+            self._debouncing.discard(device_id)
         if self.open_for(device_id) is not None or self.sync.ctx.jobs.device_busy(device_id):
             return  # a running sync (or the one the client is starting) takes them in its reverse step
         from syncmusic.core.sync import SyncError

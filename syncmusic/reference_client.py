@@ -60,6 +60,7 @@ class ReferenceClient:
         self.card_uid = (
             ""  # the id of the card it syncs (a removable card a USB sync also knows), if any
         )
+        self.templates: list[dict[str, Any]] = []  # from the pairing answer
         self.stream = True  # off: the older protocol of outbox windows (each a session of its own)
 
     # --- state --------------------------------------------------------------------------------------
@@ -121,7 +122,7 @@ class ReferenceClient:
             "os": platform.system()[:32],
             "app": "syncmusic-reference-client",
             "app_version": "1",
-        }
+        } | ({"card_uid": self.card_uid} if self.card_uid else {})
         r = await self.http.post(
             self._url("pair"),
             json={"code": code, "client": info, "capabilities": self.capabilities()},
@@ -129,8 +130,7 @@ class ReferenceClient:
         body = r.json()
         if r.status_code != 201:
             raise ClientProtocolError(r.status_code, body)
-        self.state |= {"token": body["token"], "device_id": body["device_id"]}
-        self.save()
+        await self._paired(body)
         return str(body["device_id"])
 
     async def request_pairing(
@@ -165,9 +165,26 @@ class ReferenceClient:
             if r.status_code != 202 or time.monotonic() > deadline:
                 raise ClientProtocolError(r.status_code, body)
             await asyncio.sleep(body.get("poll_s", ask["poll_s"]))
-        self.state |= {"token": body["token"], "device_id": body["device_id"]}
-        self.save()
+        await self._paired(body)
         return str(body["device_id"])
+
+    async def _paired(self, body: dict[str, Any]) -> None:
+        """Keep the token; take the settings the server kept for this device (a reset install comes back
+        configured), else give the server a copy of ours."""
+        self.state |= {"token": body["token"], "device_id": body["device_id"]}
+        self.templates = list(body.get("templates", []))
+        if body.get("settings"):
+            self.state["settings"] = dict(body["settings"])
+            self.save()
+        else:
+            self.save()
+            await self.set_settings(self.state.get("settings", {}))
+
+    async def set_settings(self, settings: dict[str, Any]) -> None:
+        """Change the app's own settings; the server keeps a copy for re-pairing."""
+        self.state["settings"] = dict(settings)
+        self.save()
+        await self._call("PUT", "me/settings", json={"settings": self.state["settings"]})
 
     # --- sync ---------------------------------------------------------------------------------------
 

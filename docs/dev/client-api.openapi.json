@@ -129,6 +129,20 @@
         "title": "AckRequest",
         "type": "object"
       },
+      "AppSettingsRequest": {
+        "properties": {
+          "settings": {
+            "additionalProperties": true,
+            "title": "Settings",
+            "type": "object"
+          }
+        },
+        "required": [
+          "settings"
+        ],
+        "title": "AppSettingsRequest",
+        "type": "object"
+      },
       "ClientEvent": {
         "additionalProperties": true,
         "description": "One thing the user did on the client. Unknown types and fields are kept (forward compatible).",
@@ -1076,6 +1090,47 @@
           }
         },
         "summary": "Rename"
+      }
+    },
+    "/api/client/v1/me/settings": {
+      "put": {
+        "description": "The app keeps the server's copy of its own settings up to date (handed back on re-pairing).",
+        "operationId": "put_settings_api_client_v1_me_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Settings Api Client V1 Me Settings Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Settings"
       }
     },
     "/api/client/v1/me/token/rotate": {

@@ -9,6 +9,7 @@ import { errorBox, toast, errorMessage, skeleton, emptyState, confirmLeave } fro
 import { NAV, renderNav, initSidebar, refreshSidebar } from "./sidebar.js";
 import { initServerUrls } from "./forms.js";
 import { initBell } from "./bell.js";
+import { initUpdateOverlay } from "./update-overlay.js";
 import { initSearch } from "./search.js";
 import { icon, logo } from "./icons.js";
 import { ejectedText } from "./views/common.js";
@@ -45,6 +46,7 @@ route("/processor-templates", () => import("./views/proctemplates.js"));
 route("/processor-templates/new", () => import("./views/proctemplates.js"));
 route("/processor-templates/:id", () => import("./views/proctemplates.js"));
 route("/settings", () => import("./views/settings.js"));
+route("/settings/:sec", () => import("./views/settings.js"));
 route("/logs", () => import("./views/logs.js"));
 route("/notifications", () => import("./views/notifications.js"));
 route("/activity", () => import("./views/activity.js"));
@@ -123,7 +125,9 @@ async function draw(my, focus) {
   // a newer navigation won while this view's module loaded: it must not become `current` (its actions would answer
   // the newer screen's clicks)
   if (my !== seq) return;
-  const ctx = { params: m.params, query: m.query, path: m.path, hash, rerender: () => rerender(), state: {} };
+  // a late answer of this view (a fetch started in load) redraws only while its own route is still on screen
+  const ctx = { params: m.params, query: m.query, path: m.path, hash, state: {},
+    rerender: () => { if (current && current.ctx.path === ctx.path && current.ctx.hash === ctx.hash) rerender(); } };
   const same = current && current.ctx.path === ctx.path;
   // keep view state on a re-render of the same screen; another query (a "Copy" draft vs a blank "New")
   // is another screen
@@ -233,6 +237,7 @@ function dispatch(ev) {
   else if ((mod.refreshOn || []).some((p) => ev.type.startsWith(p))) rerender();
 }
 onEvent(dispatch);
+initUpdateOverlay();
 // Eject after a sync: wherever the user is
 onEvent((ev) => {
   if (ev.type === "client.pair_request" && ev.data.status === "pending" && !/^#\/devices\/?$/.test(location.hash)) toast(t("app.pair_request"));

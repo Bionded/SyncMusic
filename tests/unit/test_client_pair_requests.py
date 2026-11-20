@@ -274,6 +274,23 @@ async def test_approve_adds_wifi_to_the_device_of_the_same_card(setup):
     dev = next(d for d in listed if d["id"] == "card-player")
     assert dev["connected"] and dev["connection"] == "wifi" and dev["kind"] == "network"
     assert dev["wifi_paired"] and not dev["can_format"]
+    # the app has not talked for longer than the keep-alive window (or since a restart): offline,
+    # still paired - never 'connected (Wi-Fi)' from the pairing alone
+    app.clients._heard["card-player"] -= 3600
+    dev = next(
+        d for d in (await c.get("/api/v1/devices")).json()["registered"] if d["id"] == "card-player"
+    )
+    assert not dev["connected"] and dev["connection"] is None and dev["wifi_paired"]
+    app.clients._heard.clear()  # a server restart
+    dev = next(
+        d for d in (await c.get("/api/v1/devices")).json()["registered"] if d["id"] == "card-player"
+    )
+    assert not dev["connected"]
+    assert (await c.get(f"{C}/me", headers=bearer(body["token"]))).status_code == 200
+    dev = next(
+        d for d in (await c.get("/api/v1/devices")).json()["registered"] if d["id"] == "card-player"
+    )
+    assert dev["connected"] and dev["connection"] == "wifi"
 
 
 async def test_merge_a_wifi_record_into_the_usb_device_of_the_same_card(setup):
@@ -383,3 +400,41 @@ async def test_merge_a_wifi_record_into_the_usb_device_of_the_same_card(setup):
         assert sorted(manifest_io.read(root).items) == ["music/a", "music/b"]
     assert not (moved / manifest_io.MERGED_MARK).exists()
     assert dev.card_manifest() is not None
+
+
+async def test_merge_keeps_the_live_pairing_over_a_revoked_one(setup):
+    """The kept record has an old revoked pairing: merging must move the other record's live pairing onto
+    it (not drop it), so the app keeps working."""
+    from syncmusic.core.models import DeviceConfig, DeviceIdentity
+
+    app, c = setup
+    await allow(c)
+    await app.sync.store.put_device(
+        DeviceConfig(
+            id="card-player",
+            name="Card player",
+            type="hiby_compas",
+            identity=DeviceIdentity(manifest_device_id="0f1e2d3c-eeee"),
+        )
+    )
+    await app.sync.store.db.execute(
+        "INSERT INTO client_pairings (device_id, client_uid, name, client, capabilities, token_sha256, "
+        "created_at, revoked_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
+        (
+            "card-player",
+            "11111111-aaaa-4bbb-8ccc-0000000000aa",
+            "Card player",
+            "{}",
+            "{}",
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-02T00:00:00+00:00",
+        ),
+    )
+    req = await ask(c, uid="11111111-aaaa-4bbb-8ccc-000000000016", card_uid="0f1e2d3c-eeee")
+    wifi_id = (await c.post(f"/api/v1/clients/requests/{req['request_id']}/approve")).json()[
+        "device_id"
+    ]
+    token = (await poll(c, req)).json()["token"]
+    await app.sync.store.merge_device("card-player", wifi_id)
+    me = await c.get(f"{C}/me", headers=bearer(token))
+    assert me.status_code == 200 and me.json()["device_id"] == "card-player", me.text

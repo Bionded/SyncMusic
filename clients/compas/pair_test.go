@@ -4,6 +4,7 @@ package main
 import (
 	"encoding/binary"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -333,5 +334,120 @@ func TestWaitsForTheRegistrationOnTheServer(t *testing.T) {
 	}
 	if a.c.st.Name != "Kitchen" {
 		t.Fatalf("server name not taken: %q", a.c.st.Name)
+	}
+}
+
+func TestResetDeletesOnlyTheAppData(t *testing.T) {
+	root := t.TempDir()
+	data := filepath.Join(root, ".apps-data", "syncmusic")
+	keep := map[string]string{
+		".apps/syncmusic/syncmusic":        "program",
+		".syncmusic/manifest.jsonl":        "{}",
+		"Music/A/01.mp3":                   "mp3",
+		"Playlists/Mine.m3u":               "list",
+		".apps-data/other/state.json":      "other app",
+		".apps-data/syncmusic/startup.log": "log",
+	}
+	gone := []string{"state.json", "state.json.bak", "settings.json", "pair.txt", "update/x.bin"}
+	for p, v := range keep {
+		writeFile(t, filepath.Join(root, p), v)
+	}
+	for _, p := range gone {
+		writeFile(t, filepath.Join(data, p), "x")
+	}
+	c := &Client{root: root, data: data, st: State{UID: "old", Server: "http://x/", Token: "t", DeviceID: "d"}}
+	if err := c.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	for p, v := range keep {
+		if b, err := os.ReadFile(filepath.Join(root, p)); err != nil || string(b) != v {
+			t.Fatalf("%s changed: %q %v", p, b, err)
+		}
+	}
+	for _, p := range []string{"state.json.bak", "settings.json", "pair.txt", "update"} {
+		if _, err := os.Stat(filepath.Join(data, p)); !os.IsNotExist(err) {
+			t.Fatalf("%s is still there", p)
+		}
+	}
+	st, _ := loadState(data)
+	if st.UID == "" || st.UID == "old" || st.Token != "" || st.Server != "" || c.st.Files == nil {
+		t.Fatalf("not a fresh install: %+v", st)
+	}
+	if loadSettings(data) != defaultSettings() {
+		t.Fatal("settings not reset")
+	}
+}
+
+func TestPairingRestoresTheSettingsTheServerKept(t *testing.T) {
+	var pushed []byte
+	answer := `{"device_id":"dev1","token":"smc_a","settings":{"dim_after_s":60,"after_sync":"poweroff","sync_on_start":true}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/v1/pair":
+			w.WriteHeader(201)
+			_, _ = w.Write([]byte(answer))
+		case "/api/client/v1/me/settings":
+			pushed, _ = io.ReadAll(r.Body)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+	c := &Client{root: t.TempDir(), data: t.TempDir(), http: srv.Client(), st: State{UID: "u"}}
+	if err := c.Pair(srv.URL, "12345678", playerName); err != nil {
+		t.Fatal(err)
+	}
+	s := loadSettings(c.data)
+	want := defaultSettings()
+	want.DimAfterS, want.AfterSync, want.SyncOnStart = 60, afterPowerOff, true
+	if s != want || pushed != nil {
+		t.Fatalf("restored %+v pushed %s", s, pushed)
+	}
+	// a server without a copy gets the app's settings
+	answer = `{"device_id":"dev1","token":"smc_b","settings":{}}`
+	if err := c.Pair(srv.URL, "12345678", playerName); err != nil {
+		t.Fatal(err)
+	}
+	var got struct{ Settings Settings }
+	if err := json.Unmarshal(pushed, &got); err != nil || got.Settings != want {
+		t.Fatalf("pushed %s", pushed)
+	}
+}
+
+func writeFile(t *testing.T, p, v string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(v), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResetFromSettingsAsksThenStartsOver(t *testing.T) {
+	data := t.TempDir()
+	a := &App{c: &Client{root: t.TempDir(), data: data, st: State{UID: "u", Token: "t", Server: "http://x/"}}}
+	a.set.DimAfterS = 60
+	pressIn := func(p page, label string) {
+		t.Helper()
+		for _, b := range p.buttons {
+			if b.label == label {
+				b.act()
+				return
+			}
+		}
+		t.Fatalf("no button %q on %q", label, p.title)
+	}
+	pressIn(a.settings(), T("set.reset"))
+	if p := a.build(); p.title != T("reset.title") {
+		t.Fatalf("no confirmation: %q", p.title)
+	}
+	pressIn(a.build(), T("btn.back"))
+	if a.c.st.Token != "t" {
+		t.Fatal("back reset the app")
+	}
+	pressIn(a.settings(), T("set.reset"))
+	pressIn(a.build(), T("reset.yes"))
+	if p := a.build(); p.title != T("reset.done") || a.c.st.Token != "" || a.c.st.UID == "u" || a.set != defaultSettings() {
+		t.Fatalf("after reset: %q %+v", p.title, a.c.st)
 	}
 }

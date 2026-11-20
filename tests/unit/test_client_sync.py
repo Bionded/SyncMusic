@@ -733,6 +733,67 @@ async def test_a_client_app_gets_the_newer_release_the_server_holds(phone, monke
     assert (await c.get(f"{C}/app-update", params=other, headers=h)).json()["available"] is False
 
 
+async def test_a_connecting_app_gets_this_releases_build_without_a_download_click(
+    phone, monkeypatch
+):
+    from syncmusic.infra import client_apps
+    from tests.unit.test_client_app_download import GOOD, _releases
+
+    app, c, _device_id, h = phone
+    monkeypatch.setattr(client_apps, "running_binary", lambda: None)
+    monkeypatch.setattr(client_apps, "running_version", lambda: "0.5.0")
+    monkeypatch.setattr(app.config, "update_repo", "example/SyncMusic")
+    zips = {"syncmusic-compas-1.3.0-hard.zip": GOOD, "syncmusic-compas-1.3.0-soft.zip": GOOD}
+    newer = {"syncmusic-compas-2.0.0-hard.zip": GOOD}  # a later release: never taken by this server
+    releases, transport = _releases({"0.6.0": newer, "0.5.0": zips})
+    calls = []
+
+    async def fake_releases(repo):
+        calls.append(repo)
+        return releases
+
+    real = client_apps.install
+    monkeypatch.setattr(app.update_checker, "releases", fake_releases)
+    monkeypatch.setattr(
+        client_apps,
+        "install",
+        lambda rel, name, data, _t, variant: real(rel, name, data, transport, variant),
+    )
+    q = {"app": "syncmusic-compas", "version": "1.2.0", "variant": "soft"}
+    doc = (await c.get(f"{C}/app-update", params=q, headers=h)).json()
+    assert doc["available"] and doc["version"] == "1.3.0", doc
+    assert app.app_fetch.state == "done"
+    got = (await c.get("/api/v1/settings/compas-app")).json()
+    assert got["builds"] == {"hard": "1.3.0", "soft": "1.3.0"} and got["auto"]["state"] == "done"
+    # done once per server version: an up-to-date app does not trigger another download
+    await c.get(f"{C}/app-update", params={**q, "version": "1.3.0"}, headers=h)
+    assert len(calls) == 1
+
+
+async def test_an_offline_server_offers_nothing_and_logs_once(phone, monkeypatch, caplog):
+    import httpx
+
+    from syncmusic.infra import client_apps
+
+    app, c, _device_id, h = phone
+    monkeypatch.setattr(client_apps, "running_binary", lambda: None)
+    monkeypatch.setattr(app.config, "update_repo", "example/SyncMusic")
+    calls = []
+
+    async def offline(repo):
+        calls.append(repo)
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(app.update_checker, "releases", offline)
+    q = {"app": "syncmusic-compas", "version": "1.2.0"}
+    for _ in range(2):
+        r = await c.get(f"{C}/app-update", params=q, headers=h)
+        assert r.status_code == 200 and r.json()["available"] is False
+    assert len(calls) == 1  # retried only after an hour
+    assert app.app_fetch.state == "failed"
+    assert sum("could not be downloaded" in m for m in caplog.messages) == 1
+
+
 async def test_a_client_app_keeps_its_own_build(phone, monkeypatch):
     from syncmusic.infra import client_apps
 
@@ -1059,3 +1120,163 @@ async def test_a_streaming_session_that_ends_early_stops_its_job(phone, monkeypa
     )
     done = await stream_deliver(c, h, view, dev, [0])
     assert len([f for f in done["fetched"] if f["role"] == "track"]) == 1
+
+
+async def _stuck_stream(app, c, h, monkeypatch):
+    """A streaming session whose client took nothing: its job waits in put_track for the client."""
+    from syncmusic.core import client_sessions
+
+    monkeypatch.setattr(client_sessions, "STREAM_AHEAD_FILES", 1)
+    caps = {**CAPS, "stream": True}
+    view = await sync(c, h, {"capabilities": caps, "inventory": {"kind": "full", "items": []}})
+    sid = view["session_id"]
+    s = app.client_sessions.sessions[sid]
+    return sid, s.job_id
+
+
+async def test_stop_on_the_server_ends_a_stream_whose_client_vanished(phone, monkeypatch):
+    app, c, device_id, h = phone
+    _sid, job_id = await _stuck_stream(app, c, h, monkeypatch)
+    assert app.client_sessions.cancel(device_id)
+    info = await asyncio.wait_for(app.jobs.wait(job_id), 10)
+    assert info.status.value in ("cancelled", "succeeded"), info
+    assert not app.jobs.device_busy(device_id)
+
+
+async def test_a_silent_streaming_client_is_ended_after_the_idle_time(phone, monkeypatch):
+    from syncmusic.core import client_sessions
+
+    app, c, device_id, h = phone
+    sid, job_id = await _stuck_stream(app, c, h, monkeypatch)
+    monkeypatch.setattr(client_sessions, "STREAM_IDLE_S", 0.0)
+    await asyncio.sleep(0.01)
+    assert app.client_sessions.open_for(device_id) is None
+    info = await asyncio.wait_for(app.jobs.wait(job_id), 10)
+    assert info.status.value in ("cancelled", "succeeded"), info
+    r = await c.get(f"{C}/sync/{sid}", headers=h)
+    assert r.status_code == 410
+
+
+async def test_revoking_a_client_ends_its_sessions_and_tickets(phone, monkeypatch):
+    app, c, device_id, h = phone
+    sid, job_id = await _stuck_stream(app, c, h, monkeypatch)
+    r = await c.get(f"{C}/sync/{sid}/plan?section=fetch", headers=h)
+    item = r.json()["items"][0]
+    assert (await c.get(f"{C}/{item['url']}")).status_code == 200
+    r = await c.post(f"/api/v1/clients/{device_id}/revoke")
+    assert r.status_code == 200, r.text
+    assert (await c.get(f"{C}/{item['url']}")).status_code == 404
+    info = await asyncio.wait_for(app.jobs.wait(job_id), 10)
+    assert info.status.value in ("cancelled", "succeeded"), info
+    assert not app.client_sessions.sessions
+
+
+async def test_finish_while_planning_is_refused(phone):
+    app, c, device_id, h = phone
+    r = await c.post(
+        f"{C}/sync",
+        json={"capabilities": CAPS, "inventory": {"kind": "full", "items": []}},
+        headers=h,
+    )
+    sid = r.json()["session_id"]
+    app.client_sessions.sessions[sid].status = "planning"  # hold it in planning for the check
+    r = await c.post(f"{C}/sync/{sid}/finish", json={"status": "cancelled"}, headers=h)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "not_ready", r.text
+    assert sid in app.client_sessions.sessions
+
+
+async def test_negative_cursor_and_unknown_failed_paths_are_refused(phone):
+    app, c, device_id, h = phone
+    view = await sync(c, h)
+    sid = view["session_id"]
+    r = await c.get(f"{C}/sync/{sid}/plan?section=fetch&cursor=-1", headers=h)
+    assert r.status_code == 400, r.text
+    body = {"failed": [{"path": "Music/not-planned.mp3", "error": "io", "message": "x"}]}
+    r = await c.post(f"{C}/sync/{sid}/ack", json=body, headers=h)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "not_in_plan", r.text
+    assert app.client_sessions.sessions[sid].failed == {}
+    item = view["plan"]["fetch"][0]
+    body = {"failed": [{"path": item["path"], "error": "io", "message": "y" * 5000}]}
+    assert (await c.post(f"{C}/sync/{sid}/ack", json=body, headers=h)).status_code == 200
+    assert len(app.client_sessions.sessions[sid].failed[item["path"]]) < 600
+
+
+async def test_new_events_do_not_cancel_a_delivery_in_progress(phone, monkeypatch):
+    app, c, device_id, h = phone
+    cs = app.client_sessions
+    cs.events_debounce_s = 0
+    gate, calls = asyncio.Event(), []
+
+    async def update_sync(dev_id, only_if_changed=False):
+        calls.append(dev_id)
+        if len(calls) == 1:
+            await gate.wait()
+
+    monkeypatch.setattr(app.sync, "update_sync", update_sync)
+    cs.events_arrived(device_id)
+    first = cs._deliver[device_id]
+    for _ in range(100):
+        if calls:
+            break
+        await asyncio.sleep(0.01)
+    cs.events_arrived(device_id)
+    await asyncio.sleep(0.05)
+    assert not first.cancelled() and len(calls) == 1
+    gate.set()
+    await asyncio.wait_for(cs._deliver[device_id], 5)
+    assert first.done() and not first.cancelled() and len(calls) == 2
+
+
+async def test_wifi_data_goes_with_the_device_and_orphans_are_swept(phone, caplog):
+    app, c, device_id, h = phone
+    await sync(c, h)
+    net = app.config.data_dir / "network"
+    for name in (".shadow", ".gen"):
+        (net / f"{device_id}{name}").mkdir(parents=True, exist_ok=True)
+    (net / f"{device_id}.diagnostics.json").write_text("{}")
+    orphan = net / "a1b2c3d4e5f6.shadow" / "A"
+    orphan.mkdir(parents=True)
+    (orphan / "x.mp3").write_bytes(b"x" * 1000)
+    (net / "a1b2c3d4e5f6").mkdir()
+    caplog.set_level("INFO")
+    await app.housekeeping()
+    assert not (net / "a1b2c3d4e5f6.shadow").exists() and not (net / "a1b2c3d4e5f6").exists()
+    assert "a1b2c3d4e5f6" in caplog.text
+    assert (net / device_id).is_dir() and (net / f"{device_id}.shadow").is_dir()  # registered: kept
+    assert (await c.delete(f"/api/v1/devices/{device_id}")).status_code < 300
+    assert list(net.iterdir()) == []
+
+
+async def test_files_the_manifest_no_longer_lists_leave_the_outbox(phone):
+    app, c, device_id, h = phone
+    await sync(c, h)
+    outbox = app.config.data_dir / "network" / device_id
+    stale = outbox / "Old" / "gone.mp3"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"x" * 100)
+    view = await sync(c, h)
+    assert not stale.exists() and not stale.parent.exists()
+    assert all(f["path"] != "Old/gone.mp3" for f in view.get("fetch", []))
+
+
+async def test_storage_shows_wifi_player_data_and_cleans_it(phone):
+    app, c, device_id, h = phone
+    await sync(c, h)
+    net = app.config.data_dir / "network"
+    waiting = net / device_id / "A" / "w.mp3"
+    waiting.parent.mkdir(parents=True, exist_ok=True)
+    waiting.write_bytes(b"w" * 500)
+    (net / f"{device_id}.shadow").mkdir(exist_ok=True)
+    (net / f"{device_id}.shadow" / "k.mp3").write_bytes(b"k" * 300)
+    (net / "0ld0ld0ld0ld").mkdir()
+    (net / "0ld0ld0ld0ld" / "x").write_bytes(b"x" * 700)
+    part = next(
+        p for p in (await c.get("/api/v1/system/storage")).json()["parts"] if p["id"] == "network"
+    )
+    labels = {i["id"]: i["label"] for i in part["items"]}
+    assert labels["0ld0ld0ld0ld"].endswith("(deleted)") and device_id in labels
+    r = await c.post("/api/v1/system/storage/network/clear")
+    assert r.status_code == 200, r.text
+    assert not (net / "0ld0ld0ld0ld").exists() and not waiting.exists()
+    assert (net / f"{device_id}.shadow" / "k.mp3").exists()  # the database is built from it
+    assert (net / device_id / ".syncmusic").is_dir()  # its state stays

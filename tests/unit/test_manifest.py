@@ -358,6 +358,36 @@ def test_torn_appended_line_is_dropped_and_forces_compaction(tmp_path):
     assert len(_fresh_read(tmp_path).items) == 399
 
 
+def test_appended_commit_cut_at_a_line_boundary_is_dropped_whole(tmp_path):
+    m = _manifest(400)
+    mf.write(tmp_path, m)
+    m = mf.read(tmp_path)
+    for i in range(3):
+        m.items.pop(f"nav/id{i}")
+    m.items["nav/id5"] = m.items["nav/id5"].model_copy(update={"size": 9})
+    mf.write(tmp_path, m)
+    path = tmp_path / mf.MANIFEST_PATH
+    lines = _lines(tmp_path)
+    assert json.loads(lines[-5]) == {"type": "append", "n": 4}
+    path.write_text(
+        "\n".join(lines[:-2]) + "\n", encoding="utf-8"
+    )  # power cut after two of four lines
+    got = _fresh_read(tmp_path)
+    assert (
+        len(got.items) == 400 and got.items["nav/id5"].size != 9
+    )  # nothing of the cut commit is kept
+    got.items.pop("nav/id9")
+    mf.write(tmp_path, got)  # cut commit: rewritten in full, not appended after it
+    assert not any('"append"' in line for line in _lines(tmp_path))
+    assert len(_fresh_read(tmp_path).items) == 399
+
+
+def test_append_marker_without_count_is_read_as_before(tmp_path):
+    m = _manifest(3)
+    text = mf.dumps(m) + '{"type":"append"}\n{"type":"delete","lib":"L1","item_id":"id0"}\n'
+    assert set(mf.loads(text).items) == {"nav/id1", "nav/id2"}
+
+
 def test_torn_base_line_still_raises(tmp_path):
     m = _manifest(3)
     mf.write(tmp_path, m)
@@ -467,7 +497,7 @@ def test_appended_items_reach_the_backup(tmp_path):
     mf.read(tmp_path)
     m.items[next(iter(m.items))].size = 4242
     mf.write(tmp_path, m)
-    assert b'{"type":"append"}' in (tmp_path / mf.MANIFEST_PATH).read_bytes()
+    assert b'{"type":"append",' in (tmp_path / mf.MANIFEST_PATH).read_bytes()
     _damage(tmp_path, at=30)
     assert mf.read(tmp_path) == m
 

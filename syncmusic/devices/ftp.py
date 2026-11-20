@@ -157,12 +157,16 @@ class FtpDevice(Device):
             ftplib.FTP_TLS(timeout=s.timeout_s) if s.tls else ftplib.FTP(timeout=s.timeout_s)
         )
         ftp.encoding = "utf-8"
-        ftp.connect(s.host, s.port)
-        user = s.username or "anonymous"
-        ftp.login(user, s.password.get_secret_value() if s.username else "anonymous@")
-        if isinstance(ftp, ftplib.FTP_TLS):
-            ftp.prot_p()
-        ftp.set_pasv(s.passive)
+        try:
+            ftp.connect(s.host, s.port)
+            user = s.username or "anonymous"
+            ftp.login(user, s.password.get_secret_value() if s.username else "anonymous@")
+            if isinstance(ftp, ftplib.FTP_TLS):
+                ftp.prot_p()
+            ftp.set_pasv(s.passive)
+        except BaseException:
+            ftp.close()  # a refused login must not leave the connection open on the server
+            raise
         return ftp
 
     def _call(self, fn: Callable[[ftplib.FTP], T]) -> T:
@@ -235,8 +239,27 @@ class FtpDevice(Device):
         self._makedirs(ftp, folder)
         tmp = self._abs(posixpath.join(folder, TMP_PREFIX + name))
         ftp.storbinary(f"STOR {tmp}", data)
-        self._delete(ftp, rel)  # some servers refuse to rename onto an existing file
-        ftp.rename(tmp, self._abs(rel))
+        target = self._abs(rel)
+        try:
+            ftp.rename(tmp, target)
+            return
+        except ftplib.error_perm:
+            pass  # some servers refuse to rename onto an existing file
+        old = self._abs(posixpath.join(folder, TMP_PREFIX + "old-" + name))
+        try:
+            ftp.rename(target, old)
+        except ftplib.error_perm:
+            old = ""  # no old file (or it cannot move): the rename below says why
+        try:
+            ftp.rename(tmp, target)
+        except BaseException:
+            if old:
+                with contextlib.suppress(ftplib.all_errors):
+                    ftp.rename(old, target)  # keep the old copy in place
+            raise
+        if old:
+            with contextlib.suppress(ftplib.error_perm):
+                ftp.delete(old)
 
     def _delete(self, ftp: ftplib.FTP, rel: str) -> None:
         with contextlib.suppress(ftplib.error_perm):  # not there

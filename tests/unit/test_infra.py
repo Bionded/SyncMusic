@@ -266,3 +266,26 @@ async def test_job_progress_carries_the_stored_log_line():
             lines.append(ev.data["log_line"])
     assert lines == [runner.get(info.id).log[0], None]
     assert lines[0].endswith(" copying Скрябін – Група крові") and lines[0][:4].isdigit()
+
+
+async def test_a_job_cancelled_while_queued_for_the_device_lock_ends_at_once():
+    bus = EventBus()
+    jobs = JobRunner(bus, max_workers=2)
+    gate = asyncio.Event()
+
+    async def first(ctx):
+        await gate.wait()
+
+    async def second(ctx):
+        raise AssertionError("a cancelled job never runs")
+
+    j1 = jobs.submit("sync", "a", first, device_id="d1")
+    j2 = jobs.submit("sync", "b", second, device_id="d1")
+    await asyncio.sleep(0.05)
+    assert jobs.cancel(j2.id)
+    info = await asyncio.wait_for(jobs.wait(j2.id), 2)
+    assert info.status == JobStatus.CANCELLED and info.finished_at is not None
+    gate.set()
+    assert (await jobs.wait(j1.id)).status == JobStatus.SUCCEEDED
+    j3 = jobs.submit("sync", "c", first, device_id="d1")  # the lock was not leaked
+    assert (await asyncio.wait_for(jobs.wait(j3.id), 2)).status == JobStatus.SUCCEEDED

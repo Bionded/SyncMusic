@@ -327,6 +327,27 @@ class ClientDevice(FileDeviceMixin, Device):
                 d.rmdir()
         return freed
 
+    def prune_outbox(self) -> int:
+        """Drop outbox files the device's manifest no longer lists (left by a cancelled or replaced plan, or an
+        older version); they would never be fetched. Returns the number removed. Without a readable manifest
+        nothing is touched."""
+        try:
+            m = manifest_io.read(self.mount)
+        except manifest_io.ManifestError:
+            return 0
+        if m is None:
+            return 0
+        wanted = {e.path for e in m.items.values()} | set(m.playlist_paths.values())
+        gone = [p for p in self._walk() if self._rel(p) not in wanted]
+        for p in gone:
+            p.unlink(missing_ok=True)
+        if gone:
+            for d in sorted((d for d in self.mount.rglob("*") if d.is_dir()), reverse=True):
+                if not d.name.startswith(".") and not any(d.iterdir()):
+                    d.rmdir()
+            log.info("%s: %d stale files dropped from the outbox", self.config.name, len(gone))
+        return len(gone)
+
     def delivered(self, rel: str) -> None:
         """The client acked `rel`: it holds it now, the outbox copy goes (and its empty folders)."""
         p = self.mount / rel
@@ -337,10 +358,10 @@ class ClientDevice(FileDeviceMixin, Device):
         if p.is_file() and self._is_playlist(rel):
             self.state.playlist_hashes[rel] = _sha256(p)
         if p.is_file() and self.settings.player_database != "none":
-            keep = self._shadow / rel  # the database is built over every file the client holds
-            keep.parent.mkdir(parents=True, exist_ok=True)
-            keep.unlink(missing_ok=True)
-            os.link(p, keep)
+            from syncmusic.devices.HibyR1 import compas_tagset
+
+            # the database is built over every file the client holds: keep what the indexer reads of it
+            compas_tagset.tag_copy(p, self._shadow / rel)
         p.unlink(missing_ok=True)
         d = p.parent
         while d.resolve() != base and d.is_dir() and not any(d.iterdir()):
@@ -457,7 +478,8 @@ class ClientDevice(FileDeviceMixin, Device):
 
     @property
     def _shadow(self) -> Path:
-        """Hard links to the files the client already took (the outbox keeps only what waits)."""
+        """Tag copies (sparse: tags and stream headers only) of the files the client already took, which its
+        player database is built from (the outbox keeps only what waits)."""
         return self._side("shadow")
 
     def model_capabilities(self) -> DeviceCapabilities:

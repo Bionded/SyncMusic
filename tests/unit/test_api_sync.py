@@ -754,3 +754,30 @@ async def test_browse_a_connected_disk_from_its_root(env, tmp_path):
     assert r.status_code == 404
     r = await c.post("/api/v1/browse", json={"source": "disk", "disk": "/dev/sdx", "path": "/"})
     assert r.status_code == 404
+
+
+async def test_wifi_plan_is_dropped_when_the_disk_is_plugged_in(env, tmp_path):
+    """A plan diffed against the Wi-Fi app's files is outdated once the player shows up over USB: applying
+    it to the disk would delete or skip the wrong files. A plan made against the disk itself stays."""
+    app, c = env
+    await _register(c, tmp_path / "p", name="P", on_connect="manual")
+    disk = BlockDeviceInfo(name="sdz", path="/dev/sdz")
+    usb = await app.sync.plan("p")
+    await app.sync.on_disk_added(ConnectedDisk(disk=disk, device_id="p"))
+    assert usb.plan.id in app.sync.plans
+    usb.network = True  # as if made against the Wi-Fi side
+    await app.sync.on_disk_added(ConnectedDisk(disk=disk, device_id="p"))
+    assert usb.plan.id not in app.sync.plans
+    r = await c.post(f"/api/v1/plans/{usb.plan.id}/apply", json={"confirm": True})
+    assert r.status_code == 404, r.text
+
+
+async def test_folder_device_with_a_paired_app_uses_its_folder(env, tmp_path):
+    """A device registered by a folder that is there is synced through that folder, even with a paired
+    Wi-Fi app; only when the folder is gone is it reached over Wi-Fi."""
+    app, c = env
+    await _register(c, tmp_path / "f", name="F", on_connect="manual")
+    app.sync.wifi_ids = {"f"}
+    assert (await app.sync.config("f")).type != "client"
+    (tmp_path / "f").rename(tmp_path / "gone")
+    assert (await app.sync.config("f")).type == "client"

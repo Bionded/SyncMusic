@@ -16,8 +16,6 @@ ASSETS = [
     "syncmusic-desktop-1.2.3-4-linux-aarch64",
     "syncmusic-compas-1.2.3-4-hard.zip",
     "syncmusic-compas-1.2.3-4-soft.zip",
-    "compas-sdtool-linux-x86_64",
-    "compas-sdtool-linux-arm64",
     "SHA256SUMS",
 ]
 
@@ -35,6 +33,10 @@ def test_table_links_every_asset_of_the_tag() -> None:
     assert "ghcr.io/owner/repo:v1.2.3-4" in out
     assert "--version 1.2.3-4" in out
     assert out.index("hard.zip") < out.index("soft.zip")
+    assert "compas-sdtool" not in out
+    table_end = out.index("\n\n", out.index("| What"))
+    assert "SHA256SUMS" not in out[:table_end]
+    assert out[table_end:].lstrip().startswith("Checksums: [SHA256SUMS]")
 
 
 def test_check_passes_with_all_assets_and_names_a_missing_one(tmp_path: Path) -> None:

@@ -1,4 +1,5 @@
 // Helpers shared by several screens.
+import { local, session } from "../storage.js";
 import { t, addStrings } from "../i18n.js";
 import { html, bytes } from "../dom.js";
 import { badge, toast } from "../ui.js";
@@ -218,7 +219,7 @@ export function deviceTips(type, docsBase) {
   const tips = DEVICE_TIPS[type];
   if (!tips) return "";
   let closed = [];
-  try { closed = JSON.parse(localStorage.getItem(TIPS_CLOSED) || "[]"); } catch { /* a broken value: open */ }
+  try { closed = JSON.parse(local.get(TIPS_CLOSED) || "[]"); } catch { /* a broken value: open */ }
   return html`<details class="card dev-card dev-tips" id="deviceTips" data-device-tips="${type}" ${closed.includes(type) ? "" : "open"}>
     <summary><h2>${t("tips.head")}</h2></summary>
     <ul>${tips.keys.map((k) => html`<li data-tip="${k}">${t(`tips.${type}.${k}`)}</li>`)}</ul>
@@ -229,11 +230,11 @@ document.addEventListener("toggle", (e) => {
   const el = e.target;
   if (!(el instanceof HTMLElement) || !el.dataset?.deviceTips) return;
   let closed = [];
-  try { closed = JSON.parse(localStorage.getItem(TIPS_CLOSED) || "[]"); } catch { /* start over */ }
+  try { closed = JSON.parse(local.get(TIPS_CLOSED) || "[]"); } catch { /* start over */ }
   const type = el.dataset.deviceTips;
   closed = closed.filter((x) => x !== type);
   if (!el.open) closed.push(type);
-  localStorage.setItem(TIPS_CLOSED, JSON.stringify(closed));
+  local.set(TIPS_CLOSED, JSON.stringify(closed));
 }, true);
 
 // the "can be unplugged" toast; a HiBy's adds the reboot hint once per browser session
@@ -247,8 +248,8 @@ export function betaBadge(type) {
 
 export function ejectedText(cfg, text, notice = cfg.notice) {
   if (notice) text = `${text} ${notice}`;
-  if (cfg.type !== "hiby" || sessionStorage.getItem("hibyRebootHint")) return text;
-  sessionStorage.setItem("hibyRebootHint", "1");
+  if (cfg.type !== "hiby" || session.get("hibyRebootHint")) return text;
+  session.set("hibyRebootHint", "1");
   return `${text} ${t("hiby.reboot")}`;
 }
 

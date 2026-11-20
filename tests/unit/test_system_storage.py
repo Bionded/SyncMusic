@@ -217,3 +217,23 @@ async def test_free_memory_drops_only_keep_plans(env):
     assert (await c.post("/api/v1/system/resources/free")).status_code == 200
     assert set(app.sync.plans) == {"a", "t"}
     assert (await c.get("/api/v1/plans/k")).status_code == 404
+
+
+async def test_runtime_remove_old_versions(env, monkeypatch, tmp_path):
+    from syncmusic.infra import self_update as su
+
+    _app, c = env
+    rt = tmp_path / "runtime"
+    for d in ("1-old", "2-cur"):
+        (rt / d).mkdir(parents=True)
+        (rt / d / ".complete").touch()
+        _write(rt / d / "lib", 300)
+    binary = tmp_path / "syncmusic"
+    binary.write_bytes(b"ID=2-cur\n")
+    monkeypatch.setattr(su, "running_binary", lambda: binary)
+    monkeypatch.setattr(su, "running_runtime", lambda: rt / "2-cur")
+    parts = _parts((await c.get("/api/v1/system/storage")).json())
+    assert parts["runtime"]["action"] == "Remove old versions"
+    r = await c.post("/api/v1/system/storage/runtime/clear")
+    assert r.status_code == 200 and r.json()["freed"] == 300, r.text
+    assert sorted(p.name for p in rt.iterdir()) == ["2-cur"]

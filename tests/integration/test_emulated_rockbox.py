@@ -1,7 +1,7 @@
-"""Acceptance on an emulated Rockbox iPod mini: the scenario of tests/hardware/test_rockbox_acceptance.py -
+"""Acceptance on an emulated Rockbox iPod mini: the scenario of tests/scenarios/rockbox.py -
 format keeps the partition table, the firmware partition and /.rockbox; music from the compose stack's Navidrome
 as MP3 + .m3u8; no-op re-run; incremental rule change both ways; synthetic playback.log read and rotated. Then the
-play log switch and Rename of tests/hardware/test_rockbox_acceptance.py."""
+play log switch and Rename of tests/scenarios/rockbox.py."""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ from tests.emulated import (
     sh,
 )
 from tests.factories import own_rules
-from tests.hardware.test_probe_mount import rockbox_probe_scenario
-from tests.hardware.test_rockbox_acceptance import play_log_rename_scenario, rockbox_scenario
+from tests.scenarios.probe_mount import rockbox_probe_scenario
+from tests.scenarios.rockbox import play_log_rename_scenario, rockbox_scenario
 
 pytestmark = [pytest.mark.integration, pytest.mark.emulated, needs_sudo]
 

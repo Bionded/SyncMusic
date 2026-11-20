@@ -1,5 +1,5 @@
 """Resume an interrupted sync on emulated devices against the compose Navidrome: the mount is pulled away
-in the middle of the sync (like an unplug, tests/hardware/test_mount_lost.py); the checkpoints before it stay on the
+in the middle of the sync (like an unplug, tests/scenarios/mount_lost.py); the checkpoints before it stay on the
 device, the next plan says it resumes, keeps them and writes only the rest, and the result is the same as an
 uninterrupted sync of the same rules."""
 

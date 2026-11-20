@@ -1647,6 +1647,7 @@ class AppFacade:
             # installing from the app: the single-file binaries (Docker and source installs: the notice only)
             "installable": self.app.can_self_update(),
             "pending": self.app.update_pending,
+            "progress": self.app.update_progress,
             "jobs": sum(1 for j in self.app.jobs.jobs() if j.finished_at is None),
         }
 
@@ -1655,7 +1656,7 @@ class AppFacade:
         return self._updates()
 
     async def check_updates(self) -> dict[str, Any]:
-        await self.app.check_updates()
+        await self.app.check_updates(install=False)
         return await self.updates()
 
     async def device_allowlist(self, device_ids: list[str] | None = None) -> str:
@@ -1745,7 +1746,9 @@ class AppFacade:
         rows = await self.app.db.fetchall(
             "SELECT library_id, length(data) AS size FROM snapshots ORDER BY size DESC"
         )
-        runtime = self_update.SERVICE_RUNTIME
+        current = self_update.running_runtime()
+        runtime = current.parent if current is not None else self_update.SERVICE_RUNTIME
+        names = {d.id: d.name for d in await self.app.store.devices()}
 
         def build() -> list[storage.Part]:
             parts = [
@@ -1813,13 +1816,26 @@ class AppFacade:
                     action="Clear",
                 ),
             ]
+            network = self.app.sync.network_usage()
+            parts.append(
+                storage.Part(
+                    "network",
+                    "Wi-Fi player data",
+                    "files waiting for Wi-Fi players, the copies their player database is built from and "
+                    "data of deleted players; Clean keeps what a registered player still needs",
+                    [cfg.data_dir / "network"],
+                    action="Clean",
+                )
+            )
             if runtime.is_dir():
                 parts.append(
                     storage.Part(
                         "runtime",
                         "Unpacked program",
-                        "the program files of the installed version (and the previous one)",
+                        "the program files of the installed version (and the previous one); "
+                        "Remove old versions deletes the rest",
                         [runtime],
+                        action="Remove old versions" if current is not None else None,
                     )
                 )
             for part in parts:
@@ -1835,6 +1851,17 @@ class AppFacade:
                 else []
             )
             by_id["library_mirrors"].items = storage.subfolders(cfg.cache_dir / "library-mirror")
+            by_id["network"].items = sorted(
+                (
+                    {
+                        "id": dev_id,
+                        "label": names.get(dev_id, f"{dev_id} (deleted)"),
+                        "size": storage.tree_size(paths)[0],
+                    }
+                    for dev_id, paths in network.items()
+                ),
+                key=lambda i: -int(i["size"]),
+            )
             found = dbbackup.backups(backups)
             by_id["db_backups"].detail = f"{len(found)} backups" + (
                 f", newest {found[0][1].isoformat(timespec='minutes')}" if found else ""
@@ -1907,6 +1934,11 @@ class AppFacade:
         elif part == "logs":
             for f in await asyncio.to_thread(lambda: list(cfg.logs.glob("syncmusic.log.*"))):
                 await asyncio.to_thread(rm, f)
+        elif part == "network":
+            for dev_id in [item] if item else sorted(names):
+                await self.app.sync.clean_network_files(dev_id)
+        elif part == "runtime":
+            await self.app.prune_runtimes()
         elif part == "snapshots":
             ids = [item] if item else sorted(names)
             for lid in ids:
@@ -1967,6 +1999,7 @@ class AppFacade:
             "asset": compas_sdtool.asset_name(),
             "source_url": compas_sdtool.SOURCE_URL,
             "license": compas_sdtool.LICENSE,
+            "auto_update": self.app.sdtool_update,
             "path": None,
             "version": None,
             "build": None,
@@ -2033,6 +2066,7 @@ class AppFacade:
             "path": str(rel.zip) if rel else None,
             "builds": {v: r.version if r else None for v, r in builds.items()},
             "searched": [str(p) for p in client_apps.folders(self.app.config.data_dir)],
+            "auto": {"state": self.app.app_fetch.state, "error": self.app.app_fetch.error},
         }
 
     async def compas_app_download(self) -> dict[str, Any]:
@@ -3071,10 +3105,15 @@ class AppFacade:
         await self.app.sync.config(device_id)
         return await self.app.sync.clear_health_errors(device_id)
 
-    async def integrity_check(self, device_id: str, deep: bool = False) -> dict[str, Any]:
-        return (await integrity_jobs.integrity_check(self.app.sync, device_id, deep)).model_dump(
-            mode="json"
-        )
+    async def integrity_estimate(self, device_id: str) -> dict[str, Any]:
+        return await integrity_jobs.integrity_estimate(self.app.sync, device_id)
+
+    async def integrity_check(
+        self, device_id: str, deep: bool = False, mode: str | None = None
+    ) -> dict[str, Any]:
+        return (
+            await integrity_jobs.integrity_check(self.app.sync, device_id, deep, mode)
+        ).model_dump(mode="json")
 
     async def last_integrity(self, device_id: str) -> dict[str, Any] | None:
         await self.app.sync.config(device_id)
@@ -3092,6 +3131,9 @@ class AppFacade:
 
     async def device_mounts(self, device_id: str) -> list[dict[str, Any]]:
         return await self.app.sync.mounts(device_id)
+
+    async def foreign_read_only(self, device_id: str) -> list[str]:
+        return await self.app.sync.foreign_read_only(device_id)
 
     async def unmount_everywhere(self, device_id: str, lazy: bool = False) -> list[dict[str, Any]]:
         return await self.app.sync.unmount_everywhere(device_id, lazy=lazy)

@@ -25,7 +25,8 @@ Inter-Bold.ttf ../inter.atlas.gz` with the TTFs of an Inter release.
 - Pairing: *Find servers on the network* (mDNS) or *Enter the address* (on-screen keyboard), then *Connect without a code*
   (approve the player on the server's Devices page; both show the same code) or *Enter a pairing code*.
   `pair.txt` (`<server> <code>` in the app's data folder) still works. Settings → Server → *Forget this server*
-  drops the pairing; the music on the card stays.
+  drops the pairing; the music on the card stays. *Reset the app* deletes only the app's data folder; pairing
+  again continues the same device (found by the card) and brings the app's settings back from the server.
 - Wi-Fi: when it is not connected at start the app offers to turn it on with the player's own `wifi_on.sh`
   (then `udhcpc` if needed) or explains how to do it in the player's settings. Battery and charging are only read
   (the firmware's charge limiter is never touched); the app runs on a charger too.

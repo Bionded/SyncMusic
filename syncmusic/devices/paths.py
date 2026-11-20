@@ -361,10 +361,13 @@ def unique(rel: str, taken: set[str], rules: PathRules) -> str:
         return rel
     p = PurePosixPath(rel)
     stem, ext = _split_ext(p.name)
+    folder = 0 if str(p.parent) == "." else len(str(p.parent)) + 1
     n = 2
     while True:
         suffix = f" ({n})"
-        name = _cut(stem, rules.max_name_len - name_len(suffix + ext, rules), rules) + suffix + ext
+        room = max(1, rules.max_path_len - folder - len(suffix + ext))  # the whole path's limit too
+        name = _cut(stem[:room], rules.max_name_len - name_len(suffix + ext, rules), rules)
+        name += suffix + ext
         cand = str(p.with_name(name))
         if path_key(cand, rules) not in taken:
             return cand

@@ -302,3 +302,42 @@ def test_pairing_url_replaces_loopback_host(monkeypatch: pytest.MonkeyPatch) -> 
     assert routes.pairing_url(req("music.example:8099")) == "http://music.example:8099/"
     monkeypatch.setattr(routes, "_lan_ip", lambda: None)
     assert routes.pairing_url(req("localhost:8099")) == "http://localhost:8099/"
+
+
+async def test_reset_app_on_the_same_card_gets_its_device_settings_and_templates_back(setup):
+    app, c = setup
+    await allow(c)
+    card = {"card_uid": "card-0001"}
+    first = client(uid="11111111-aaaa-4bbb-8ccc-0000000000a1") | card
+    r = await c.post(
+        f"{C}/pair", json={"code": (await new_code(c))["code"], "client": first, "capabilities": {}}
+    )
+    assert r.status_code == 201, r.text
+    dev, old_token = r.json()["device_id"], r.json()["token"]
+    assert r.json()["settings"] == {} and "templates" in r.json()
+    mine = {"dim_after_s": 60, "after_sync": "poweroff", "sync_on_start": True}
+    r = await c.put(f"{C}/me/settings", json={"settings": mine}, headers=bearer(old_token))
+    assert r.status_code == 200, r.text
+    big = {"x": "y" * 20000}
+    r = await c.put(f"{C}/me/settings", json={"settings": big}, headers=bearer(old_token))
+    assert r.status_code == 400
+
+    # the app's data was reset: a new install uid, the same card
+    again = client(uid="22222222-aaaa-4bbb-8ccc-0000000000a2") | card
+    r = await c.post(
+        f"{C}/pair", json={"code": (await new_code(c))["code"], "client": again, "capabilities": {}}
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["device_id"] == dev and body["continued"] is True
+    assert body["settings"] == mine
+    assert (await c.get(f"{C}/me", headers=bearer(old_token))).status_code == 401
+    assert (await c.get(f"{C}/me", headers=bearer(body["token"]))).status_code == 200
+    assert len(await app.clients.list()) == 1
+
+    # another card is another device
+    other = client(uid="33333333-aaaa-4bbb-8ccc-0000000000a3") | {"card_uid": "card-0002"}
+    r = await c.post(
+        f"{C}/pair", json={"code": (await new_code(c))["code"], "client": other, "capabilities": {}}
+    )
+    assert r.json()["device_id"] != dev and r.json()["settings"] == {}

@@ -945,8 +945,10 @@ class IPod(Device):
 
             if ext := await scsi.read_sysinfo_extended(guard, disk.path):
                 sysinfo["SysInfoExtended"] = ext
-        await fmt.make_filesystem(guard, data.path, "vfat", name)
-        m = await mnt.mount(guard, data.path, self.id, root)
+        # only this iPod: a stale block path must not format another one
+        registered = self.format_guard_ids()
+        await fmt.make_filesystem(guard, data.path, "vfat", name, registered)
+        m = await mnt.mount(guard, data.path, self.id, root, registered=registered)
         self.mount = m.path
         self._pg_device = None
 

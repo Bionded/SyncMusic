@@ -225,14 +225,28 @@ with its next sync. **Rename** or **Revoke** a client under Settings → Wi-Fi c
 device and history but can no longer sync until it is paired again. The connection is plain HTTP: use it only on a
 network you trust.
 
-**SyncMusic app for Compás players.** Each release has `syncmusic-compas-<version>.zip` next to the server
-downloads: unzip it into the `.apps/` folder of the player's SD card (it holds a `syncmusic/` folder) and start
+**SyncMusic app for Compás players.** Each release has `syncmusic-compas-<version>-hard.zip` (recommended) and
+`syncmusic-compas-<version>-soft.zip` (if the hard-float app does not start) next to the server downloads: unzip one into the `.apps/` folder of the player's SD card (it holds a `syncmusic/` folder) and start
 *SyncMusic* from the player's apps. A player paired with this app gets **Player library built by the server** set
 to *Compás* and **After a sync that changed something** set to *Restart the player*: the server builds the player's
 library database over the files on the card (this needs compas-sdtool on the server, see
 [HiBy R1 (Compás)](#hiby-r1-compás)), the app installs it and restarts the player, so new music shows at once.
 Without the tool the app only copies the files and the player indexes them itself. Installing, pairing and using
 the app: [SyncMusic app for Compás players](10-compas-app.md).
+
+**Device settings of a Wi-Fi client** (its **Settings** tab; the shared sync settings are in the
+[settings reference](08-settings-reference.md)):
+
+| Setting | Default | What it does |
+|---|---|---|
+| Path layout | as for USB players | Folders and file name per media kind on the player. |
+| Playlists | on | Send playlists to the player. |
+| Minimum played share for a play (0–1) | 0.5 | A play the app did not mark as completed counts from this share of the track... |
+| Or minimum played time (s) | 240 | ...or from this many seconds played, whichever comes first. |
+| After a sync that changed something | Nothing | What the app does once new files are in place: nothing, refresh its library, or restart the player. |
+| Player library built by the server | None | *Compás*: the server builds the player's library database over its files (needs compas-sdtool). |
+| The player may confirm a sync | on | A sync that needs a confirmation (many removals, not enough space) can be confirmed in the app on the player. Off: only in the web UI. |
+| Outbox budget (MB) | 2048 | For apps that do not stream a sync file by file: the most the server prepares at once; a larger sync comes in parts. 0 = no limit. The Compás app streams and does not use it. |
 
 ## A player used by more than one SyncMusic
 A player remembers which SyncMusic installation set it up: its **home**. When you register a player that another

@@ -372,3 +372,34 @@ async def test_wifi_sync_writes_the_card_manifest_a_usb_sync_reads(server, tmp_p
     outbox = app.sync._network_dir(cfg) / ".syncmusic/manifest.jsonl"
     assert outbox.read_text(encoding="utf-8") == changed
     assert (await rc.sync())["fetched"] == 0
+
+
+async def test_reset_install_on_the_same_card_comes_back_configured(server, tmp_path):
+    app, paired, _ = server
+    rc = await paired(tmp_path / "card" / "app1")
+    http = rc.http
+    rc.card_uid = "card-ref-0001"
+    device_id = await rc.pair("http://t/", (await new_code(http))["code"], "Ref")
+    await rc.set_settings({"after_sync": "poweroff", "dim_after_s": 60})
+
+    # the app's data is gone: a new install on the same card asks to pair
+    fresh = ReferenceClient(tmp_path / "card" / "app2", http=http)
+    fresh.card_uid = "card-ref-0001"
+    assert fresh.state["uid"] != rc.state["uid"]
+
+    async def approve() -> None:
+        for _ in range(600):
+            if reqs := (await http.get("/api/v1/clients/requests")).json():
+                break
+            await asyncio.sleep(0.05)
+        await http.post(f"/api/v1/clients/requests/{reqs[0]['id']}/approve")
+
+    task = asyncio.create_task(approve())
+    again = await asyncio.wait_for(fresh.request_pairing("http://t/", "Ref"), 30)
+    await task
+    assert again == device_id and len(await app.clients.list()) == 1
+    assert fresh.state["settings"] == {"after_sync": "poweroff", "dim_after_s": 60}
+    assert [t["name"] for t in fresh.templates if t["on"]] == ["Phone rules"]
+    assert (await app.store.device(device_id)).registration_pending is False
+    with pytest.raises(ClientProtocolError):
+        await rc._call("GET", "me")  # the old install's token is revoked

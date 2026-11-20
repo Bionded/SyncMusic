@@ -575,7 +575,11 @@ func (a *App) installUpdate(u appUpdate) {
 
 func (a *App) settings() page {
 	s := &a.set
-	save := func() { _ = s.save(a.c.data) }
+	save := func() {
+		_ = s.save(a.c.data)
+		c, cp := a.c, *s
+		go c.pushSettings(cp)
+	}
 	var warn []line
 	if s.dimAfterOff() {
 		warn = []line{{text: T("set.dim_after_off"), col: colErr}}
@@ -592,9 +596,37 @@ func (a *App) settings() page {
 		{label: T("set.name", a.shownName()), act: func() { a.go_(a.message(T("set.name_where"), T("set.name_hint"), false)) }, group: T("set.g_server")},
 		{label: T("set.server", serverOnly(a.c.st.Server)), act: func() { a.go_(a.pairMenu) }, group: T("set.g_server")},
 		{label: T("btn.about"), act: func() { a.go_(a.about) }, group: T("set.g_server")},
+		{label: T("set.reset"), act: func() { a.go_(a.resetConfirm) }, group: T("set.g_server")},
 		{label: T("btn.exit_app"), act: func() { a.quit = true }, group: T("set.g_server")},
 		{label: T("btn.back"), kind: btnBack, act: func() { a.go_(a.home) }},
 	}}
+}
+
+// resetConfirm asks before the app's own data is deleted.
+func (a *App) resetConfirm() page {
+	return page{title: T("reset.title"), lines: []line{{text: T("reset.text"), col: colText}}, buttons: []button{
+		{label: T("reset.yes"), kind: btnDanger, act: a.resetApp},
+		{label: T("btn.back"), kind: btnBack, act: func() { a.go_(a.settings) }},
+	}}
+}
+
+// resetApp deletes the app's data (pairing, settings, history) and starts over at pairing; the app itself, the
+// music and the card's manifest stay.
+func (a *App) resetApp() {
+	if a.syncing {
+		return
+	}
+	if err := a.c.Reset(); err != nil {
+		a.go_(a.message(T("reset.failed"), err.Error(), true))
+		return
+	}
+	a.set = defaultSettings()
+	a.online.Store(ptr(T("home.offline")))
+	a.go_(func() page {
+		return page{title: T("reset.done"), lines: []line{{text: T("reset.done_text"), col: colText}}, buttons: []button{
+			{label: T("pair.connect"), act: func() { a.go_(a.pairMenu) }, kind: btnPrimary},
+			{label: T("btn.exit"), act: func() { a.quit = true }}}}
+	})
 }
 
 // shownName: this player's name on the server (an install paired before names were kept: the default).
@@ -953,6 +985,7 @@ func runApp() error {
 				a.go_(a.message(T("pair.failed"), err.Error(), true))
 			} else {
 				_ = os.Remove(pairFile)
+				a.set = loadSettings(c.data)
 				a.go_(a.home)
 			}
 		}
@@ -1065,6 +1098,10 @@ func (a *App) pairMenu() page {
 
 			button{label: T("btn.back"), kind: btnBack, act: func() { a.go_(a.settings) }})
 	} else {
+		if a.c.Damaged != "" { // the saved pairing was lost to a damaged card: say why it asks again
+			p.title = T("state.damaged.title")
+			p.lines = []line{{text: T("state.damaged"), col: colText}}
+		}
 		p.buttons = append(p.buttons, button{label: T("btn.exit"), act: func() { a.quit = true }})
 	}
 	return p
@@ -1141,6 +1178,7 @@ func (a *App) pairWithCode(url, code string) {
 }
 
 func (a *App) paired() {
+	a.set = loadSettings(a.c.data) // the server may have given back this player's settings
 	a.online.Store(ptr(T("home.online")))
 	a.waitRegistration(a.message(T("pair.done"), T("pair.done_text"), false))
 }

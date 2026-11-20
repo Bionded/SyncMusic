@@ -4,6 +4,7 @@ it are applied in order and end where a fresh install of the new schema would, a
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sqlite3
 from pathlib import Path
@@ -170,3 +171,25 @@ def test_a_failing_migration_rolls_back_and_names_the_backup(tmp_path):
     cols = [r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(libraries)")]
     assert "note" not in cols
     assert len(list((tmp_path / "backups").iterdir())) == 1
+
+
+def test_the_before_upgrade_backup_goes_to_the_configured_backup_folder(tmp_path):
+    made_by = sorted(FIXTURES.glob("*.sqlite3"))[0]
+    db = tmp_path / "data" / "syncmusic.sqlite3"
+    db.parent.mkdir()
+    shutil.copy(made_by, db)
+    chosen = tmp_path / "elsewhere"
+    with sqlite3.connect(db) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_backup_dir', ?)",
+            (json.dumps(str(chosen)),),
+        )
+
+    async def run() -> None:
+        d = Database(db, backup_dir=tmp_path / "data" / "backups")
+        await d.open()
+        await d.close()
+
+    asyncio.run(run())
+    assert [p.name for p in chosen.iterdir()][0].endswith("-before-upgrade.sqlite3.gz")
+    assert not (tmp_path / "data" / "backups").exists()

@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -248,9 +249,10 @@ func (c *Client) RequestPair(server, name string) (pairAsk, error) {
 // PollPair: true once approved (the token is saved); a rejected or expired request is a ProtoError.
 func (c *Client) PollPair(q pairAsk) (bool, error) {
 	var out struct {
-		Status   string `json:"status"`
-		Token    string `json:"token"`
-		DeviceID string `json:"device_id"`
+		Status   string          `json:"status"`
+		Token    string          `json:"token"`
+		DeviceID string          `json:"device_id"`
+		Settings json.RawMessage `json:"settings"`
 	}
 	if err := c.callH("GET", "pair-requests/"+q.ID, map[string]string{"X-Pair-Secret": q.Secret}, nil, &out); err != nil {
 		return false, err
@@ -260,7 +262,11 @@ func (c *Client) PollPair(q pairAsk) (bool, error) {
 	}
 	c.st.Token, c.st.DeviceID, c.st.Name = out.Token, out.DeviceID, q.name
 	c.refreshName() // the user may have named it when approving
-	return true, c.save()
+	if err := c.save(); err != nil {
+		return true, err
+	}
+	c.restoreSettings(out.Settings)
+	return true, nil
 }
 
 // refreshName takes this player's name from the server (best effort).

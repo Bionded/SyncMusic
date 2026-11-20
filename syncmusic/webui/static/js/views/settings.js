@@ -9,6 +9,7 @@
 // restore after a preview), Import / export (templates, device settings, import after a preview),
 // About (versions, host, paths of the bootstrap configuration, Logs, API docs). One Save / Discard bar for every stored
 // setting; Backup, Import / export and About are outside its form. Update installs the newer commit (332.2).
+import { local } from "../storage.js";
 import { html, raw, bytes, when, setHtml } from "../dom.js";
 import { t, addStrings } from "../i18n.js";
 import { get, patch, post, del } from "../api.js";
@@ -16,11 +17,14 @@ import { pageHead, toast, unsavedBar, confirm, dialog, typedConfirm, badge, erro
 import { icon } from "../icons.js";
 import { windowsEditor, bindWindows, readWindows } from "../windows.js";
 import { sdtoolCredit, downloadSdtool } from "../sdtool.js";
+import { progressText } from "../update-overlay.js";
 
 const STRINGS = {
   "set.sub": "SyncMusic {version} on {host}",
   "set.logs": "Logs",
   "set.jump": "Go to section",
+  "set.all_groups": "Show all settings on one page",
+  "set.one_group": "One section at a time",
   "set.sec.general": "Appearance",
   "set.sec.access": "Access",
   "set.sec.clients": "Wi-Fi clients",
@@ -223,10 +227,20 @@ const STRINGS = {
   "set.sdtool_found": "Found compas-sdtool {version} ({build}) · library format {format}",
   "set.sdtool_missing": "Not found. Without it the player indexes new music itself after unplugging.",
   "set.sdtool_check": "Check tool",
+  "set.sdtool_auto.up_to_date": "Automatic updates: up to date ({held}).",
+  "set.sdtool_auto.updated": "Automatic updates: updated from {previous} to {held}.",
+  "set.sdtool_auto.waiting": "Automatic updates: {available} is available; it is installed once no sync runs.",
+  "set.sdtool_auto.custom": "Automatic updates: you chose your own compas-sdtool, so it is not replaced. SyncMusic's release offers {available}.",
+  "set.sdtool_auto.not_held": "Automatic updates: SyncMusic's release offers {available}; Download fetches it, after that it is kept up to date.",
+  "set.sdtool_auto.no_release": "Automatic updates: no SyncMusic release offers compas-sdtool for this computer.",
+  "set.sdtool_auto.error": "Automatic updates: the last check failed ({error}); tried again at the next update check.",
+  "set.sdtool_auto_checked": "checked {when}",
   "set.compas_app": "Compás app updates",
-  "set.compas_app_sub": "Paired HiBy R1 players with the SyncMusic app update themselves from the newest app this server holds (next to SyncMusic or in the data folder's tools/).",
+  "set.compas_app_sub": "Paired HiBy R1 players with the SyncMusic app update themselves from the newest app this server holds (next to SyncMusic or in the data folder's tools/); the app builds of the server's own release are downloaded by themselves when a player connects.",
   "set.compas_app_have": "Holding syncmusic-compas {version}",
-  "set.compas_app_none": "No app here yet: paired players keep the version they have.",
+  "set.compas_app_none": "No app here yet: it is downloaded from this release when a player connects.",
+  "set.compas_app_fetching": "Downloading the app from this release…",
+  "set.compas_app_failed": "The app could not be downloaded: {error}. Paired players keep the version they have.",
   "set.compas_app_download": "Download newest",
   "set.compas_app_dl_title": "Download the Compás app?",
   "set.compas_app_dl_text": "SyncMusic downloads the newest syncmusic-compas zip from its own release on GitHub, checks its checksum and keeps it in the data folder. Paired players are offered it on their next connection.",
@@ -377,9 +391,6 @@ const STRINGS = {
   "set.upd_confirm_title": "Install the update?",
   "set.upd_confirm": "SyncMusic installs {commit} and restarts. Devices stay connected; nothing syncs during the restart.",
   "set.upd_confirm_now": "SyncMusic installs {commit} and restarts now. The running syncs stop and continue after the restart.",
-  "set.upd_installing": "Installing {commit}… SyncMusic restarts, this page reconnects.",
-  "set.upd_installed_now": "Updated to {commit}.",
-  "set.upd_timeout": "SyncMusic did not come back with the new version yet. If it does not start, it goes back to the previous version by itself.",
   "set.conc": "Parallel jobs",
   "set.conc_sub": "Processing threads. Applied at the next start. Empty: one less than the CPU cores.",
   "set.conc_ph": "auto",
@@ -435,6 +446,8 @@ addStrings(STRINGS);
 export const settingsIndex = () => Object.keys(STRINGS).filter((k) => `${k}_sub` in STRINGS)
   .map((k) => ({ key: k, label: t(k), sub: t(`${k}_sub`) }));
 
+const ALL_KEY = "sm.settingsAll"; // "all": every section on one page (remembered per browser)
+const showAll = () => local.get(ALL_KEY) === "all";
 const SECTIONS = ["basics", "sync", "disks", "libs", "clients", "tools", "storage", "notif", "updates", "maint", "about"];
 const IO_BADGE = { add: "ok", replace: "warn", skip: "neutral" };
 const LOG_LEVELS = ["", "INFO", "DEBUG", "WARNING"];
@@ -561,8 +574,15 @@ function resourcesBox(r) {
 function compasAppLine(f) {
   const have = f?.version;
   return html`<div class="set-ff" data-compas-app-state="${have ? "ok" : "missing"}"><span class="set-ff-head">${icon(have ? "ccheck" : "info", { size: 16 })}
-    <span>${have ? t("set.compas_app_have", { version: have }) : t("set.compas_app_none")}</span></span>
+    <span>${have ? t("set.compas_app_have", { version: have }) : compasAppMissing(f?.auto)}</span></span>
     <button type="button" class="btn small" data-action="downloadCompasApp">${t("set.compas_app_download")}</button></div>`;
+}
+
+// why there is no app build yet: being downloaded, the download failed, or it comes with the next connection
+function compasAppMissing(auto) {
+  if (auto?.state === "downloading") return t("set.compas_app_fetching");
+  if (auto?.error) return t("set.compas_app_failed", { error: auto.error });
+  return t("set.compas_app_none");
 }
 
 // "Found compas-sdtool 1.1.0 (tools-…+player-…) · library format 8", or why it is not usable
@@ -575,6 +595,14 @@ function sdtoolLine(f) {
   return html`<div class="set-ff" data-sdtool-state="ok"><span class="set-ff-head">${icon("ccheck", { size: 16 })}
     <span>${t("set.sdtool_found", { version: f.version || "?", build: f.build || "?", format: f.database_format ?? "?" })}</span></span>
     <span class="mono muted">${f.path}</span></div>`;
+}
+
+// the automatic check against SyncMusic's release: "Up to date (checked …)", "Updated to …", "a newer build is available"
+function sdtoolAutoLine(a) {
+  if (!a) return "";
+  const when = a.checked ? new Date(a.checked).toLocaleString() : "";
+  const text = t(`set.sdtool_auto.${a.status}`, { held: a.held || "?", available: a.available || "?", previous: a.previous || "?", error: a.error || "" });
+  return html`<div class="hint" data-sdtool-auto="${a.status}">${text}${when ? ` · ${t("set.sdtool_auto_checked", { when })}` : ""}</div>`;
 }
 
 // "Found ffmpeg 6.1.1 · encoders: aac alac …", or why it does not run
@@ -623,6 +651,7 @@ function updatesBox(u) {
     ${u.available && u.notes.length ? html`<ul class="set-notes" data-update-notes>${u.notes.map((n) => html`<li>${n}</li>`)}</ul>` : ""}
     ${links}
     ${u.available && u.install_type === "docker" ? html`<p class="muted" data-update-docker>${t("set.upd_docker")}</p>` : ""}
+    ${u.progress?.step === "failed" ? html`<p class="set-upd-failed" data-update-failed>${progressText(u.progress)}</p>` : ""}
     ${u.available && u.installable && u.pending ? html`<div class="set-ff set-upd" data-update-pending>${icon("clock", { size: 16 })}<span>${t("set.upd_pending", { version: u.latest })}</span></div>` : ""}
     ${u.available && u.installable && !u.pending ? html`<div class="ds-row" data-update-install><span class="ds-label"><small>${u.jobs ? t("set.upd_install_busy") : t("set.upd_install_sub", { commit: u.latest })}</small></span>
       ${u.jobs ? html`<span class="toolbar"><button type="button" class="btn small" data-action="installUpdate" data-when="after_syncs" data-commit="${u.latest}">${t("set.upd_install_wait")}</button>
@@ -737,19 +766,21 @@ export async function render(ctx) {
   const clients = await clientsState();
   ctx.state.devices = (await get("/devices").catch(() => null))?.registered || [];
   ctx.state.values = v;
-  const index = html`<nav class="set-index" aria-label="${t("set.jump")}">${SECTIONS.map((s, i) =>
-    html`<a href="#/settings" data-action="jump" data-sec="${s}" ${i === 0 ? html`aria-current="true"` : ""}>${t(`set.sec.${s}`)}</a>`)}</nav>
+  const active = SECTIONS.includes(ctx.params?.sec) ? ctx.params.sec : SECTIONS[0];
+  const index = html`<nav class="set-index" aria-label="${t("set.jump")}">${SECTIONS.map((s) =>
+    html`<a href="#/settings/${s}" data-action="jump" data-sec="${s}" ${s === active ? html`aria-current="true"` : ""}>${t(`set.sec.${s}`)}</a>`)}</nav>
     <label class="set-jump"><select data-change="jumpSelect" aria-label="${t("set.jump")}">${SECTIONS.map((s) =>
-      html`<option value="${s}">${t(`set.sec.${s}`)}</option>`)}</select></label>`;
+      html`<option value="${s}" ${s === active ? "selected" : ""}>${t(`set.sec.${s}`)}</option>`)}</select></label>`;
   const about = [["version", version.version], ["pygpod", version.pygpod], ["python", version.python], ["host", version.host], ["instance", version.instance?.name],
     ["model", version.model], ["uptime", uptime(version.uptime_s)], ["compas_sdtool", version.compas_sdtool]].filter(([, x]) => x);
   return html`${pageHead(t("nav.settings"), t("set.sub", { version: version.version, host: version.host || "localhost" }),
     html`<a class="btn" href="#/logs">${icon("logs", { size: 16 })}${t("set.logs")}</a>`)}
-    <div class="set-layout">${index}
+    <div class="set-layout" data-active="${active}" ${showAll() ? "" : "data-one"}>${index}
       <form class="set-body set-form" data-set-form>
         <div class="set-search" data-nosave><input type="search" class="set-search-in" data-set-search placeholder="${t("set.search_ph")}"
           aria-label="${t("set.search")}" autocomplete="off" spellcheck="false"><p class="muted" data-set-none hidden>${t("set.search_none")}</p>
-          <div class="set-perdev" data-set-perdev hidden></div></div>
+          <div class="set-perdev" data-set-perdev hidden></div>
+          <button type="button" class="btn ghost small set-all" data-action="toggleAll">${t(showAll() ? "set.one_group" : "set.all_groups")}</button></div>
         ${section("basics", html`
           ${general(v, version)}
           ${sub("access", accessBox(access))}`)}
@@ -799,6 +830,7 @@ export async function render(ctx) {
               <button type="button" class="btn small" data-action="checkSdtool">${t("set.sdtool_check")}</button></div>
             <div class="hint" id="set-compas_sdtool_path-h">${t("set.sdtool_sub")}</div></div>
           <div data-sdtool>${sdtoolLine(sdinfo)}</div>
+          ${sdtoolAutoLine(sdinfo?.auto_update)}
           ${sdtoolCredit(sdinfo)}
           <div class="field"><label>${t("set.compas_app")}</label><div class="hint">${t("set.compas_app_sub")}</div></div>
           <div data-compas-app>${compasAppLine(appinfo)}</div>`)}`, t("set.tools_sub"))}
@@ -894,18 +926,30 @@ export function mounted(ctx, root) {
   bindWindows(form);
   form.addEventListener("submit", (e) => e.preventDefault());
   const search = root.querySelector("[data-set-search]");
-  search.addEventListener("input", () => { filter(root, search.value); perDevice(root, ctx.state.devices, search.value); });
+  const layout = root.querySelector(".set-layout");
+  search.addEventListener("input", () => {
+    layout.toggleAttribute("data-searching", search.value.trim().length > 0); // the search always covers every section
+    filter(root, search.value);
+    perDevice(root, ctx.state.devices, search.value);
+  });
+  // the first hit's section becomes the shown one, so it stays when the search is cleared
+  const toHit = (opts) => {
+    const hit = root.querySelector("[data-set-row]:not([hidden])");
+    if (!hit) return;
+    showSection(root, hit.closest("[data-set-section]").dataset.setSection);
+    hit.scrollIntoView(opts);
+  };
   const asked = ctx.query?.get("q"); // from the command palette
   if (asked) {
     search.value = asked;
     search.dispatchEvent(new Event("input"));
-    root.querySelector("[data-set-row]:not([hidden])")?.scrollIntoView({ block: "center" });
+    toHit({ block: "center" });
   }
   const words = (q) => q.trim().length > 0;
   search.addEventListener("keydown", (e) => {
     if (e.key !== "Enter") return;
     e.preventDefault();
-    (words(search.value) ? root.querySelector("[data-set-row]:not([hidden])") : null)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (words(search.value)) toHit({ behavior: "smooth", block: "center" });
   });
   runDiag(root);
   form.addEventListener("change", (e) => {
@@ -919,7 +963,7 @@ export function mounted(ctx, root) {
   };
   // the section being read is the one across a line 40 % down the screen (the first one touching the top
   // was marked, i.e. often the section above the one in view); between two sections, the nearest one
-  const layout = root.querySelector(".set-layout");
+  showSection(root, layout.dataset.active, false);
   let queued = false;
   let pinned = null, pinTimer = null;
   layout.addEventListener("set-jump", (e) => {
@@ -932,7 +976,7 @@ export function mounted(ctx, root) {
   const pick = () => {
     queued = false;
     if (!layout.isConnected) { document.removeEventListener("scroll", onScroll, true); return; } // left the page
-    if (pinned) return;
+    if (pinned || layout.hasAttribute("data-one")) return; // one section: the menu marks the shown one
     const line = 56 + (window.innerHeight - 56) * 0.4; // below the sticky top bar
     let best = null, dist = Infinity;
     for (const s of root.querySelectorAll("[data-set-section]")) {
@@ -1046,9 +1090,28 @@ async function save(ctx, form) {
   return true;
 }
 
+// the section shown in the one-section mode (and marked in the menu); its address is #/settings/<id>
+function showSection(root, id, address = true) {
+  const layout = root.querySelector(".set-layout");
+  if (!layout || !SECTIONS.includes(id)) return;
+  layout.dataset.active = id;
+  for (const s of root.querySelectorAll("[data-set-section]")) s.toggleAttribute("data-shown", s.dataset.setSection === id);
+  for (const a of root.querySelectorAll(".set-index a")) a.toggleAttribute("aria-current", a.dataset.sec === id);
+  const sel = root.querySelector(".set-jump select");
+  if (sel) sel.value = id;
+  const want = `#/settings/${id}`;
+  if (address && layout.hasAttribute("data-one") && location.hash.split("?")[0] !== want && /^#\/settings(\/|$|\?)/.test(location.hash)) history.replaceState(null, "", want);
+}
+
 function jumpTo(root, id) {
   const el = root.querySelector(`#set-${id}`);
   if (!el) return;
+  showSection(root, id);
+  if (root.querySelector(".set-layout")?.hasAttribute("data-one")) {
+    window.scrollTo({ top: 0 });
+    el.querySelector("h2").focus({ preventScroll: true });
+    return;
+  }
   // the index marks the section jumped to while the smooth scroll runs (the last one may never reach the top)
   root.querySelector(".set-layout")?.dispatchEvent(new CustomEvent("set-jump", { detail: id }));
   el.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1180,6 +1243,14 @@ export const actions = {
   },
   jumpSelect(el) {
     jumpTo(el.closest("#content"), el.value);
+  },
+  toggleAll(el) {
+    const all = !showAll();
+    local.set(ALL_KEY, all ? "all" : "one");
+    const root = el.closest("#content"), layout = root.querySelector(".set-layout");
+    layout.toggleAttribute("data-one", !all);
+    el.textContent = t(all ? "set.one_group" : "set.all_groups");
+    jumpTo(root, layout.dataset.active);
   },
   autoUpdate(el) {
     el.closest("[data-set-row]").querySelector("[data-auto-warn]").hidden = el.value !== "now";
@@ -1364,11 +1435,14 @@ export const actions = {
     const message = busy && when === "now" ? t("set.upd_confirm_now", { commit: short }) : t("set.upd_confirm", { commit: short });
     if (!(await confirm({ title: t("set.upd_confirm_title"), message, ok: t("set.upd_install") }))) return;
     el.disabled = true;
+    const row = el.closest("[data-update-install]");
+    if (row && when === "now") row.insertAdjacentHTML("beforeend", String(html`<span class="ds-label" data-update-progress><small>${progressText({ step: "downloading", version: commit, done: 0, total: 0 })}</small></span>`));
     let r;
     try {
       r = await post("/updates/install", { when });
     } catch (e) {
       if (el.isConnected) el.disabled = false;
+      row?.querySelector("[data-update-progress]")?.remove();
       throw e;
     }
     if (r.waiting) {
@@ -1378,19 +1452,9 @@ export const actions = {
       if (u && box) box.innerHTML = String(updatesBox(u));
       return;
     }
+    // the install itself is over once the request returns: the restart overlay (update-overlay.js) takes over
     const box = el.closest("[data-update-install]");
-    if (box) box.innerHTML = String(html`<span class="ds-label" data-update-progress><small>${t("set.upd_installing", { commit: short })}</small></span>`);
-    // the service goes away while install-systemd.sh runs and comes back with the new commit
-    for (let i = 0; i < 200; i++) {
-      await new Promise((ok) => setTimeout(ok, 3000));
-      const u = await get("/updates").catch(() => null);
-      if (u && u.running === commit) {
-        toast(t("set.upd_installed_now", { commit: short }));
-        location.reload();
-        return;
-      }
-    }
-    toast(t("set.upd_timeout"), "error");
+    if (box) box.innerHTML = String(html`<span class="ds-label" data-update-progress data-step="restarting"><small>${progressText({ step: "restarting" })}</small></span>`);
   },
   async testWebhook(el) {
     const url = el.closest("form").querySelector("#set-webhook_url").value.trim();

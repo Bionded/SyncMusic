@@ -160,6 +160,13 @@ class Store:
         keyed = ("submitted_plays", "position_scopes", "feedback_journal", "client_pairings")
         await self.db.execute_all(
             [
+                # a revoked pairing of `keep` must not shadow `drop`'s live one (the app would get 401)
+                (
+                    "DELETE FROM client_pairings WHERE device_id = ? AND token_sha256 IS NULL"
+                    " AND EXISTS (SELECT 1 FROM client_pairings"
+                    " WHERE device_id = ? AND token_sha256 IS NOT NULL)",
+                    (keep, drop),
+                ),
                 *(
                     (f"UPDATE {t} SET device_id = ? WHERE device_id = ?", (keep, drop))
                     for t in moved

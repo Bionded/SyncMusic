@@ -450,7 +450,14 @@ async def mount(
             await run_cmd(["rmdir", str(target)])
         raise UnmountableError(unmountable_message(dev_path, node.fstype, str(e), kernel)) from e
     if node.fstype == "ext4" and not read_only and os.geteuid() != 0:
-        await run_cmd(["chown", f"{uid}:{gid}", str(target)])
+        try:
+            await run_cmd(["chown", f"{uid}:{gid}", str(target)])
+        except BlockdevError:
+            # not left mounted and untracked: nobody would ever unmount it
+            with contextlib.suppress(BlockdevError):
+                await _umount_retrying(target)
+                await run_cmd(["rmdir", str(target)])
+            raise
     log.info("mounted %s (%s) at %s", dev_path, node.fstype, target)
     return Mounted(target, dev_path, node.fstype, owned=True)
 
@@ -519,8 +526,10 @@ async def repair(
     whole iPod disk, its firmware partition and anything not allowed for `repair`."""
     guard.check(dev_path, "repair", registered)
     node = _node(dev_path, await asyncio.to_thread(scan_block_devices, False))
-    if node.mountpoints:
-        raise BlockdevError(f"{dev_path} is mounted at {node.mountpoints[0]}: unmount it first")
+    # lsblk misses FUSE mounts (exfat-fuse): the kernel's mount table too
+    held = [*node.mountpoints, *(e.path for e in mounts_of(dev_path))]
+    if held:
+        raise BlockdevError(f"{dev_path} is mounted at {held[0]}: unmount it first")
     cmd = FSCK_COMMANDS.get(node.fstype or "")
     if cmd is None:
         raise BlockdevError(f"{dev_path}: no repair tool for the {node.fstype!r} file system")
@@ -606,10 +615,16 @@ async def probe_read[T](
 
 
 async def unmount_all(disk: BlockDeviceInfo) -> None:
-    """Unmount every mounted filesystem of a disk (before partitioning / formatting / eject)."""
+    """Unmount every mounted filesystem of a disk (before partitioning / formatting / eject): what lsblk lists
+    plus the kernel's mount table (FUSE mounts such as exfat-fuse/ntfs-3g are missing from lsblk), each retried
+    while it is busy for a moment."""
+    paths: list[str] = []
     for n in (disk, *disk.children):
-        for mp in n.mountpoints:
-            await run_cmd(["umount", mp])
+        for mp in [*n.mountpoints, *(str(e.path) for e in mounts_of(n.path))]:
+            if mp and mp not in paths:
+                paths.append(mp)
+    for mp in sorted(paths, key=len, reverse=True):  # nested mounts first
+        await _umount_retrying(Path(mp))
 
 
 async def eject(guard: Guard, disk_path: str, registered: Iterable[str] | None = None) -> None:
@@ -639,6 +654,12 @@ class PartitionMount:
     partition: str  # /dev/sdX2
     path: str  # where it is mounted
     ours: bool  # below the app's mount directory
+
+
+async def remount_read_only(path: str) -> None:
+    """Make one mountpoint read-only. `bind` changes only this mount's flag, not the shared file system:
+    another mount of the same volume (the app's own) stays writable. Callers check the guard first."""
+    await run_cmd(["mount", "-o", "remount,bind,ro", path])
 
 
 def disk_mounts(disk: BlockDeviceInfo, mount_root: Path | None = None) -> list[PartitionMount]:

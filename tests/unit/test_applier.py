@@ -1097,3 +1097,98 @@ def test_preparing_groups_conversions_and_skips_ready_slots():
         ]
     finally:
         loop.close()
+
+
+async def test_copy_progress_reaches_the_end_when_a_prepare_fails(tmp_path, library, preparer):
+    dev = _flash(tmp_path)
+    plan = await _plan(dev, library)
+    (library.root / "Три.mp3").unlink()  # its prepare fails
+    seen: list[float] = []
+
+    def progress(f, m, **kw):
+        if kw.get("phase") == "copy" and f is not None:
+            seen.append(f)
+
+    app = Applier(dev, {"lib": library}, Chain([]), preparer, workers=1, progress=progress)
+    rep = await app.apply(plan)
+    assert rep.status == "partial"
+    assert seen and max(seen) >= 0.999, seen
+
+
+async def test_cancel_does_not_wait_for_a_slow_prepare(tmp_path, library, preparer, monkeypatch):
+    """a cancel while the next item is still being prepared (a long merge) ends the sync without waiting for it."""
+    import time
+
+    from syncmusic.core import applier as applier_mod
+
+    monkeypatch.setattr(applier_mod, "STATUS_EVERY_S", 0.01)
+
+    def stuck(library, item, *a, **kw):
+        class Ctx:
+            async def __aenter__(self):
+                await asyncio.sleep(60)
+
+            async def __aexit__(self, *exc):
+                return None
+
+        return Ctx()
+
+    monkeypatch.setattr(preparer, "prepared", stuck)
+    started = time.monotonic()
+
+    def check():
+        if time.monotonic() - started > 0.2:
+            raise applier_mod.Cancelled()
+
+    plan = await _plan(_flash(tmp_path), library)
+    rep = await Applier(
+        _flash(tmp_path), {"lib": library}, Chain([]), preparer, check_cancelled=check
+    ).apply(plan)
+    assert rep.status == "cancelled"
+    assert time.monotonic() - started < 10
+
+
+async def test_cancel_leaves_no_unretrieved_prepare_error(
+    tmp_path, library, preparer, monkeypatch, caplog
+):
+    """prepares that failed with the cancel while the head of the window still waited are read on teardown:
+    asyncio logs no 'exception was never retrieved'."""
+    import gc
+    import time
+
+    from syncmusic.core import applier as applier_mod
+
+    monkeypatch.setattr(applier_mod, "STATUS_EVERY_S", 0.01)
+    calls = []
+
+    def prepared(library, item, *a, **kw):
+        calls.append(item)
+        first = len(calls) == 1
+
+        class Ctx:
+            async def __aenter__(self):
+                if first:
+                    await asyncio.sleep(60)
+                raise applier_mod.Cancelled()
+
+            async def __aexit__(self, *exc):
+                return None
+
+        return Ctx()
+
+    monkeypatch.setattr(preparer, "prepared", prepared)
+    started = time.monotonic()
+
+    def check():
+        if time.monotonic() - started > 0.2:
+            raise applier_mod.Cancelled()
+
+    plan = await _plan(_flash(tmp_path), library)
+    rep = await Applier(
+        _flash(tmp_path), {"lib": library}, Chain([]), preparer, check_cancelled=check
+    ).apply(plan)
+    assert rep.status == "cancelled" and len(calls) > 1
+    del rep, plan
+    gc.collect()
+    await asyncio.sleep(0)
+    assert "never retrieved" not in caplog.text

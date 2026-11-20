@@ -756,3 +756,63 @@ async def test_on_the_go_playlists_are_read_back_and_cleared_once_saved(tmp_path
     assert not otg.exists()
     assert await dev.read_playlists(manifest) == {}
     assert not [p for p in Database(str(dev.mount)).playlists if p.name.startswith("OTG")]
+
+
+async def test_format_passes_the_registered_identity_to_the_guard(tmp_path, monkeypatch):
+    """a stale block path pointing at another iPod: mkfs and mount are checked against this iPod's serial,
+    so the guard refuses the other disk instead of formatting it."""
+    from types import SimpleNamespace
+
+    from syncmusic.core.models import DeviceIdentity
+    from syncmusic.devices.iPod import ipod as ipod_mod
+    from syncmusic.infra.blockdev.guard import GuardError
+
+    part = BlockDeviceInfo(name="sdz2", path="/dev/sdz2", type="part", fstype="vfat")
+    disk = BlockDeviceInfo(name="sdz", path="/dev/sdz", type="disk", serial="OTHERIPOD0001")
+    disk.children = [part]
+    seen: list[object] = []
+
+    async def mkfs(guard, path, fs, label, registered=None, **kw):
+        seen.append(registered)
+        raise GuardError(f"{path}: not one of the registered identities")
+
+    monkeypatch.setattr(ipod_mod, "scan_block_devices", lambda _: [disk])
+    monkeypatch.setattr(ipod_mod, "find_disk_of", lambda p, d: (disk, disk))
+    monkeypatch.setattr(ipod_mod.fmt, "make_filesystem", mkfs)
+    cfg = DeviceConfig(
+        id="ipod1", type="ipod", name="iPod", identity=DeviceIdentity(usb_serial="THISIPOD0001")
+    )
+    ctx = SimpleNamespace(guard=object(), config=SimpleNamespace(mount_root=tmp_path))
+    dev = ipod_mod.IPod(cfg, tmp_path / "m", ctx)
+    dev.block_path = "/dev/sdz"
+    monkeypatch.setattr(dev, "_data_partition", lambda d: part)
+    monkeypatch.setattr(dev, "_has_rockbox", lambda p: _value(False))
+    monkeypatch.setattr(dev, "_saved_device_files", lambda p: _value({"SysInfoExtended": b"x"}))
+    with pytest.raises(GuardError):
+        await dev.format("iPod")
+    assert seen == [cfg.identity.format_guard_ids()] and seen[0], seen
+
+
+async def _value(v):
+    return v
+
+
+def test_format_ids_take_the_detected_disk_serial():
+    """a card registered through one card reader, now in another (matched by its manifest): Format accepts
+    the new reader's serial like Eject and Repair do; without any serial the check stays removable-only."""
+    from syncmusic.core.models import DeviceIdentity
+
+    cfg = DeviceConfig(
+        id="c",
+        type="flashdrive",
+        name="C",
+        identity=DeviceIdentity(usb_serial="READERA0001", fs_uuid="AAAA-0001"),
+    )
+    dev = FlashDrive(cfg, None, None)
+    assert dev.format_guard_ids() == cfg.identity.format_guard_ids()
+    dev.detected_serial = "READERB0002"
+    assert dev.format_guard_ids() == ["READERA0001", "READERB0002", "AAAA-0001"]
+    bare = FlashDrive(DeviceConfig(id="b", type="flashdrive", name="B"), None, None)
+    assert bare.format_guard_ids() is None
+    bare.detected_serial = "READERB0002"
+    assert bare.format_guard_ids() == ["READERB0002"]

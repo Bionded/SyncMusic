@@ -135,27 +135,32 @@ class MirrorSource:
         for rel in set(index) - set(files):
             (self.mirror / rel).unlink(missing_ok=True)
             index.pop(rel)
-        if todo:
-            with self.session() as h:
-                for rel in todo:
-                    size, mtime = files[rel]
-                    whole = size <= WHOLE_BELOW or os.path.splitext(rel)[1].lower() in SMALL_EXTS
-                    dest = self.mirror / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        if whole:
-                            with open(dest, "wb") as f:
-                                self.fetch(h, rel, f.write)
-                        else:
-                            self._sparse(h, rel, size, dest)
-                    except RemoteError as e:  # gone or unreadable since the listing: skipped
-                        log.warning("%s: %s not mirrored: %s", self.describe(), rel, e)
-                        dest.unlink(missing_ok=True)
-                        index.pop(rel, None)
-                        continue
-                    os.utime(dest, ns=(mtime, mtime))
-                    index[rel] = [size, mtime, "whole" if whole else "sparse"]
-        (self.mirror / INDEX).write_text(json.dumps(index))
+        try:  # a dropped connection keeps what was fetched before it
+            if todo:
+                with self.session() as h:
+                    for rel in todo:
+                        size, mtime = files[rel]
+                        whole = (
+                            size <= WHOLE_BELOW or os.path.splitext(rel)[1].lower() in SMALL_EXTS
+                        )
+                        dest = self.mirror / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        index.pop(rel, None)  # until the new copy is complete
+                        try:
+                            if whole:
+                                with open(dest, "wb") as f:
+                                    self.fetch(h, rel, f.write)
+                            else:
+                                self._sparse(h, rel, size, dest)
+                        except RemoteError as e:  # gone or unreadable since the listing: skipped
+                            log.warning("%s: %s not mirrored: %s", self.describe(), rel, e)
+                            dest.unlink(missing_ok=True)
+                            index.pop(rel, None)
+                            continue
+                        os.utime(dest, ns=(mtime, mtime))
+                        index[rel] = [size, mtime, "whole" if whole else "sparse"]
+        finally:
+            (self.mirror / INDEX).write_text(json.dumps(index))
 
     def _sparse(self, h: Any, rel: str, size: int, dest: Path) -> None:
         head = self.read_range(h, rel, 0, HEAD)
@@ -181,8 +186,12 @@ class MirrorSource:
             return dest
         dest.parent.mkdir(parents=True, exist_ok=True)
         part = dest.with_name(dest.name + ".part")
-        with self.session() as h, open(part, "wb") as f:
-            self.fetch(h, rel, f.write)
+        try:
+            with self.session() as h, open(part, "wb") as f:
+                self.fetch(h, rel, f.write)
+        except BaseException:
+            part.unlink(missing_ok=True)
+            raise
         part.replace(dest)
         if mtime is not None:
             os.utime(dest, ns=(time.time_ns(), mtime))

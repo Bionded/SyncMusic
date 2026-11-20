@@ -20,7 +20,8 @@ Mounting and formatting devices needs root, or passwordless `sudo` for the block
 | `SM_EMU_SPEED=real uv run pytest -m emulated` | the same at the speed of real players: every emulated disk gets its kind's bandwidth limit (`SPEED_PROFILES` in `tests/emulated.py`, cgroup v2 `io.max`); `SM_EMU_SPEED=fast` turns all limits off |
 | `uv run pytest -m ui` | Playwright web UI tests (`uv run playwright install chromium` once) |
 | `uv run pytest -m slow` | everything slow: UI, builds, soak tests |
-| `uv run pytest -m hardware` | real USB devices - **only** the ones you list in `tests/hardware.toml` (git-ignored; copy `tests/hardware.example.toml` or generate it from the players your SyncMusic knows: `syncmusic devices allowlist --all -o tests/hardware.toml`; without it nothing is collected) |
+
+The suite here covers the core: unit and contract tests, one integration test per library and device type, the emulated device scenarios (`tests/scenarios/`) and a small web UI smoke test. Add new tests for core behaviour only; one test that pins the bug is enough for a fix.
 
 `-n auto` runs all CPUs but one. Tests on the compose stack or on emulated devices are
 always marked `integration` (also when they only use the stack through a fixture), so the fast suite never needs

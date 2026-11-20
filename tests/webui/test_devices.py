@@ -525,3 +525,41 @@ def test_unknown_device_type_page_offers_delete(server, chrome, tmp_path):
         "location.hash.startsWith('#/devices') && !location.hash.includes('old-player')"
     )
     assert run_on(app, app.store.device("old-player")) is None
+
+
+BLOCK_STORAGE = """
+for (const area of ["localStorage", "sessionStorage"]) {
+  Object.defineProperty(window, area, {
+    configurable: true,
+    get() { throw new DOMException("Access is denied for this document.", "SecurityError"); },
+  });
+}
+"""
+
+
+def test_views_work_when_the_browser_blocks_site_storage(server, chrome):
+    url, app = server
+    run_on(app, _disk_device(app, []))
+    page = chrome.new_page(viewport={"width": 1280, "height": 800})
+    page.add_init_script(BLOCK_STORAGE)
+    page.errors = []
+    page.on("pageerror", lambda e: page.errors.append(str(e)))
+    page.on("console", lambda m: m.type == "error" and page.errors.append(m.text))
+    try:
+        page.goto(url + "/#/settings")
+        toggle = page.locator('[data-action="toggleAll"]')
+        toggle.wait_for()
+        before = toggle.text_content()
+        toggle.click()  # remembered for this page only
+        page.wait_for_function(
+            "b => document.querySelector('[data-action=toggleAll]').textContent !== b", arg=before
+        )
+        page.goto(url + "/#/devices/zorvex/settings")
+        page.wait_for_selector('[data-action="format"]')
+        page.goto(url + "/#/libraries/music")
+        page.wait_for_selector("#content[data-route]")
+        page.wait_for_timeout(500)
+        errors = [e for e in page.errors if "Failed to load resource" not in e]
+        assert errors == []
+    finally:
+        page.context.close()

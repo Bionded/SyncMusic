@@ -3,11 +3,14 @@ package main
 
 // Self-update: the server offers the files of a newer release of this app (GET app-update); they are downloaded
 // into a staging folder, checked (size + SHA-256), then moved into .apps/syncmusic/ one by one with the program
-// file last, so a killed update leaves either the old app or a complete new one with the old binary.
+// file last. Before the first move the list of files is written to update.pending (next to the staging folder);
+// a power cut during the moves leaves that list and the staged files, and the next start finishes the moves
+// (FinishUpdate), so the app never stays a mix of old and new files.
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -61,13 +64,15 @@ func (c *Client) CheckUpdate() (appUpdate, error) {
 func (c *Client) InstallUpdate(u appUpdate) error {
 	stage := filepath.Join(c.data, "update")
 	_ = os.RemoveAll(stage)
-	defer os.RemoveAll(stage)
+	_ = os.Remove(c.pendingPath())
 	var exe *appFile
 	for i, f := range u.Files {
 		if !safeRel(f.Path) {
+			_ = os.RemoveAll(stage)
 			return fmt.Errorf("update: bad file name %q", f.Path)
 		}
 		if err := c.fetchTo(f, filepath.Join(stage, filepath.FromSlash(f.Path))); err != nil {
+			_ = os.RemoveAll(stage)
 			return err
 		}
 		if f.Path == appName {
@@ -75,19 +80,73 @@ func (c *Client) InstallUpdate(u appUpdate) error {
 		}
 	}
 	if exe == nil {
+		_ = os.RemoveAll(stage)
 		return fmt.Errorf("update: the release has no %s", appName)
 	}
-	dir := c.appDir()
+	var paths []string
 	for _, f := range append(others(u.Files, exe.Path), *exe) {
-		src, dst := filepath.Join(stage, filepath.FromSlash(f.Path)), filepath.Join(dir, filepath.FromSlash(f.Path))
+		paths = append(paths, f.Path)
+	}
+	b, _ := json.Marshal(paths)
+	if err := writeSynced(c.pendingPath(), b); err != nil {
+		_ = os.RemoveAll(stage)
+		return err
+	}
+	syncDir(c.data)
+	return c.moveStaged(paths)
+}
+
+func (c *Client) pendingPath() string { return filepath.Join(c.data, "update.pending") }
+
+// FinishUpdate completes an update a power cut interrupted while its files were being moved into place; it does
+// nothing when no update is pending. Called at start, before the app reads its own files.
+func (c *Client) FinishUpdate() error {
+	b, err := os.ReadFile(c.pendingPath())
+	if err != nil {
+		_ = os.RemoveAll(filepath.Join(c.data, "update")) // a download cut short: nothing was moved yet
+		return nil
+	}
+	var paths []string
+	if json.Unmarshal(b, &paths) != nil {
+		_ = os.Remove(c.pendingPath())
+		_ = os.RemoveAll(filepath.Join(c.data, "update"))
+		return fmt.Errorf("update: damaged update.pending dropped")
+	}
+	return c.moveStaged(paths)
+}
+
+// moveStaged moves the staged files listed in paths into the app folder (a file already moved is skipped),
+// syncs the folders and then drops the pending list and the staging folder.
+func (c *Client) moveStaged(paths []string) error {
+	stage, dir := filepath.Join(c.data, "update"), c.appDir()
+	dirs := map[string]bool{}
+	for _, p := range paths {
+		if !safeRel(p) {
+			continue
+		}
+		src, dst := filepath.Join(stage, filepath.FromSlash(p)), filepath.Join(dir, filepath.FromSlash(p))
+		if _, err := os.Stat(src); err != nil {
+			continue // moved before the cut
+		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
 		}
 		if err := os.Rename(src, dst); err != nil {
 			return err
 		}
+		dirs[filepath.Dir(dst)] = true
+		if p == appName {
+			if err := os.Chmod(dst, 0o755); err != nil {
+				return err
+			}
+		}
 	}
-	return os.Chmod(filepath.Join(dir, appName), 0o755)
+	for d := range dirs {
+		syncDir(d)
+	}
+	_ = os.Remove(c.pendingPath())
+	syncDir(c.data)
+	return os.RemoveAll(stage)
 }
 
 func others(fs []appFile, skip string) []appFile {

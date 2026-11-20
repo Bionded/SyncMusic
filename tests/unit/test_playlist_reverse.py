@@ -242,6 +242,26 @@ async def test_policy_merge(tmp_path):
     assert m.playlist_created == {"Existing": "nd/pl9"}
 
 
+async def test_policy_merge_keeps_a_shared_song_once(tmp_path):
+    """the device's and the library's same-name playlist share a song: the merge lists it once."""
+    dev, m, _ = _setup(tmp_path)
+    lib = NamedSink(
+        LibraryConfig(id="nd", type="fake", name="ND", settings={"root": str(tmp_path)}), None
+    )
+    lib.lists["pl9"] = [_ref("d"), _ref("e")]
+    _write(dev, ["c", "d"], name="Existing")
+    await push_playlists(dev, m, {"nd": lib}, ReverseReport(), "merge", "R1")
+    assert ("Existing", ["c", "d", "e"], "pl9") in lib.saved, lib.saved
+
+
+def test_union_keeps_each_entry_once_per_side():
+    from syncmusic.core.playlist_merge import union
+
+    assert union(["a", "b"], ["b", "c"]) == ["a", "b", "c"]
+    assert union(["a", "a"], ["a", "b", "a", "a"]) == ["a", "a", "a", "b"]
+    assert union([], ["x"]) == ["x"]
+
+
 async def test_policy_replace(tmp_path):
     lib, _, _ = await _conflicts(tmp_path, "replace")
     assert ("Existing", ["d"], "pl9") in lib.saved and ("Mix", ["b", "a", "c"], "pl1") in lib.saved
@@ -359,3 +379,22 @@ def test_a_playlist_whose_entries_all_match_nothing_is_left_out():
         True,
     )
     assert lists == {"Empty": []} and unknown == 1
+
+
+@pytest.mark.parametrize("kind", ["rockbox", "compas"])
+async def test_playlist_renamed_on_the_device_is_warned_not_saved_twice(tmp_path, kind):
+    dev, m, lib = _setup(tmp_path, kind)
+    _write(dev, ["a", "b", "c"], name="Workout")  # 'Mix' renamed on the player, same songs
+    report = ReverseReport()
+    assert not await push_playlists(dev, m, {"nd": lib}, report)
+    assert lib.saved == [] and report.playlists_created == []
+    assert any("renamed to 'Workout'" in w for w in report.warnings)
+
+
+async def test_playlist_deleted_on_the_device_is_warned(tmp_path):
+    dev, m, lib = _setup(tmp_path)
+    (dev.mount / "Playlists").mkdir(exist_ok=True)
+    report = ReverseReport()
+    assert not await push_playlists(dev, m, {"nd": lib}, report)
+    assert lib.saved == []
+    assert any("'Mix' was deleted on the device" in w for w in report.warnings)

@@ -730,13 +730,13 @@ function spaceCard(plan, sp) {
   }
   const fits = s.fits && !plan.does_not_fit;
   const usedNow = Math.max(0, s.capacity - s.free);
-  const freeAfter = s.free - s.needed;
+  const freeAfter = s.free - (s.needed - (s.reserve || 0)); // the reserve is kept free, not used: "needed" says it
   const usedAfter = Math.max(0, s.capacity - freeAfter);
   const now = { music: 0, audiobook: 0, podcast: 0, video: 0, other: usedNow, ...(sp?.by_kind || {}) };
   if (sp) now.other = Math.max(0, usedNow - now.music - now.audiobook - now.podcast);
   const after = {};
   for (const k of ["music", "audiobook", "podcast", "video"]) after[k] = Math.max(0, now[k] + (plan.by_kind_delta?.[k] || 0));
-  after.other = Math.max(0, usedAfter - after.music - after.audiobook - after.podcast); // incl. the reserve
+  after.other = Math.max(0, usedAfter - after.music - after.audiobook - after.podcast);
   const kinds = Object.keys(KIND_VARS).filter((k) => now[k] > 0 || after[k] > 0);
   return html`<section class="card plan-space"><div class="card-head"><h2>${t("plan.space")}</h2>
       ${badge(fits ? "ok" : "error", cap(fits ? t("plan.fits") : t("plan.no_fit")))}</div>

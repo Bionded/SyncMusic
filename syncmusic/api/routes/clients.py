@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ipaddress
+import json
 import mimetypes
 import socket
 from datetime import UTC, datetime
@@ -22,7 +23,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import segno
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from syncmusic import __version__
 from syncmusic.core.client_sessions import (
@@ -42,6 +43,7 @@ from syncmusic.infra.clients import ClientError, ClientInfo, show_code
 from syncmusic.infra.updates import is_newer
 
 PREFIX = "/api/client/v1"
+APP_SETTINGS_MAX = 16384  # bytes of JSON: an app's own settings, kept for re-pairing
 
 
 def client_error(e: ClientError) -> JSONResponse:
@@ -79,6 +81,9 @@ class PairAsk(BaseModel):
 
 REQUEST_POLL_S = 3  # how often a client in registration mode asks whether the user answered
 STATUS_WAIT_MAX = 30  # s: the longest a status long poll waits for a sync request
+APP_FETCH_WAIT_S = (
+    45  # s: how long app-update waits for a first download of this release's app builds
+)
 
 
 class TemplatesRequest(BaseModel):
@@ -91,6 +96,17 @@ class EventsRequest(BaseModel):
 
 class RenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
+
+
+class AppSettingsRequest(BaseModel):
+    settings: dict[str, Any]
+
+    @field_validator("settings")
+    @classmethod
+    def _small(cls, v: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(v)) > APP_SETTINGS_MAX:
+            raise ValueError(f"settings larger than {APP_SETTINGS_MAX} bytes")
+        return v
 
 
 class ApproveRequest(BaseModel):
@@ -223,7 +239,7 @@ def client_router(facade: AppFacade) -> APIRouter:
             "instance": instance(),
             "poll_s": app.client_settings.client_poll_s,
             "continued": continued,
-            "settings": {},
+            **await restore_view(device_id),
         }
 
     async def requests_allowed() -> None:
@@ -273,7 +289,15 @@ def client_router(facade: AppFacade) -> APIRouter:
             "instance": instance(),
             "poll_s": app.client_settings.client_poll_s,
             "continued": req.continued,
-            "settings": {},
+            **await restore_view(req.device_id or ""),
+        }
+
+    async def restore_view(device_id: str) -> dict[str, Any]:
+        """What a paired app gets back: its settings as last reported (a reset app comes back configured) and
+        the templates its device uses."""
+        return {
+            "settings": await app.clients.app_settings(device_id),
+            **await templates_view(device_id),
         }
 
     @r.get("/me")
@@ -284,6 +308,14 @@ def client_router(facade: AppFacade) -> APIRouter:
     async def rename(body: RenameRequest, device_id: str = Depends(device)) -> dict[str, Any]:
         await set_name(app, device_id, body.name)
         return await me_view(device_id)
+
+    @r.put("/me/settings")
+    async def put_settings(
+        body: AppSettingsRequest, device_id: str = Depends(device)
+    ) -> dict[str, Any]:
+        """The app keeps the server's copy of its own settings up to date (handed back on re-pairing)."""
+        await app.clients.set_app_settings(device_id, body.settings)
+        return {"settings": body.settings}
 
     @r.get("/status")
     async def status(wait: float = 0, device_id: str = Depends(device)) -> dict[str, Any]:
@@ -383,6 +415,24 @@ def client_router(facade: AppFacade) -> APIRouter:
         holds, or `available: false`. The client installs the files itself (`url` relative to the client API)."""
         variant = client_apps.variant_of(variant)
         newest = await asyncio.to_thread(client_apps.newest, app_name, app.config.data_dir, variant)
+        repo = app.config.update_repo.strip()
+        if (
+            app_name in client_apps.KNOWN_APPS
+            and repo
+            and repo.lower() != "none"
+            and app.app_fetch.needed(newest, version)
+        ):
+            # nothing to offer yet: fetch this release's app builds now, so the update reaches the app on this
+            # connection when the download is quick, else on its next one
+            await app.app_fetch.ensure(
+                app_name,
+                app.config.data_dir,
+                lambda: app.update_checker.releases(repo),
+                wait_s=APP_FETCH_WAIT_S,
+            )
+            newest = await asyncio.to_thread(
+                client_apps.newest, app_name, app.config.data_dir, variant
+            )
         offer = newest if newest is not None and is_newer(newest.version, version) else None
         client_newer = newest is not None and is_newer(version, newest.version)
         await app.clients.update_client(
@@ -394,6 +444,7 @@ def client_router(facade: AppFacade) -> APIRouter:
                 if offer is not None
                 else None,
                 "newer_than_server": client_newer,
+                "no_server_build": newest is None,
             },
         )
         app.bus.publish("client.changed", device_id=device_id)
@@ -697,6 +748,7 @@ def admin_router(facade: AppFacade) -> APIRouter:
                 {"error": "not_found", "message": "no such client"}, status_code=404
             )
         app.sync.wifi_ids.discard(device_id)
+        app.client_sessions.drop_device(device_id)
         app.bus.publish("client.revoked", device_id=device_id)
         return {"ok": True}
 

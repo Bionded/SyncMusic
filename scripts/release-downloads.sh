@@ -39,9 +39,8 @@ cat <<NOTES
 | Docker image | Docker / compose users (amd64, arm64) | \`$image:$tag\` | \`docker pull $image:$tag\` |
 | SyncMusic app for Compás (HiBy R1), hard float | **Use this one** (faster) | $(a "syncmusic-compas-$v-hard.zip") | Unzip into \`.apps/\` on the SD card |
 | SyncMusic app for Compás (HiBy R1), soft float | Only if the hard-float app closes at once or does not start | $(a "syncmusic-compas-$v-soft.zip") | Unzip into \`.apps/\` on the SD card |
-| compas-sdtool | Optional: the SyncMusic server downloads it by itself for Compás players (x86_64) | $(a "compas-sdtool-linux-x86_64") | Nothing to do |
-| compas-sdtool | The same for ARM 64-bit servers | $(a "compas-sdtool-linux-arm64") | Nothing to do |
-| Checksums | Verify a download: \`sha256sum -c --ignore-missing SHA256SUMS\` | $(a SHA256SUMS) | |
+
+Checksums: $(a SHA256SUMS) — verify a download with \`sha256sum -c --ignore-missing SHA256SUMS\` in the folder you downloaded to.
 
 Compás app: after unzipping, the card has \`.apps/syncmusic/\`; open *Apps* → **SyncMusic** and approve the first start. If the player says *Could not start the app* right after the copy, restart the player. Guide: https://github.com/$repo/blob/main/docs/10-compas-app.md
 

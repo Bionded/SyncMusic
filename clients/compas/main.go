@@ -2,7 +2,9 @@
 // Port of syncmusic/reference_client.py: pair, sync into the SD card, send listening events.
 //
 //	syncmusic-compas pair <server> <code>   pair once (token kept in $COMPAS_APP_DATA)
+//	syncmusic-compas ask <server> [name]    ask to pair without a code; waits until approved on the server
 //	syncmusic-compas sync                   one sync
+//	syncmusic-compas reset                  delete the app's own data (pairing, settings); the card stays
 //	syncmusic-compas play|favourite|position <key> [...]   record an event (sent with the next sync)
 //
 // SD root: $SYNCMUSIC_SD_ROOT, else the parent of the .apps-data folder ($COMPAS_APP_DATA/../..).
@@ -61,6 +63,7 @@ type Client struct {
 	runFiles int
 	runBytes int64
 	st       State
+	Damaged  string // the saved state could not be read: where the damaged file was moved ("" = fine)
 	http     *http.Client
 	progress func(done, total int, what string)
 	cancel   func() bool        // the user asked to stop (UI key); nil = never
@@ -91,13 +94,16 @@ func open() (*Client, error) {
 	if err := os.MkdirAll(data, 0o755); err != nil {
 		return nil, err
 	}
-	b, err := os.ReadFile(filepath.Join(data, "state.json"))
-	if err == nil {
-		err = json.Unmarshal(b, &c.st)
-	} else if os.IsNotExist(err) {
-		c.st = State{UID: uuid4()}
-		err = nil
+	if err := c.FinishUpdate(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 	}
+	c.st, c.Damaged = loadState(data)
+	c.fillState()
+	return c, nil
+}
+
+// fillState makes the maps a state read from an older or empty file lacks.
+func (c *Client) fillState() {
 	if c.st.Files == nil {
 		c.st.Files = map[string]int64{}
 	}
@@ -107,12 +113,57 @@ func open() (*Client, error) {
 	if c.st.Events == nil {
 		c.st.Events = []map[string]any{}
 	}
-	return c, err
 }
 
+// loadState reads state.json, else the copy of the save before (state.json.bak). A file that cannot be
+// read as state (a damaged card: fsck gave its clusters to another file) never stops the app: it is
+// moved aside and the app starts unpaired; `damaged` names where it went. Re-pairing finds the same
+// device on the server by the card's id.
+func loadState(data string) (st State, damaged string) {
+	path := filepath.Join(data, "state.json")
+	var bad []string
+	for _, p := range []string{path, path + ".bak"} {
+		b, err := os.ReadFile(p)
+		if os.IsNotExist(err) {
+			continue
+		}
+		var s State
+		if err == nil {
+			err = json.Unmarshal(b, &s)
+		}
+		if err == nil && s.UID == "" {
+			err = errors.New("no uid")
+		}
+		if err == nil {
+			if len(bad) > 0 {
+				step("state: %s unreadable, started from %s", path, p)
+			}
+			return s, ""
+		}
+		step("state: %s cannot be read: %v", p, err)
+		bad = append(bad, p)
+	}
+	for _, p := range bad {
+		aside := fmt.Sprintf("%s.broken-%d", p, time.Now().Unix())
+		if os.Rename(p, aside) == nil && damaged == "" {
+			damaged = aside
+		}
+	}
+	if len(bad) > 0 && damaged == "" {
+		damaged = path
+	}
+	return State{UID: uuid4()}, damaged
+}
+
+// save writes state.json atomically and keeps the save before it as state.json.bak (the fallback when
+// the card damages the newer one).
 func (c *Client) save() error {
 	b, _ := json.MarshalIndent(c.st, "", " ")
-	return writeAtomic(filepath.Join(c.data, "state.json"), b)
+	path := filepath.Join(c.data, "state.json")
+	if old, err := os.ReadFile(path); err == nil && json.Valid(old) {
+		_ = writeAtomic(path+".bak", old)
+	}
+	return writeAtomic(path, b)
 }
 
 func writeAtomic(path string, b []byte) error {
@@ -253,13 +304,40 @@ func (c *Client) capabilities() map[string]any {
 func (c *Client) Pair(server, code, name string) error {
 	c.st.Server = normalizeServer(server)
 	var out struct {
-		Token    string `json:"token"`
-		DeviceID string `json:"device_id"`
+		Token    string          `json:"token"`
+		DeviceID string          `json:"device_id"`
+		Settings json.RawMessage `json:"settings"`
 	}
 	if err := c.call("POST", "pair", map[string]any{"code": code, "client": c.clientInfo(name), "capabilities": c.capabilities()}, &out); err != nil {
 		return err
 	}
 	c.st.Token, c.st.DeviceID, c.st.Name = out.Token, out.DeviceID, name
+	if err := c.save(); err != nil {
+		return err
+	}
+	c.restoreSettings(out.Settings)
+	return nil
+}
+
+// Reset deletes the app's own data folder ($COMPAS_APP_DATA) except the startup log, and starts as a new
+// install (a new uid, not paired). Nothing outside that folder is touched: not the app, not the card.
+func (c *Client) Reset() error {
+	entries, err := os.ReadDir(c.data)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == "startup.log" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(c.data, e.Name())); err != nil {
+			return err
+		}
+	}
+	syncDir(c.data)
+	step("app data reset")
+	c.st, c.Damaged = State{UID: uuid4()}, ""
+	c.fillState()
 	return c.save()
 }
 
@@ -341,8 +419,19 @@ type view struct {
 	} `json:"plan"`
 }
 
-// inventory: the files this app put on the card that are still there (never the user's own files).
+// inventory: SyncMusic's files on the card that are still there (the app's downloads and what the card's
+// manifest lists from a USB sync), never the user's own files.
 func (c *Client) inventory() []map[string]any {
+	for _, p := range readCardFiles(c.root) {
+		if _, ok := c.st.Files[p]; ok {
+			continue
+		}
+		if t, err := c.target(p); err == nil {
+			if fi, err := os.Stat(t); err == nil && fi.Mode().IsRegular() {
+				c.st.Files[p] = fi.Size() // a USB sync's file: SyncMusic's own, held like a download
+			}
+		}
+	}
 	paths := make([]string, 0, len(c.st.Files))
 	for p := range c.st.Files {
 		paths = append(paths, p)
@@ -441,6 +530,29 @@ func section[T any](c *Client, v *view, name string, first []T) ([]T, error) {
 	return items, nil
 }
 
+// fetch requests a file, from byte `from` on when it is not 0.
+func (c *Client) fetch(it item, from int64) (*http.Response, error) {
+	req, _ := http.NewRequest("GET", c.url("files/"+it.Fid), nil)
+	req.Header.Set("Authorization", "Bearer "+c.st.Token)
+	if from > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", from))
+		req.Header.Set("If-Range", `"`+it.Fid+`"`)
+	}
+	return c.http.Do(req)
+}
+
+// verifyPart says whether the file at `part` has the plan's size and SHA-256.
+func verifyPart(part string, it item) bool {
+	g, err := os.Open(part)
+	if err != nil {
+		return false
+	}
+	defer g.Close()
+	h := sha256.New()
+	n, _ := io.Copy(h, g)
+	return n == it.Size && hex.EncodeToString(h.Sum(nil)) == it.Fid
+}
+
 // download fetches one file into <path>.part (resuming), checks size + SHA-256, fsyncs and renames it in place.
 func (c *Client) download(it item) (bool, error) {
 	dest, err := c.target(it.Path)
@@ -455,19 +567,35 @@ func (c *Client) download(it item) (bool, error) {
 	if fi, err := os.Stat(part); err == nil {
 		have = fi.Size()
 	}
-	req, _ := http.NewRequest("GET", c.url("files/"+it.Fid), nil)
-	req.Header.Set("Authorization", "Bearer "+c.st.Token)
-	if have > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
-		req.Header.Set("If-Range", `"`+it.Fid+`"`)
+	if have >= it.Size && have > 0 { // a complete leftover (killed before the rename) or a bigger stray file
+		if verifyPart(part, it) {
+			c.pr.update(func(p *Progress) { p.File, p.FileSize, p.Bytes = cardPath(it.Path), it.Size, p.Bytes+it.Size })
+			if err := os.Rename(part, dest); err != nil {
+				return false, err
+			}
+			return true, setMtime(dest, it.Mtime)
+		}
+		os.Remove(part)
+		have = 0
 	}
-	r, err := c.http.Do(req)
+	r, err := c.fetch(it, have)
 	if err != nil {
 		return false, err
+	}
+	if r.StatusCode == http.StatusRequestedRangeNotSatisfiable && have > 0 { // the .part does not fit: start over
+		r.Body.Close()
+		os.Remove(part)
+		have = 0
+		if r, err = c.fetch(it, 0); err != nil {
+			return false, err
+		}
 	}
 	defer r.Body.Close()
 	if r.StatusCode >= 400 {
 		return false, &ProtoError{r.StatusCode, "download", it.Path}
+	}
+	if r.StatusCode != 206 {
+		have = 0 // the whole file comes again
 	}
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	if r.StatusCode == 206 {
@@ -486,14 +614,7 @@ func (c *Client) download(it item) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	g, err := os.Open(part)
-	if err != nil {
-		return false, err
-	}
-	h := sha256.New()
-	n, _ := io.Copy(h, g)
-	g.Close()
-	if n != it.Size || hex.EncodeToString(h.Sum(nil)) != it.Fid {
+	if !verifyPart(part, it) {
 		os.Remove(part)
 		return false, nil
 	}
@@ -884,6 +1005,32 @@ func run(args []string) error {
 			return err
 		}
 		out(map[string]string{"device_id": c.st.DeviceID})
+	case "ask": // ask <server> [name]: a pairing request without a code; waits (up to 10 min) until approved
+		if len(args) < 2 {
+			return errors.New("usage: ask <server> [name]")
+		}
+		name := "HiBy R1 - Compás"
+		if len(args) > 2 {
+			name = args[2]
+		}
+		q, err := c.RequestPair(args[1], name)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "asked: request %s, code %s\n", q.ID, q.DisplayCode)
+		for deadline := time.Now().Add(10 * time.Minute); time.Now().Before(deadline); time.Sleep(time.Duration(q.PollS) * time.Second) {
+			ok, err := c.PollPair(q)
+			if err != nil {
+				return err
+			}
+			if ok {
+				out(map[string]string{"device_id": c.st.DeviceID})
+				return nil
+			}
+		}
+		return errors.New("not approved within 10 minutes")
+	case "reset": // the app's own data (pairing, settings), as Settings → Reset the app
+		return c.Reset()
 	case "sync":
 		c.progress = func(d, t int, w string) { fmt.Fprintf(os.Stderr, "[%d/%d] %s\n", d, t, w) }
 		r, err := c.Sync()

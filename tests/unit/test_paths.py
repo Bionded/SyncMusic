@@ -191,6 +191,14 @@ def test_unique_suffix_respects_name_length():
     assert got.endswith(" (2).mp3") and len(got.split("/")[-1]) <= 255
 
 
+def test_unique_suffix_respects_the_whole_path_limit():
+    rules = VFAT.model_copy(update={"max_path_len": 40, "case_sensitive": False})
+    rel = "Music/Артист/" + "Пісня" * 4 + "x" * 3 + ".mp3"
+    assert len(rel) == 40
+    got = unique(rel, {path_key(rel.upper(), rules)}, rules)
+    assert got.endswith(" (2).mp3") and len(got) <= 40
+
+
 def test_playlist_path():
     assert playlist_path("Мій: улюблене", VFAT) == "Playlists/Мій - улюблене.m3u8"
     assert playlist_path("Рок:80-ті", VFAT, ext=".m3u") == "Playlists/Рок - 80-ті.m3u"

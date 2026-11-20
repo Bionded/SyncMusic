@@ -6,19 +6,26 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- Settings and a device's Settings tab show one section at a time with a section menu instead of one long page; each Settings section has its own address. **Show all settings on one page** brings the long page back (remembered per browser), and the search always covers every setting.
+- Updates: *Check now* in Settings → Updates only checks — it no longer installs a found version at once when automatic updates are on. Installing shows the download progress, the check and the install, and every open page shows *Restarting SyncMusic…* during the restart and reloads itself when the new version is up (or says that it went back to the previous one).
+- Release pages: the downloads table no longer lists compas-sdtool (SyncMusic downloads it by itself), and the checksums file is a line under the table.
 - Wi-Fi clients: approving a player (or pairing it with a code) opens its setup right away — name, what it gets and processors, the same steps as registering a USB player. Until it is finished the player waits instead of failing its first sync, and the Devices page offers **Finish setup**.
 - Wi-Fi clients: a player asking to connect can be given its name on the Devices page before you approve it, and renaming a paired player on its device page (or in its app) renames it everywhere; the app shows the server's name. The player's name is set only on the server (in the request card or the setup after approving); the Compás app shows it and no longer asks for one.
 - Compás app: released as two downloads — `syncmusic-compas-<version>-hard.zip` (recommended, faster) and `-soft.zip` (use it if the hard-float app does not start on your player). Updates from the server keep the build a player runs; install steps and links are in the README and the release notes.
-- Every release page (stable and beta) starts with a downloads table: server and desktop binaries per architecture, the Docker image, both Compás app builds and compas-sdtool, each with who it is for and how to install it.
+- Every release page (stable and beta) starts with a downloads table: server and desktop binaries per architecture, the Docker image, both Compás app builds, each with who it is for and how to install it.
 - Compás app: a short press of Power switches the screen off and on; with the screen off the app now only turns the backlight off and keeps the player awake, so the Wi-Fi connection stays up.
 - Compás app: when the server holds a newer app, the app asks right after it connects (Update / Later) instead of only showing a button; an app newer than the server says so. The device page shows the app version the player runs and the answer.
-- Wi-Fi clients: the SyncMusic app for Compás players gets a whole sync in one go: the server prepares each file just before the app downloads it instead of preparing 2 GB parts in advance, so a large library needs almost no disk on the server, and stopping a sync continues where it stopped next time.
+- Wi-Fi clients: a large sync no longer copies the whole library into the server's outbox first. The SyncMusic app for Compás players gets a whole sync in one session: the server prepares each file just before the app downloads it, so a large library needs almost no disk on the server, and stopping a sync continues where it stopped next time. Apps without this get a large sync in parts of at most the device's *Outbox budget* (2 GB by default); prepared files share the processing cache's copy instead of being copied a second time.
 - Ratings and favourites pass back exactly as each player has them (stars to ratings, hearts to favourites, never converted), and a device's reverse sync settings show only what that player records.
-- Players that ask to connect without a code are now approved on the Devices page (with a count on the Devices menu item) instead of in Settings → Wi-Fi clients.
 - Every Wi-Fi client app may now confirm a sync that needs a confirmation (many removals, not enough space) on the player by default; the device setting *The player may confirm a sync* only turns this off.
 - Pairing codes for Wi-Fi clients are 8 digits (easy to type on a player), valid for 1 minute by default, and a client address gets at most 2 pairing attempts per second.
 
 ### Added
+- Settings → Storage & resources lists the data kept for each Wi-Fi player with a Clean button.
+- Compás app: **Settings → Reset the app** deletes only the app's own data (pairing, settings, history) — never the app, the music or the card's sync list. Connecting to the server again continues the same device with its templates, and the app gets its settings back: the server now keeps a copy of the app's settings.
+- HiBy R1 with Compás: SyncMusic keeps the compas-sdtool it downloaded up to date by itself — with its own update check it fetches a newer build from its release, checks it and swaps it in while no sync runs. A tool you chose yourself is never replaced; Settings → Devices says what the release offers and when it last checked.
+- Devices: when another program (a system automount) mounts a player as well, **Make read-only** on the device page — or the device setting *Make other mounts read-only when connected* — lets that program only read it while SyncMusic keeps writing through its own mount.
+- Devices: **Check and repair file system** in a USB player's Settings, and a **Check and repair** button at the top of the device page when Eject failed or the file system has errors. A file system check that finds errors when ejecting now marks the player as damaged right away instead of leaving it mounted with nothing to do.
 - Devices: a player that was added twice — once over USB or a card reader and once as a separate Wi-Fi device — gets a **Merge with …** offer on both device pages. Merging keeps one device with the USB record's settings and templates, the name you choose, and the Wi-Fi record's app pairing, history and listening data (plays already sent are not sent again).
 - Wi-Fi clients: when a Compás player asking to connect holds the card of a device you already registered over USB, its request card offers **This is <name>: add Wi-Fi to it** — the player keeps one device record (settings, rules, history) instead of a second one. Its device page shows its own type and how it is connected now (Wi-Fi, or USB while it also syncs over Wi-Fi). A complete Wi-Fi sync writes the same manifest onto the card as a USB sync, so syncing that card over USB afterwards sees the Wi-Fi files as its own, and a Wi-Fi sync after a USB sync starts from what the USB sync left on the card.
 - When a sync stops twice on an I/O error, the device page offers **Skip that file and continue**: the file it stopped at is left out for a day, the file system is repaired and the sync continues.
@@ -26,9 +33,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 - HiBy R1 with Compás (USB and the Wi-Fi app): album ratings sync both ways with Navidrome and other Subsonic servers.
 - Wi-Fi clients: the device page shows how much waits for the player on the server's disk, with **Clear** to drop it.
 - Wi-Fi clients: **Sync now** on the server starts the sync in the player's app at once while the app is open (the app listens for it); until then the device page shows that it waits for the player.
-- Settings can download the newest HiBy R1 Compás app from SyncMusic's release, so paired players update themselves without copying the zip by hand.
-- Wi-Fi clients can ask to connect without a pairing code: the request shows up in Settings → Wi-Fi clients with a short code that the player shows too, and you approve or reject it there ("Allow pairing requests", on by default). The reference client does this with `pair --request`.
-- SyncMusic app for HiBy players with the Compás firmware (HiBy R1), released as `syncmusic-compas-<version>.zip`: it pairs and syncs over Wi-Fi like the USB connection (music, audiobooks, podcasts, playlists, plays, hearts, positions), shows progress and a preview before a sync, keeps a sync history, guards the battery and updates itself from the server; the server builds the player's library for it so new music shows right after the sync. New user guide page: SyncMusic app for Compás players.
+- Settings → Tools can download the newest HiBy R1 Compás app from SyncMusic's release, so paired players update themselves without copying the zip by hand.
+- Wi-Fi clients can ask to connect without a pairing code: the request shows up on the Devices page with a short code that the player shows too, and you approve or reject it there (Settings → Wi-Fi clients → "Allow pairing requests", on by default). The reference client does this with `pair --request`.
+- SyncMusic app for HiBy players with the Compás firmware (HiBy R1), released as `syncmusic-compas-<version>-hard.zip` and `-soft.zip`: it pairs and syncs over Wi-Fi like the USB connection (music, audiobooks, podcasts, playlists, plays, hearts, positions), shows progress and a preview before a sync, keeps a sync history, guards the battery and updates itself from the server; the server builds the player's library for it so new music shows right after the sync. New user guide page: SyncMusic app for Compás players.
 - Wi-Fi clients: the listening data in the sync plan also says whether a podcast episode or audiobook is finished, and podcast episodes carry their publication date.
 - Wi-Fi clients: the sync plan now gives each file's modification time, can carry a set of files the server built for the client (installed all at once, with a commit file), and tells the client what to do after a sync that changed something (device setting "After a sync that changed something": nothing, refresh the library or restart the player). The reference client follows all three.
 - A player that the system already mounted (Umbrel, a desktop's automount) is used through that mount and never mounted a second time; SyncMusic now waits a few seconds after a disk is plugged in for such an automounter (Settings → Disks & mounting, "Wait for automount"). "Use an existing mount" in the device settings can refuse such players instead. An eject after a sync leaves another program's mount alone unless "Unmount other mounts when connected" is on.
@@ -37,11 +44,62 @@ versions follow [Semantic Versioning](https://semver.org/).
 - If both copies of SyncMusic's sync record on a player are damaged, the device page offers **Rebuild from files**: the damaged copies are moved aside and the next sync starts as a first sync that can adopt the files already on the player, instead of wiping it.
 
 ### Fixed
+- Settings, a device's Settings tab, the registration wizard and library views no longer break when the browser blocks site data (private mode, cookies blocked); view choices then last for the open page only.
+- Wi-Fi players with a server-built Compás database no longer keep a whole copy of every file they took on the server: only the tags and stream headers the database needs are kept (a few hundred KB per song, the same database). Copies kept by older versions are cut down by themselves.
+- Old unpacked program versions are removed again in every kind of install (home folder, custom folder, Umbrel), not only in the system service under `/opt`: at start, hourly and after an update; the running version and the one an update can go back to stay. Settings → Storage & resources has **Remove old versions**.
+- Deleting a Wi-Fi player, or merging it into another device, now also removes the files the server kept for it; data left behind by earlier versions for players that no longer exist is removed at start and logged.
+- Files waiting on the server for a Wi-Fi player that its sync no longer needs (left by a cancelled or replaced sync) are now removed at the next sync instead of taking disk space for good.
+- The device page no longer reports an error when the player's file list and its backup are both damaged; the check estimate shows 0 files.
+- Rules tab: a template just added says "Counting…" until its preview arrives instead of briefly showing "No matches".
+- A device that was ejected, removed and registered again no longer stays "ejected" until SyncMusic restarts.
+- A damaged MP4 file no longer hangs the video check of a sync forever.
+- FTP devices: a wrong password no longer leaves connections open on the server, and a refused rename no longer loses the old copy of a file (or the player's sync record).
+- The database backup made before an upgrade is no longer deleted by the regular backup clean-up (the two newest stay) and goes to the backup folder chosen in Settings.
+- A failed automatic update (for example a dropped download) is tried again at the next update check instead of never for that version.
+- After an update, a problem removing the old program files is logged and no longer keeps the "updated" notice from appearing.
+- A cancelled sync no longer logs a stray "Future exception was never retrieved" error.
+- FTP and SMB folder libraries: a dropped connection no longer makes the next sync download every file again, and a failed download leaves no partial file in the cache.
+- Car mode: a " (2)" added to a duplicate file name no longer pushes the path over the length limit.
+- A synced playlist renamed or deleted on the player is no longer undone without a word: the sync report says the sync writes it back, and a renamed copy is not saved to the library as a second playlist.
+- Compás app: a power cut while the app updated itself no longer leaves a mix of old and new files; the next start finishes the update.
+- A forced sync that skips a newer version of a song for space now lists that song's rule under what was left off, and the plan's reserve matches the smaller plan.
+- Favourites changed on a player are no longer dropped without a word when the library turns out not to keep favourites: the sync report says so.
+- Cancel now stops a sync at once while it waits for a long audiobook merge, and stops a Deep integrity check in the middle of a long file.
+- A power cut while a sync was adding to a player's file list no longer keeps half of that change; the whole unfinished change is dropped and the next sync redoes it.
+- The copy progress of a sync now reaches 100 % when a file could not be prepared.
+- Listening data a Wi-Fi player sends while earlier data is still being handed to the libraries no longer interrupts that hand-over.
+- The Wi-Fi client API refuses a finish while the plan is still being made, a negative page cursor and failure reports for files outside the plan.
+- Compás app: a download interrupted just before it was finished no longer blocks every later sync at that file, and the progress no longer counts a file twice when the server sends it whole again.
+- Compás app: a damaged SyncMusic manifest on the card is kept aside and its list of synced files is carried over, instead of being replaced by an empty one.
+- A Wi-Fi sync whose player disappeared mid-sync no longer keeps the device busy for hours: Stop on the server ends it at once, and a streaming sync with no word from the player for 30 minutes ends by itself.
+- Revoking a Wi-Fi client ends its open syncs at once; its download links stop working.
+- A sync plan left open for review is no longer applied after an automatic update sync changed the device in the meantime: Apply asks for a fresh plan.
+- The sync report now says plainly that songs from another library added to a library playlist on the device are left out of that playlist on the device too.
+- A sync cancelled while it was already writing the device database now shows as succeeded in the job history, matching its report.
+- Cancelling a sync that waits behind another job on the same device now ends it at once instead of after the other job.
+- Clicking Apply twice on the same plan no longer shows a server error; the second click is told the plan is gone.
+- Playlists: merging a player's playlist into a library playlist of the same name no longer lists the songs both have twice.
+- Card readers: a card registered through one reader can now be formatted (or wiped) in another reader too, like Eject and Repair already allowed.
+- Formatting, partitioning and file-system repair now also see mounts made by FUSE (exfat-fuse, ntfs-3g) and wait a moment when the disk is still busy right after a mount, instead of running on a mounted volume or failing.
+- A player registered by a folder and also paired with the Wi-Fi app now syncs through the folder while it is there, as the Devices list shows, and over Wi-Fi only when the folder is gone.
+- A sync planned while a player was connected over Wi-Fi can no longer be applied to it after it is plugged in over USB; the plan is made again for the disk.
+- Merging two records of one player no longer drops the Wi-Fi pairing when the kept record had an old, revoked pairing (the app was then refused although the page said paired).
+- Card readers: a second card in the same reader is no longer taken for the first one (every card in a reader has the reader's serial); the card's own manifest or file system decides.
+- Formatting an iPod now checks that the disk really is that iPod (by its serial) before formatting, like the other device types.
+- Formatting a device now keeps it locked until the new file system is mounted, so an automatic sync, Repair or Eject can no longer touch the disk while it is being formatted.
+- The space after a planned sync (device Overview and the plan's After bar) no longer counts the space kept free as a reserve as used: a sync that writes nothing now shows the same usage as now.
+- Devices: making a plan (pressing Sync) right after reconnecting a player could fail with 'No such file or directory': an idle-unmount left over from before the player was ejected unmounted it again under the plan.
+- Devices: copies of SyncMusic's own mount that the system shows under another path are no longer treated as another program's mount, and *Unmount other mounts when connected* no longer unmounts them (which could take SyncMusic's own mount with them).
+- Compás app: a saved connection file damaged on the card (for example after a file system repair) no longer stops the app with 'Cannot start'. The app falls back to the copy of its previous save, or moves the damaged file aside and asks to pair again; the player stays the same device on the server.
+- Wi-Fi players: a player whose app has not talked to the server for a few minutes (or since the server restarted) is shown as not connected instead of 'connected (Wi-Fi)'; it stays paired and is connected again as soon as the app reaches the server.
+- Integrity check: no longer sits at 0 % for many minutes on a large player and can always be cancelled — every step shows what it is doing, and Cancel stops it within a second or two, keeping what it found so far. The check now offers **Quick** (sizes and missing files, the default), **Full** (read every file back) and **Deep** (also decode), and says how long a full check of the player takes.
+- Compás app: players are offered app updates without anyone pressing Download: when an app connects and the server holds no newer app, the server downloads its own release's app builds by itself and offers the update right away (or on the next connection). Settings → Tools and the device page say when the server holds no app.
+- The SyncMusic app for Compás players no longer says "does not fit" on its first Wi-Fi sync after a USB sync of the same card: it reports the files the USB sync put on the card, so only what is new is sent.
 - Compás players synced both over USB and by the Wi-Fi app keep each playlist as one `Playlists/<name>.m3u` file: a Wi-Fi sync no longer deletes the copy a USB sync wrote and sends it again.
 - A registered player's card in a USB card reader (recognised by its manifest or file system) can be ejected, repaired and synced again; it was refused because the reader reports another serial.
 - The SyncMusic app for Compás players from the beta build closed at once on the HiBy R1: it is built with the Go version that runs there again, and the build now checks that the app starts.
 - Wi-Fi sync in the Compás app no longer fails with "ack: EOF" when a connection to the server was dropped: the app retries such calls, and the server keeps idle connections open longer.
-- Wi-Fi clients: a sync larger than the server's outbox budget shows its progress, size and time left for the whole sync (all windows), on the device page and in the Compás app, instead of restarting the count for every part.
+- Wi-Fi clients: a large sync shows its progress, size and time left for the whole sync, on the device page and in the Compás app, instead of restarting the count for every part.
 - A Wi-Fi client's sync that waits for your confirmation (too many removals, does not fit) or failed now says so on its device page, with a Review plan button, instead of showing that the plan is being made.
 - The buttons under a sync error on the device page now wrap on phones instead of scrolling sideways.
 - Wi-Fi clients: **Cancel** on the device page now stops a sync the player's app is running (before, it only withdrew a pending *Sync now*).
@@ -49,7 +107,6 @@ versions follow [Semantic Versioning](https://semver.org/).
 - When writing to a player stops with an I/O error mid-sync, SyncMusic now checks and repairs its file system and continues the sync from where it stopped, once; if the error comes back soon after, the device page says the storage may be failing.
 - The damaged-file-system banner's button is now *Repair and continue*: after the repair it syncs again from where the stopped sync left off.
 - A device mounted by SyncMusic inside a container that also shows the host's file system (for example under `/mnt/root`) is no longer reported as "mounted a second time", which stopped syncs and repairs.
-- Wi-Fi clients: a large sync no longer copies the whole library into the server's outbox first. The server prepares up to 2 GB at a time (device setting *Outbox budget*), the player's app fetches it and syncs again for the next part; prepared files share the processing cache's copy instead of being copied a second time.
 - Compás (USB and the SyncMusic app): star ratings now sync both ways: stars you give on the player become the song's rating in your library and your library's ratings show on the player. Hearts and stars pass as they are: players with star ratings (Compás 1.6.0 and newer) sync ratings only, older ones favourites only; a favourite is never turned into 5 stars or back.
 - Devices: requests from players that want to connect show the name and code the same way on every row and are separated from each other.
 - A playlist edited on a Wi-Fi client whose file name differs from the library name (for example `Rock - 80s` for `Rock: 80s`) now updates the library playlist instead of creating a new one.
@@ -76,6 +133,14 @@ versions follow [Semantic Versioning](https://semver.org/).
 - The SonixOS device type is now called *HiBy R1 - SonixOS*, like *HiBy R1 - Compás*.
 
 ### Fixed
+- Playlists: merging a player's playlist into a library playlist of the same name no longer lists the songs both have twice.
+- Card readers: a card registered through one reader can now be formatted (or wiped) in another reader too, like Eject and Repair already allowed.
+- Formatting, partitioning and file-system repair now also see mounts made by FUSE (exfat-fuse, ntfs-3g) and wait a moment when the disk is still busy right after a mount, instead of running on a mounted volume or failing.
+- A player registered by a folder and also paired with the Wi-Fi app now syncs through the folder while it is there, as the Devices list shows, and over Wi-Fi only when the folder is gone.
+- A sync planned while a player was connected over Wi-Fi can no longer be applied to it after it is plugged in over USB; the plan is made again for the disk.
+- Merging two records of one player no longer drops the Wi-Fi pairing when the kept record had an old, revoked pairing (the app was then refused although the page said paired).
+- Card readers: a second card in the same reader is no longer taken for the first one (every card in a reader has the reader's serial); the card's own manifest or file system decides.
+- Formatting an iPod now checks that the disk really is that iPod (by its serial) before formatting, like the other device types.
 - When writing to a player stops with an I/O error mid-sync, SyncMusic now checks and repairs its file system and continues the sync from where it stopped, once; if the error comes back soon after, the device page says the storage may be failing.
 - The damaged-file-system banner's button is now *Repair and continue*: after the repair it syncs again from where the stopped sync left off.
 - USB SSDs and USB hard-disk enclosures registered as a device (for example as a backup disk) were refused with "not removable and not an iPod"; registered fixed USB disks now mount, sync and can be formatted.
@@ -117,6 +182,14 @@ versions follow [Semantic Versioning](https://semver.org/).
 - A newly registered USB flash drive or disk has no format limit by default: files are copied in the format the library has unless you choose formats. Disks registered before keep their formats.
 
 ### Fixed
+- Playlists: merging a player's playlist into a library playlist of the same name no longer lists the songs both have twice.
+- Card readers: a card registered through one reader can now be formatted (or wiped) in another reader too, like Eject and Repair already allowed.
+- Formatting, partitioning and file-system repair now also see mounts made by FUSE (exfat-fuse, ntfs-3g) and wait a moment when the disk is still busy right after a mount, instead of running on a mounted volume or failing.
+- A player registered by a folder and also paired with the Wi-Fi app now syncs through the folder while it is there, as the Devices list shows, and over Wi-Fi only when the folder is gone.
+- A sync planned while a player was connected over Wi-Fi can no longer be applied to it after it is plugged in over USB; the plan is made again for the disk.
+- Merging two records of one player no longer drops the Wi-Fi pairing when the kept record had an old, revoked pairing (the app was then refused although the page said paired).
+- Card readers: a second card in the same reader is no longer taken for the first one (every card in a reader has the reader's serial); the card's own manifest or file system decides.
+- Formatting an iPod now checks that the disk really is that iPod (by its serial) before formatting, like the other device types.
 - When writing to a player stops with an I/O error mid-sync, SyncMusic now checks and repairs its file system and continues the sync from where it stopped, once; if the error comes back soon after, the device page says the storage may be failing.
 - The damaged-file-system banner's button is now *Repair and continue*: after the repair it syncs again from where the stopped sync left off.
 - Android: playlists a player app saved with absolute paths (`/storage/emulated/0/…`, `/storage/self/primary/…`, `/sdcard/…`) now go back to the library, and a device playlist whose entries match no synced song no longer empties the library playlist.
@@ -144,6 +217,14 @@ versions follow [Semantic Versioning](https://semver.org/).
 - HiBy R1: a "Tips for this player" card on the device page with the recommended habits and player settings (eject, Detect changes, split settings, file system).
 
 ### Fixed
+- Playlists: merging a player's playlist into a library playlist of the same name no longer lists the songs both have twice.
+- Card readers: a card registered through one reader can now be formatted (or wiped) in another reader too, like Eject and Repair already allowed.
+- Formatting, partitioning and file-system repair now also see mounts made by FUSE (exfat-fuse, ntfs-3g) and wait a moment when the disk is still busy right after a mount, instead of running on a mounted volume or failing.
+- A player registered by a folder and also paired with the Wi-Fi app now syncs through the folder while it is there, as the Devices list shows, and over Wi-Fi only when the folder is gone.
+- A sync planned while a player was connected over Wi-Fi can no longer be applied to it after it is plugged in over USB; the plan is made again for the disk.
+- Merging two records of one player no longer drops the Wi-Fi pairing when the kept record had an old, revoked pairing (the app was then refused although the page said paired).
+- Card readers: a second card in the same reader is no longer taken for the first one (every card in a reader has the reader's serial); the card's own manifest or file system decides.
+- Formatting an iPod now checks that the disk really is that iPod (by its serial) before formatting, like the other device types.
 - When writing to a player stops with an I/O error mid-sync, SyncMusic now checks and repairs its file system and continues the sync from where it stopped, once; if the error comes back soon after, the device page says the storage may be failing.
 - The damaged-file-system banner's button is now *Repair and continue*: after the repair it syncs again from where the stopped sync left off.
 - A player whose database lost its favourites (reset, repaired or rewritten) no longer removes them from the library: when ten or more and over half of the hearts vanish at once, SyncMusic sends no unfavourite, warns on the sync report and writes the hearts back to the player. The same goes for ratings cleared at once on an iPod or Rockbox player whose database was reset: the library keeps them and the next sync puts them back on the player. If the favourites were removed on purpose, *Remove them from the library* in the report's History entry sends the removals.
@@ -182,6 +263,14 @@ versions follow [Semantic Versioning](https://semver.org/).
 - The state file SyncMusic keeps on a player now names its libraries by a stable id and records which installation owns the player and which wrote it last, so another SyncMusic installation can recognise the same library and leaves items of libraries it does not have alone. Players synced by an older version are upgraded at their next sync.
 
 ### Fixed
+- Playlists: merging a player's playlist into a library playlist of the same name no longer lists the songs both have twice.
+- Card readers: a card registered through one reader can now be formatted (or wiped) in another reader too, like Eject and Repair already allowed.
+- Formatting, partitioning and file-system repair now also see mounts made by FUSE (exfat-fuse, ntfs-3g) and wait a moment when the disk is still busy right after a mount, instead of running on a mounted volume or failing.
+- A player registered by a folder and also paired with the Wi-Fi app now syncs through the folder while it is there, as the Devices list shows, and over Wi-Fi only when the folder is gone.
+- A sync planned while a player was connected over Wi-Fi can no longer be applied to it after it is plugged in over USB; the plan is made again for the disk.
+- Merging two records of one player no longer drops the Wi-Fi pairing when the kept record had an old, revoked pairing (the app was then refused although the page said paired).
+- Card readers: a second card in the same reader is no longer taken for the first one (every card in a reader has the reader's serial); the card's own manifest or file system decides.
+- Formatting an iPod now checks that the disk really is that iPod (by its serial) before formatting, like the other device types.
 - When writing to a player stops with an I/O error mid-sync, SyncMusic now checks and repairs its file system and continues the sync from where it stopped, once; if the error comes back soon after, the device page says the storage may be failing.
 - The damaged-file-system banner's button is now *Repair and continue*: after the repair it syncs again from where the stopped sync left off.
 - A player whose database lost its favourites (reset, repaired or rewritten) no longer removes them from the library: when ten or more and over half of the hearts vanish at once, SyncMusic sends no unfavourite, warns on the sync report and writes the hearts back to the player. The same goes for ratings cleared at once on an iPod or Rockbox player whose database was reset: the library keeps them and the next sync puts them back on the player.
@@ -217,6 +306,14 @@ versions follow [Semantic Versioning](https://semver.org/).
   without a service. Mounting players still needs root or passwordless `sudo` for the block-device tools.
 
 ### Fixed
+- Playlists: merging a player's playlist into a library playlist of the same name no longer lists the songs both have twice.
+- Card readers: a card registered through one reader can now be formatted (or wiped) in another reader too, like Eject and Repair already allowed.
+- Formatting, partitioning and file-system repair now also see mounts made by FUSE (exfat-fuse, ntfs-3g) and wait a moment when the disk is still busy right after a mount, instead of running on a mounted volume or failing.
+- A player registered by a folder and also paired with the Wi-Fi app now syncs through the folder while it is there, as the Devices list shows, and over Wi-Fi only when the folder is gone.
+- A sync planned while a player was connected over Wi-Fi can no longer be applied to it after it is plugged in over USB; the plan is made again for the disk.
+- Merging two records of one player no longer drops the Wi-Fi pairing when the kept record had an old, revoked pairing (the app was then refused although the page said paired).
+- Card readers: a second card in the same reader is no longer taken for the first one (every card in a reader has the reader's serial); the card's own manifest or file system decides.
+- Formatting an iPod now checks that the disk really is that iPod (by its serial) before formatting, like the other device types.
 - When writing to a player stops with an I/O error mid-sync, SyncMusic now checks and repairs its file system and continues the sync from where it stopped, once; if the error comes back soon after, the device page says the storage may be failing.
 - The damaged-file-system banner's button is now *Repair and continue*: after the repair it syncs again from where the stopped sync left off.
 - First syncs of large libraries onto USB flash drives, Rockbox and HiBy players no longer slow down with every track written.

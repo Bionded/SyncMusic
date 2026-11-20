@@ -435,3 +435,47 @@ def test_unknown_space_from_the_sentinel_capacity():
 
     assert space_report(_splan([]), capacity=UNKNOWN_SPACE, free=0, reserve=0).unknown
     assert not space_report(_splan([]), capacity=UNKNOWN_SPACE - 1, free=0, reserve=0).unknown
+
+
+def test_forced_trim_counts_a_dropped_replace_and_recomputes_the_reserve():
+    from syncmusic.core.prepare import initial_plan_item
+
+    tracks = _tracks()
+    chain = Chain([])
+    j1 = tracks[2]
+    m = Manifest(
+        header=ManifestHeader(device_id="d"),
+        items={
+            j1.ref.key(): ManifestEntry(
+                ref=j1.ref,
+                device_ref="j1",
+                path="j1",
+                size=1 * MB,
+                source_state="changed",
+                chain_hash=chain.chain_hash(initial_plan_item(j1), CAPS),
+            )
+        },
+    )
+    plan = plan_with_space(
+        _device(RULES),
+        {"lib": snapshot(tracks)},
+        m,
+        CAPS,
+        chain,
+        capacity=1000 * MB,
+        free=45 * MB,
+        commit_reserve=lambda n: n * MB,  # grows with the items on the device after the plan
+        force=True,
+        now=NOW,
+    )
+    kinds = {a.ref.item_id: a.kind for a in plan.actions}
+    assert kinds["j1"] == ActionKind.KEEP and "lib/j1" in plan.space.dropped  # the growing replace
+    rules = {r.rule_id: r for r in plan.space.per_rule}
+    assert rules["jazz"].dropped_items == 2  # j1's new version and Flac
+    assert any(r["rule_id"] == "jazz" for r in left_off(plan)["per_rule"])
+    on_device = sum(
+        1 for a in plan.actions if a.kind in (ActionKind.ADD, ActionKind.KEEP, ActionKind.REPLACE)
+    )
+    assert (
+        plan.space.reserve == 10 * MB + on_device * MB
+    )  # margin + the trimmed plan's commit reserve

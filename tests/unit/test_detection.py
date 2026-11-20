@@ -131,6 +131,22 @@ def test_matching_order_serial_manifest_uuid():
     assert match_registered(disk(serial=None), [renamed], "old-id") == (renamed, "manifest")
 
 
+def test_card_reader_serial_does_not_take_another_card():
+    """every card in a reader has the reader's serial: the manifest or fs UUID on the card decides."""
+    from syncmusic.core.detection import serial_match_is_certain
+
+    card_a = _cfg("card-a", usb_serial="READER1", fs_uuid="AA-AA", manifest_device_id="uid-a")
+    card_b = _cfg("card-b", usb_serial="READER1", fs_uuid="BB-BB", manifest_device_id="uid-b")
+    d = disk(serial="READER1", uuid="BB-BB")
+    assert match_registered(d, [card_a, card_b], "uid-b") == (card_b, "usb_serial")
+    assert match_registered(d, [card_a, card_b], None)[0] is card_b
+    assert not serial_match_is_certain(d, [card_a, card_b])
+    # only card A registered, an unknown card with another registration's manifest: not card A
+    assert match_registered(disk(serial="READER1", uuid="CC-CC"), [card_a], "uid-x") is None
+    assert not serial_match_is_certain(disk(serial="READER1", uuid="CC-CC"), [card_a])
+    assert serial_match_is_certain(disk(serial="READER1", uuid="AA-AA"), [card_a])
+
+
 def test_unknown_disk_probed_by_every_class(monkeypatch):
     from syncmusic.base.device import ProbeResult
     from syncmusic.core import registry

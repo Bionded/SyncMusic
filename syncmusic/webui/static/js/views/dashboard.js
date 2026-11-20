@@ -211,7 +211,7 @@ function setupCard(libraries, reg, reports, checks) {
   ];
   const key = `setup:${libraries[0]?.id ?? ""}:${first?.id ?? ""}`;
   if (steps.every((x) => x[1]) || dismissed().has(key)) return "";
-  steps.push(["doctor", !checks.some((c) => c.state === "error"), "#/settings"]);
+  steps.push(["doctor", !checks.some((c) => c.state === "error"), "#/settings/maint"]);
   const done = steps.filter((x) => x[1]).length;
   return html`<section class="panel" aria-labelledby="hSetup" data-setup>
     <div class="panel-head"><h2 id="hSetup">${t("dash.setup")}</h2><span class="muted">${t("dash.setup_count", { done, n: steps.length })}</span>
@@ -329,11 +329,11 @@ function needRows(reg, unknown, gentle, libraries, last = {}, updates = null, ch
   // system check errors; library connections have their own rows above
   for (const c of checks.filter((x) => x.state === "error" && x.id !== "libraries")) {
     add(html`data-need="check" data-check="${c.id}"`, "er", icon("warn", { size: 17 }), t("dash.check_title", { label: c.label }),
-      [c.detail, c.fix].filter(Boolean).join(" · "), "#/settings", html`<a class="btn small over" href="#/settings">${t("dash.open_settings")}</a>`);
+      [c.detail, c.fix].filter(Boolean).join(" · "), "#/settings/maint", html`<a class="btn small over" href="#/settings/maint">${t("dash.open_settings")}</a>`);
   }
   if (updates?.available && updates.latest) {
-    add(html`data-need="update"`, "in", icon("download", { size: 17 }), t("dash.update_title", { version: updates.latest }), t("dash.update_sub"), "#/settings",
-      html`<a class="btn small over" href="#/settings">${t("dash.open_settings")}</a>`, "", `update:${updates.latest}`);
+    add(html`data-need="update"`, "in", icon("download", { size: 17 }), t("dash.update_title", { version: updates.latest }), t("dash.update_sub"), "#/settings/updates",
+      html`<a class="btn small over" href="#/settings/updates">${t("dash.open_settings")}</a>`, "", `update:${updates.latest}`);
   }
   return rows.map((r, i) => [r, i]).sort((a, b) => SEVERITY[a[0].tone] - SEVERITY[b[0].tone] || a[1] - b[1]).map(([r]) => r);
 }

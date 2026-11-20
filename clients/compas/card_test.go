@@ -54,3 +54,28 @@ func TestCardIDWithoutACardRootWritesNothing(t *testing.T) {
 		t.Fatalf(".syncmusic created in the working directory: %v", err)
 	}
 }
+
+func TestCardIDKeepsTheRowsOfADamagedManifest(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, manifestDir)
+	os.MkdirAll(dir, 0o755)
+	old := "{garbage\n" + `{"type":"item","lib":"m","item_id":"1","path":"Music/a.mp3"}` + "\n" +
+		`{"type":"playlist","name":"P","path":"Playlists/P.m3u8"}` + "\n"
+	os.WriteFile(filepath.Join(dir, "manifest.jsonl"), []byte(old), 0o644)
+	c := &Client{root: root}
+	id := c.cardID()
+	if id == "" || readCardID(root) != id {
+		t.Fatalf("id %q, header %q", id, readCardID(root))
+	}
+	files := readCardFiles(root)
+	if len(files) != 2 {
+		t.Fatalf("rows lost: %v", files)
+	}
+	aside, _ := filepath.Glob(filepath.Join(dir, "manifest.jsonl.broken-*"))
+	if len(aside) != 1 {
+		t.Fatalf("original not kept aside: %v", aside)
+	}
+	if b, _ := os.ReadFile(aside[0]); string(b) != old {
+		t.Fatal("kept copy differs from the original")
+	}
+}

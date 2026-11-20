@@ -26,7 +26,6 @@ Examples:
   scripts/test.py fast -- -k rules tests/unit/test_rules.py
   scripts/test.py nohw --changed               only what the changes since the last commit can affect
   scripts/test.py nohw --failed                only what failed last time
-  scripts/test.py hardware -n 0
 """
 
 from __future__ import annotations
@@ -113,7 +112,7 @@ SUITES: dict[str, Suite] = {
         "heavy and not hardware",
     ),
     "hardware": Suite(
-        "real USB players listed in tests/hardware.toml - nothing is collected without that file",
+        "tests marked hardware (real USB players); the real-player tests are not part of this repository",
         "hardware",
     ),
     "not_slow_hardware": Suite(

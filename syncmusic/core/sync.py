@@ -237,6 +237,8 @@ class PlanContext:
     playlist_choices: dict[str, Policy] = field(default_factory=dict)
     # foreign device: old -> new item keys the plan re-linked in memory (written when the take-over is applied)
     relinks: dict[str, str] = field(default_factory=dict)
+    # made against the Wi-Fi side (the app's inventory): outdated once the player is plugged in over USB
+    network: bool = False
 
 
 def _only_keeps(pc: PlanContext) -> bool:
@@ -481,6 +483,8 @@ class SyncService:
         self._configs: list[DeviceConfig] = []
         # disk devices that also have a paired Wi-Fi app (the same card): reached over Wi-Fi when not on USB
         self.wifi_ids: set[str] = set()
+        # whether a paired Wi-Fi app was heard from lately (Clients.alive; set by the app)
+        self.wifi_alive: Callable[[str], bool] = lambda device_id: True
         self._libraries: dict[str, Library] = {}
         self._mounts: dict[str, mnt.Mounted] = {}  # device id -> our mount
         self._ro_mounts: dict[
@@ -492,6 +496,7 @@ class SyncService:
         # device id -> the I/O error that showed its file system is damaged: no automatic syncs until a
         # re-plug, a repair, a format or a wipe clears it
         self._damaged: dict[str, str] = {}
+        self._eject_failed: dict[str, str] = {}  # device id -> why its last Eject failed
         # device id -> time.monotonic() of the last automatic repair after a sync hit an I/O error
         self._healed: dict[str, float] = {}
         # device id -> (item key, description) the repeated I/O error stopped at: the device page offers to skip it
@@ -859,6 +864,10 @@ class SyncService:
             cfg.type != "client"
             and device_id in self.wifi_ids
             and self.detector.by_device(device_id) is None
+            # a folder that is there (mounted by hand) wins, as on the Devices list
+            and not (
+                bool(cfg.mount_path) and await asyncio.to_thread(Path(cfg.mount_path or "").is_dir)
+            )
         ):
             return wifi_view(cfg)  # not on USB: reached through its paired Wi-Fi app
         return cfg
@@ -874,6 +883,103 @@ class SyncService:
     def _network_dir(self, cfg: DeviceConfig) -> Path:
         """The local placeholder `mount` of a network device (it keeps nothing there)."""
         return self.ctx.config.data_dir / "network" / cfg.id
+
+    def _network_root(self) -> Path:
+        return self.ctx.config.data_dir / "network"
+
+    @staticmethod
+    def _network_owner(name: str) -> str:
+        """The device id a `network/` entry belongs to (`<id>`, `<id>.shadow`, `<id>.diagnostics.json`, …)."""
+        for suffix in NETWORK_SUFFIXES:
+            if name.endswith(suffix):
+                return name.removesuffix(suffix)
+        return name
+
+    def _drop_network_files(self, device_id: str) -> int:
+        """Remove every `network/` entry of `device_id`; returns the bytes freed. Blocking."""
+        root = self._network_root()
+        if not root.is_dir():
+            return 0
+        freed = 0
+        for p in list(root.iterdir()):
+            if self._network_owner(p.name) != device_id:
+                continue
+            freed += _tree_size(p)
+            if p.is_dir() and not p.is_symlink():
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                p.unlink(missing_ok=True)
+        return freed
+
+    async def sweep_network_files(self) -> int:
+        """Remove `network/` folders and files of devices that are no longer registered (left by a delete,
+        merge or re-pairing of older versions); registered devices are never touched. Returns bytes freed."""
+        known = {d.id for d in await self.store.devices()}
+
+        from syncmusic.devices.HibyR1 import compas_tagset
+
+        def sweep() -> tuple[int, list[str]]:
+            root = self._network_root()
+            if not root.is_dir():
+                return 0, []
+            gone = sorted({self._network_owner(p.name) for p in root.iterdir()} - known)
+            freed = sum(self._drop_network_files(d) for d in gone)
+            shrunk = 0
+            for d in sorted(known):
+                if not self.ctx.jobs.device_busy(d):  # whole copies kept by older versions
+                    shrunk += compas_tagset.shrink_tag_copies(root / f"{d}.shadow")
+            if shrunk:
+                log.info(
+                    "Wi-Fi player data: kept copies cut to their tags, %.1f MB freed", shrunk / 1e6
+                )
+            return freed + shrunk, gone
+
+        freed, gone = await asyncio.to_thread(sweep)
+        if gone:
+            log.info(
+                "removed the Wi-Fi data of %d devices that no longer exist (%s): %.1f MB freed",
+                len(gone),
+                ", ".join(gone),
+                freed / 1e6,
+            )
+        return freed
+
+    def network_usage(self) -> dict[str, list[Path]]:
+        """Device id -> its `network/` entries (state and outbox, kept copies, built databases). Blocking."""
+        root = self._network_root()
+        out: dict[str, list[Path]] = {}
+        if root.is_dir():
+            for p in sorted(root.iterdir()):
+                out.setdefault(self._network_owner(p.name), []).append(p)
+        return out
+
+    async def clean_network_files(self, device_id: str) -> None:
+        """Settings → Storage: a device that no longer exists loses everything; a registered one its waiting
+        files (prepared again at its next sync), built databases and diagnostics; its state and the copies its
+        player database is built from stay."""
+        if await self.store.device(device_id) is None:
+            await asyncio.to_thread(self._drop_network_files, device_id)
+            return
+        if self.ctx.jobs.device_busy(device_id):
+            raise SyncError(f"{device_id} is busy", "busy")
+        root = self._network_root()
+
+        def clean() -> None:
+            outbox = root / device_id
+            if outbox.is_dir():
+                for top, dirs, files in os.walk(outbox):  # the state folder (.syncmusic) stays
+                    dirs[:] = [d for d in dirs if not d.startswith(".")]
+                    for f in files:
+                        if not f.startswith("."):
+                            (Path(top) / f).unlink(missing_ok=True)
+                for d in sorted((d for d in outbox.rglob("*") if d.is_dir()), reverse=True):
+                    if not d.name.startswith(".") and not any(d.iterdir()):
+                        d.rmdir()
+            for suffix in (".gen", ".card"):
+                shutil.rmtree(root / f"{device_id}{suffix}", ignore_errors=True)
+            (root / f"{device_id}.diagnostics.json").unlink(missing_ok=True)
+
+        await asyncio.to_thread(clean)
 
     async def check_network(self, cfg: DeviceConfig) -> None:
         """Log in to a server device with `cfg`'s settings (registration, Device settings' Test and save)."""
@@ -958,7 +1064,9 @@ class SyncService:
             # a disk device with a paired Wi-Fi app (the same card) is reached over Wi-Fi while not on USB
             wifi = cfg.type != "client" and cfg.id in self.wifi_ids and cd is None and not fixed
             network = (self._network(cfg) and not self._usb_mtp(cfg)) or wifi
-            connected = cd is not None or fixed or network
+            # a Wi-Fi app counts only while it talks to us: paired alone is not connected
+            app_gone = (wifi or cfg.type == "client") and not self.wifi_alive(cfg.id)
+            connected = cd is not None or fixed or (network and not app_gone)
             job = self.ctx.jobs.running_for_device(cfg.id)
             registered.append(
                 {
@@ -969,7 +1077,7 @@ class SyncService:
                     "connected": connected,
                     # how it is reached now: usb (or a card reader), wifi (its paired app), None
                     "connection": "wifi"
-                    if wifi or cfg.type == "client"
+                    if (wifi or cfg.type == "client") and not app_gone
                     else "usb"
                     if cd is not None
                     else None,
@@ -991,6 +1099,14 @@ class SyncService:
                     "lease": await self._foreign_lease(cfg.id),
                     # mounted a second time by another program (the system's automount)
                     "foreign_mounts": self._foreign_in(cd, table)
+                    if cd is not None and not cfg.mount_path
+                    else [],
+                    # those of them that are read-only (only SyncMusic writes to the volume)
+                    "foreign_read_only": [
+                        e.path
+                        for e in table
+                        if e.ro and cd is not None and e.path in self._foreign_in(cd, table)
+                    ]
                     if cd is not None and not cfg.mount_path
                     else [],
                     "busy": job.id if job else None,
@@ -1023,6 +1139,8 @@ class SyncService:
                     if connected
                     else None,
                     "fs_damaged": self._damaged.get(cfg.id) if connected else None,
+                    # the last Eject failed (busy, file system errors): Check and repair in the header
+                    "eject_failed": self._eject_failed.get(cfg.id) if connected else None,
                     # the file a repeated I/O error stopped at: "Skip that file and continue"
                     "skip_offer": (self._skip_offer[cfg.id][1] or self._skip_offer[cfg.id][0])
                     if connected and cfg.id in self._skip_offer
@@ -1695,7 +1813,11 @@ class SyncService:
         await self._close_mtp(device_id)
         self.drop_plans(device_id)
         await self.store.delete_device(device_id)
+        freed = await asyncio.to_thread(self._drop_network_files, device_id)
+        if freed:
+            log.info("%s: removed its Wi-Fi data (%.1f MB)", device_id, freed / 1e6)
         self._device_items.pop(device_id, None)
+        self._ejected.discard(device_id)  # a record registered again under this id is not ejected
         own = own_template_id(
             device_id
         )  # its own template goes with it unless another device links it too
@@ -1742,6 +1864,8 @@ class SyncService:
 
         await asyncio.to_thread(move_files)
         await self.store.merge_device(keep_id, drop_id)
+        # what did not move (diagnostics)
+        await asyncio.to_thread(self._drop_network_files, drop_id)
         self.wifi_ids.discard(drop_id)
         self.wifi_ids.add(keep_id)
         self._device_items.pop(drop_id, None)
@@ -1797,6 +1921,9 @@ class SyncService:
             raise SyncError(f"{cfg.name}: {NO_MEDIUM_HINT}", "no_medium")
         # one opener at a time per device: requests that waited for the clock settle (or simply arrived together)
         # would otherwise each mount the partition, stacking mounts the unmount removes only one of
+        # a stay-ready unmount still waiting from an earlier use must not hit this open (it would unmount the
+        # device under the caller); the open schedules a fresh one when it is done
+        self._cancel_ready_unmount(device_id)
         async with self._mount_locks.setdefault(device_id, asyncio.Lock()):
             m = self._mounts.get(device_id)
             if m is not None and not await asyncio.to_thread(mnt.is_live, m):
@@ -1852,12 +1979,13 @@ class SyncService:
                     self._ro_mounts.pop(device_id, None)
                 # the sidebar shows the used space of mounted devices only
                 self.ctx.bus.publish("device.mounted", device_id=device_id)
-                if cfg.sync.unmount_foreign:
+                if cfg.sync.unmount_foreign or cfg.sync.foreign_read_only:
                     self._watch_foreign(cfg)
         if cfg.sync.stay_ready:
             self._schedule_ready_unmount(device_id)
         dev = cls(cfg, m.path, self.ctx)
         dev.block_path = cd.disk.path
+        dev.detected_serial = cd.disk.serial
         return dev
 
     async def _wait_for_automount(self, device_id: str) -> None:
@@ -1875,6 +2003,11 @@ class SyncService:
         """The device's current mount was made by another program (not at our own mountpoint)."""
         m = self._mounts.get(device_id)
         return m is not None and not m.owned and m.path != self.ctx.config.mount_root / device_id
+
+    def _cancel_ready_unmount(self, device_id: str) -> None:
+        task = self._ready_tasks.pop(device_id, None)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
 
     def _schedule_ready_unmount(self, device_id: str) -> None:
         """Stay ready: unmount the device once it was idle for `READY_IDLE_S` (no job on it, no view opened it
@@ -2015,7 +2148,11 @@ class SyncService:
         return [
             e.path
             for e in table
-            if e.source in parts and e.path not in ours and str(Path(e.path).parent) != root
+            if e.source in parts
+            and e.path not in ours
+            and str(Path(e.path).parent) != root
+            # a propagated copy of our mount is not another program's: unmounting it would take ours along
+            and not any(mnt.is_view_of(e.path, o, table) for o in ours)
         ]
 
     # a host automounter mounts a new disk some seconds after it appears: look again a few times
@@ -2023,7 +2160,7 @@ class SyncService:
 
     def _watch_foreign(self, cfg: DeviceConfig) -> None:
         """`unmount_foreign`: unmount other programs' mounts of the device for a minute after the app mounted it
-        (busy ones are left alone and logged)."""
+        (busy ones are left alone and logged); `foreign_read_only`: remount them read-only instead."""
         old = self._foreign_tasks.pop(cfg.id, None)
         if old is not None and not old.done():
             old.cancel()
@@ -2035,13 +2172,22 @@ class SyncService:
                 if cd is None or self.ctx.guard is None or cfg.id in self._ejecting:
                     return
                 table = await asyncio.to_thread(mnt.mount_table)
+                ro = {e.path for e in table if e.ro}
                 for path in self._foreign_in(cd, table):
+                    if not cfg.sync.unmount_foreign and path in ro:
+                        continue  # already read-only
                     try:
                         await asyncio.to_thread(
                             self.ctx.guard.check, cd.disk.path, "eject", self._guard_ids(cfg)
                         )
-                        await mnt.run_cmd(["umount", path])
-                        log.info("%s: unmounted another program's mount at %s", cfg.name, path)
+                        if cfg.sync.unmount_foreign:
+                            await mnt.run_cmd(["umount", path])
+                            log.info("%s: unmounted another program's mount at %s", cfg.name, path)
+                        else:
+                            await mnt.remount_read_only(path)
+                            log.info(
+                                "%s: made another program's mount read-only: %s", cfg.name, path
+                            )
                     except (GuardError, mnt.BlockdevError) as e:
                         log.warning("%s: could not unmount %s: %s", cfg.name, path, e)
 
@@ -2074,13 +2220,32 @@ class SyncService:
         except SyncError:
             return []
         ours = {str(m.path) for m in self._mounts.values()}
+        table = await asyncio.to_thread(mnt.mount_table)
         return [
             m.path
             for m in mnt.disk_mounts(disk, self.ctx.config.mount_root)
             if not m.ours
             and m.path not in ours
-            and not any(mnt.is_view_of(m.path, o) for o in ours)
+            and not any(mnt.is_view_of(m.path, o, table) for o in ours)
         ]
+
+    async def foreign_read_only(self, device_id: str) -> list[str]:
+        """Remount other programs' mounts of the device read-only (per mount: a bind remount, so the app's own
+        mount of the same file system stays writable). Returns the mountpoints changed."""
+        cfg = await self.config(device_id)
+        guard, disk = await asyncio.to_thread(self._disk_of, cfg)
+        done: list[str] = []
+        for path in await self.foreign_mounts(cfg):
+            await asyncio.to_thread(guard.check, disk.path, "eject", self._guard_ids(cfg))
+            try:
+                await mnt.remount_read_only(path)
+            except mnt.BlockdevError as e:
+                raise SyncError(f"{cfg.name}: {e}", "sync_error") from e
+            done.append(path)
+        if done:
+            log.info("%s: other programs' mounts made read-only: %s", cfg.name, ", ".join(done))
+            self.ctx.bus.publish("device.updated", device_id=cfg.id)
+        return done
 
     async def unmount_everywhere(
         self, device_id: str, *, lazy: bool = False
@@ -2134,7 +2299,19 @@ class SyncService:
         self._ejecting.add(device_id)
         try:
             async with lock:
-                await self._eject(cfg)
+                try:
+                    await self._eject(cfg)
+                except mnt.DamagedFilesystemError as e:
+                    # found by the check after unmount: Check and repair is offered at once
+                    self._eject_failed[device_id] = str(e)
+                    self._damaged[device_id] = _fsck_summary(str(e))
+                    self.ctx.bus.publish("device.error", device_id=device_id, error=str(e))
+                    raise
+                except (mnt.BlockdevError, GuardError, OSError) as e:
+                    self._eject_failed[device_id] = str(e)
+                    self.ctx.bus.publish("device.updated", device_id=device_id)
+                    raise
+            self._eject_failed.pop(device_id, None)
             if self.detector.by_device(device_id) is not None:
                 self._ejected.add(device_id)  # until udev reports the disk gone
         finally:
@@ -2178,11 +2355,21 @@ class SyncService:
             raise SyncError(f"{cfg.name} is a directory, not a disk: nothing to format", "invalid")
         if self._network(cfg):
             raise SyncError(f"{cfg.name} is a server: nothing to format", "invalid")
-        if self.ctx.jobs.device_busy(device_id):
-            raise SyncError(f"{cfg.name} is busy", "busy")
         cd = self.detector.by_device(device_id)
         if cd is None:
             raise SyncError(f"{cfg.name} is not connected", "not_connected")
+        await self._yield_update(device_id)
+        lock = self.ctx.jobs.device_lock(device_id)
+        if lock.locked() or self.ctx.jobs.device_busy(device_id):
+            raise SyncError(f"{cfg.name} is busy", "busy")
+        # held from the unmount to the new mount: no update sync, auto-sync or Repair mounts during mkfs
+        async with lock:
+            return await self._format_locked(cfg, cd, fs)
+
+    async def _format_locked(
+        self, cfg: DeviceConfig, cd: ConnectedDisk, fs: str | None
+    ) -> DeviceConfig:
+        device_id = cfg.id
         # never a mount for the check: the old file system may not mount at all
         held = self._mounts.get(device_id)
         if held is not None:
@@ -2194,6 +2381,7 @@ class SyncService:
             cfg, self.ctx.config.mount_root / device_id, self.ctx
         )
         device.block_path = cd.disk.path
+        device.detected_serial = cd.disk.serial
         try:
             part = await device.format(cfg.name, fs)
         except NotImplementedError as e:
@@ -2516,7 +2704,9 @@ class SyncService:
             found = await device.read_contents()
             existing = len(found.items)
             matches = match_existing(found, tracks)
-        pc = PlanContext(plan, matches, existing, foreign, relinks=foreign_relinks)
+        pc = PlanContext(
+            plan, matches, existing, foreign, relinks=foreign_relinks, network=device.network
+        )
         if register:
             self.plans[plan.id] = pc
             self._trim_plans(device_id, plan.id)
@@ -2867,7 +3057,10 @@ class SyncService:
         await self._yield_update(cfg.id)  # a user action wins over an update sync
         if self.ctx.jobs.device_busy(cfg.id):
             raise SyncError(f"{cfg.name} is busy", "busy")
-        del self.plans[plan_id]
+        if (
+            self.plans.pop(plan_id, None) is None
+        ):  # applied by a second click while this one awaited
+            raise SyncError(f"unknown or outdated plan {plan_id!r}", "not_found")
         self._waiting.pop(cfg.id, None)
         if plan.first_sync and first_sync is not None and cfg.first_sync_choice != first_sync:
             cfg.first_sync_choice = first_sync  # persisted with the device
@@ -3197,6 +3390,10 @@ class SyncService:
                         waiting=waiting,
                         reverse=reverse,
                     )
+                    if update_writes_items(plan):
+                        # the device changed under a plan offered for review: its sizes, removals and
+                        # free space are stale, so Apply asks for a fresh plan
+                        self._trim_plans(cfg.id, "")
                     if held:
                         report.warnings.append(held)
                     if played:
@@ -3359,6 +3556,10 @@ class SyncService:
             report.reverse = reverse
             report.first_sync = first_sync if pc.plan.first_sync else None
             report.kind = "update" if update else "full"
+            if report.status == "succeeded":
+                ctx.committed = (
+                    True  # a cancel during the final writes came too late: the job says succeeded
+                )
             if report.status in ("succeeded", "partial"):
                 ctx.progress(None, None, phase="verify")  # keeps the outcome message
                 await self._verify_written(cfg, device, report, plan, waiting or pc.waiting)
@@ -3557,6 +3758,9 @@ class SyncService:
             self.ctx.bus.publish("device.eject_failed", device_id=device_id, error=str(e))
         except (SyncError, GuardError, OSError) as e:
             log.warning("%s: eject after the sync failed: %s", device_id, e)
+            self.ctx.bus.publish("device.eject_failed", device_id=device_id, error=str(e))
+        except Exception as e:  # noqa: BLE001 - a background task: never 'exception was never retrieved'
+            log.exception("%s: eject after the sync failed", device_id)
             self.ctx.bus.publish("device.eject_failed", device_id=device_id, error=str(e))
 
     async def _verify_written(
@@ -4245,6 +4449,9 @@ class SyncService:
             return
         if not startup:
             self._appeared[cfg.id] = time.monotonic()
+        # a plan diffed against the Wi-Fi app's files must never be applied to the USB disk
+        for pid in [p for p, c in self.plans.items() if c.plan.device_id == cfg.id and c.network]:
+            del self.plans[pid]
         # the clock first, before anything mounts it; open_device waits for it
         if not cfg.mount_path and cd.device_id not in self._mounts:
             probe = registry.device_class(cfg.type)(
@@ -4765,6 +4972,7 @@ class SyncService:
             self._damaged.pop(cfg.id, None)
             self._errors.pop(cfg.id, None)
             self._device_items.pop(cfg.id, None)
+            self._eject_failed.pop(cfg.id, None)
             ctx.progress(0.9, "errors corrected" if result.fixed else "no errors found")
             await self.open_device(cfg.id)
             self.ctx.bus.publish("device.repaired", device_id=cfg.id, fixed=result.fixed)
@@ -4791,6 +4999,10 @@ class SyncService:
         await self.detector.disk_removed(name)
         if cd is not None and cd.device_id is not None:
             self._ejected.discard(cd.device_id)
+            # its idle-unmount timer belongs to the mount that is gone
+            ready = self._ready_tasks.pop(cd.device_id, None)
+            if ready is not None and not ready.done():
+                ready.cancel()
             self._appeared.pop(cd.device_id, None)
             self._clock_set.pop(cd.device_id, None)
             task = self._clock_tasks.pop(cd.device_id, None)
@@ -4801,6 +5013,7 @@ class SyncService:
                 foreign.cancel()
             self._errors.pop(cd.device_id, None)
             self._damaged.pop(cd.device_id, None)  # re-plugged: try again
+            self._eject_failed.pop(cd.device_id, None)
             self._manifest_bad.pop(cd.device_id, None)
             self._waiting.pop(cd.device_id, None)
             self.drop_plans(cd.device_id)
@@ -4811,6 +5024,14 @@ class SyncService:
                     await mnt.drop_mount(m)
                 except mnt.BlockdevError as e:
                     log.warning("dropping the mount of %s: %s", cd.device_id, e)
+
+
+def _fsck_summary(error: str) -> str:
+    """The short reason the device page shows for a failed check after unmount."""
+    detail = (
+        error[error.index("(") + 1 : error.rindex(")")] if ")" in error and "(" in error else ""
+    )
+    return "the file system check after unmount found errors" + (f": {detail}" if detail else "")
 
 
 SCHEDULE_TICK_S = 30  # how often the app checks for due daily syncs
@@ -4876,3 +5097,22 @@ def plan_summary(pc: PlanContext) -> dict[str, Any]:
         else []
     )
     return data
+
+
+NETWORK_SUFFIXES = (".diagnostics.json", ".shadow", ".gen", ".card")
+
+
+def _tree_size(p: Path) -> int:
+    """Bytes a file or folder holds on disk (hard links to files kept elsewhere are not counted)."""
+    try:
+        if p.is_symlink() or p.is_file():
+            st = p.lstat()
+            return st.st_size if st.st_nlink == 1 else 0
+        total = 0
+        for f in p.rglob("*"):
+            st = f.lstat()
+            if f.is_file() and not f.is_symlink() and st.st_nlink == 1:
+                total += st.st_size
+        return total
+    except OSError:
+        return 0

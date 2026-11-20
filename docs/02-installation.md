@@ -160,7 +160,8 @@ offers them when Settings → Updates → *Update channel* is *Beta*. The order 
 Upgrades from 0.2.0 on keep everything: settings, devices, templates and history, and the players stay registered.
 Update from Settings → Updates, or stop SyncMusic, replace the binary (or `git pull` and `uv sync`) and start it
 again. At the first start of a new version SyncMusic updates its database and first saves a copy of the old one in
-the data directory's `backups/` folder (`…-before-upgrade.sqlite3.gz`). If the update
+the backup folder (Settings → *Backup folder*; by default the data directory's `backups/` folder) as
+`…-before-upgrade.sqlite3.gz`. The two newest of these copies are kept apart from the regular backups. If the update
 fails, SyncMusic does not start and names that backup; the database stays as it was.
 
 Going back to an older version is not supported: an older SyncMusic refuses a database a newer one has updated. To

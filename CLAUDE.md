@@ -37,7 +37,7 @@ and video from **libraries** through a per-device chain of **processors** onto *
 | `syncmusic/api/` | the HTTP API (`/api/v1`) and its routes |
 | `syncmusic/webui/` | the web UI (static files, no build step); strings in `syncmusic/webui/static/js/i18n.js` |
 | `syncmusic/cli/` | the `syncmusic` command |
-| `tests/` | `unit/`, `contracts/` (shared suites every implementation must pass), `integration/`, `webui/`, `hardware/`; fakes of the servers in `tests/fake_*.py` |
+| `tests/` | `unit/`, `contracts/` (shared suites every implementation must pass), `integration/`, `webui/`, `scenarios/` (device scenarios the emulated tests run); fakes of the servers in `tests/fake_*.py` |
 | `packaging/` | single-file builds (`build-web`, `build-desktop`), Docker, systemd unit and installers |
 | `clients/compas/` | the SyncMusic app for Compás players (Go, static MIPS binary; `build.sh`, released as `syncmusic-compas-<version>-hard.zip` and `-soft.zip`) |
 | `scripts/` | `release.sh` (+ `changelog-section.sh`, `beta-notes.sh`, `release-downloads.sh`: the downloads table that starts every release page), `test-cleanup.sh`, generators for the settings reference and THIRD-PARTY.md |
@@ -61,7 +61,8 @@ throwaway daemon outside the repository (its own `--config` file and data dir).
 | `uv run pytest -m emulated` | `sudo -n`: device scenarios on loop images (`tests/emulated.py`, `tests/emulated.toml`) |
 | `uv run pytest -m ui` | Playwright (`uv run playwright install chromium` once) |
 | `uv run pytest -m slow` | everything slow: UI, builds, soak tests |
-| `uv run pytest -m hardware` | real USB players listed in `tests/hardware.toml` (copy `tests/hardware.example.toml`); without that file nothing is collected |
+
+The suite here covers the core: unit and contract tests, one integration test per library and device type, the emulated device scenarios (`tests/scenarios/`) and a small web UI smoke test. Add new tests for core behaviour only; one test that pins the bug is enough for a fix.
 
 - **Never start the compose stack by hand for a test run**: `tests/integration/services.py` brings it up on first use,
   bootstraps the servers and, by default, removes it again. `--compose-after clean|stop|keep` (or

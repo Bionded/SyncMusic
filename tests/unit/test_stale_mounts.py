@@ -158,6 +158,8 @@ async def test_sync_service_drops_mount_when_disk_removed(monkeypatch, tmp_path)
         _errors={"flash": "dirty"},
         _damaged={},
         _manifest_bad={},
+        _eject_failed={},
+        _ready_tasks={},
         _ejected={"flash"},
         _appeared={"flash": 1.0},
         _waiting={"flash": {"reason": "on_connect: ask", "plan_id": None}},
