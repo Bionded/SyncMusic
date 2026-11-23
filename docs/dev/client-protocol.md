@@ -162,7 +162,11 @@ the connection may drop between any two requests.
 - The lists in request bodies (`items`, `removed`, `done`, `deleted`, `failed`, `events`) also accept an empty object `{}` as an empty list, for JSON encoders that cannot tell the two apart (Lua).
 - Answers: `202 {"session_id", "status": "planning" | "needs_review", "message", "retry_after_s"}` while the server
   plans or waits for the user to confirm the plan in the web UI (first sync onto a non-empty client, many
-  removals, not enough space). Poll `GET sync/{session_id}` after `retry_after_s`. When the device setting
+  removals, not enough space). Poll `GET sync/{session_id}` after `retry_after_s`. While `planning`, the answer
+  also has `"planning": {"step", "elapsed_s", …}` to show the user what the server does: `step` is `libraries`,
+  `device` (reading the player's file list), `compare` or `checks` (then also `index` of `steps`, `items` counted so
+  far, `fraction` of the step or null, `detail` such as the library being read), `prepare` (the plan is made, the
+  files are being prepared) or `waiting` (another job of the device runs first). When the device setting
   *The player may confirm a sync* is on (`client_may_confirm`; on by default for every client, the user may turn it off), a `needs_review` answer
   also has `"may_confirm": true` and `"review": {"fetch_count", "fetch_bytes", "delete_count",
   "skipped_for_space"}`: show it to the user and, when they agree, `POST sync/{session_id}/confirm`; the session
@@ -183,6 +187,16 @@ the connection may drop between any two requests.
   answer also carries `server_version` (the newest release the server holds, or `null`) and `client_newer` (the
   running version is newer than that: tell the user to update the server). The server shows the running version on
   the device page. `POST app-update/answer {"version", "answer": "update" | "later"}` records the user's choice.
+- **Player database** (Compás cards, before `POST sync`): `PUT player-database {"files": [{"name", "data"}]}` →
+  `{"files", "size"}` uploads the card's current library database: every tagcache file in `.compas/`
+  (`database_*.tcd*`, `tagcache.refs.g*`, `tagcache.gen`; `data` is base64). The server then builds the `generated`
+  set over it, reading only the files that are new; without an upload it builds over the files it holds a copy of
+  and offers no set when those are not (nearly) all the card's songs. An upload replaces the previous one; send it
+  again whenever the card's database changed (the app compares a hash over the files with the one of its last
+  upload). `400 bad_request` for another file name or an upload without `tagcache.gen`.
+- **Rebuild the player database** (any time): `POST rebuild-database` → `{"requested": true}`; the next sync's
+  `generated` set is built from scratch (stand-ins made from the metadata the server wrote, no audio) instead of over
+  the uploaded card database. The Compás app syncs right after asking.
 - **Diagnostics** (any time, when the user asks for it): `POST diagnostics {"log": "<text, at most 512 KiB>",
   "summary": {…}}` → `202 {"received_at", "size"}`. The server keeps the latest upload per client for the device
   page (*Diagnostics: Download*). Leave tokens out; what still looks like one is masked by the server.
@@ -220,7 +234,10 @@ the connection may drop between any two requests.
   client holds — installed as **one set**: `{"set_id": "…", "commit": "<path>", "files": [{"path", "fid", "size",
   "mtime", "url"}]}`. If the `commit` file already contains `set_id`, skip the set. Otherwise download and verify every
   file to a temporary name first, then move them all in place, then write `set_id` into the `commit` file. Generated
-  files are not acknowledged and not part of the inventory. Which devices get a set is decided on the server.
+  files are not acknowledged and not part of the inventory. Which devices get a set is decided on the server. A
+  Compás database set is generation 1 (built on an empty database) or generation G (built over the uploaded card
+  database: G's files, `tagcache.refs.gG` and the older tag files G reuses); install it as a whole and write
+  `tagcache.gen` = G last.
 - `card_manifest` (or `null`): for a client that syncs a removable card the server also syncs over USB (the
   same device, paired with the card's `card_uid`): `{"path": ".syncmusic/manifest.jsonl", "fid", "size", "mtime",
   "url"}`. After a **complete** sync (every file fetched, nothing failed, nothing cancelled) download and verify it,

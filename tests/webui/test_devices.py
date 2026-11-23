@@ -35,6 +35,17 @@ def server(web_server, tmp_path):
     return url, app
 
 
+def _autosave(page, done) -> None:
+    """Device settings save themselves: leave the field, wait for the "Saved" toast and the stored value."""
+    page.evaluate("document.activeElement && document.activeElement.blur()")
+    page.wait_for_selector(".toast:has-text('Saved')")
+    for _ in range(50):
+        if done():
+            return
+        page.wait_for_timeout(100)
+    raise AssertionError("the change was not saved")
+
+
 def test_register_a_folder_and_use_every_tab(server, chrome, tmp_path):
     url, app = server
     target = tmp_path / "stick"
@@ -47,7 +58,9 @@ def test_register_a_folder_and_use_every_tab(server, chrome, tmp_path):
     page.select_option("#regProcTemplate", "builtin-flashdrive")  # nothing preselected
     page.get_by_role("button", name="Register").click()
     page.wait_for_function("location.hash.startsWith('#/devices/travel-stick/overview')")
-    page.goto(url + "/#/devices/travel-stick/settings")  # the danger zone is in Device settings
+    page.goto(
+        url + "/#/devices/travel-stick/settings?group=danger"
+    )  # the danger zone is in Device settings
     page.wait_for_selector(".dangerzone")
     text = page.locator(".dangerzone").inner_text()
     assert "cannot be formatted" in text and page.locator('[data-action="format"]').count() == 0
@@ -79,23 +92,26 @@ def test_register_a_folder_and_use_every_tab(server, chrome, tmp_path):
     assert after == [before[1], before[0], *before[2:]]
     shot(page, "device-processors")
 
-    # Sync settings: option cards and the delete threshold, saved by the Save bar
+    # Sync settings: option cards and the delete threshold, saved as they change
     page.locator('.tabs a:has-text("Settings")').click()
     page.wait_for_selector("[data-sync-form]")
-    page.fill("#dsThreshold", "35")
     page.locator('input[name="dsWhen"][value="manual"]').check()
+    page.locator("[data-ds-group-btn=safety]").click()
+    page.fill("#dsThreshold", "35")
     page.locator("#dsDeleted").uncheck()
-    page.locator(".savebar [data-savebar=save]").click()
-    page.wait_for_selector(".toast:has-text('Settings saved')")
+    _autosave(
+        page, lambda: _api(url, "GET", "/devices/travel-stick")["config"]["remove_deleted"] is False
+    )
     cfg = _api(url, "GET", "/devices/travel-stick")["config"]
     assert cfg["delete_threshold_pct"] == 35 and cfg["on_connect"] == "manual"
     assert cfg["remove_deleted"] is False
 
-    # Device settings: the type's settings; a folder library takes nothing back, so reverse sync is
-    # explained instead of offered; a folder device has no Format
+    # Device settings: a folder library takes nothing back, so reverse sync is not offered at all;
+    # a folder device has no Format
     page.locator('.tabs a:has-text("Settings")').click()
-    page.wait_for_selector("#reverseCard")
-    assert page.locator("#reverseCard [data-no-reverse]").count() == 1
+    page.wait_for_selector("[data-ds-group-btn=danger]")
+    assert page.locator("#reverseCard, [data-ds-group-btn=listen]").count() == 0
+    page.locator("[data-ds-group-btn=danger]").click()
     assert page.locator("#formatZone").inner_text().count("cannot be formatted") == 1
     assert page.locator('#formatZone [data-action="format"]').count() == 0
 
@@ -137,7 +153,7 @@ def test_format_needs_the_typed_name(server, chrome):
     url, app = server
     calls: list = []
     run_on(app, _disk_device(app, calls))
-    page = open_page(chrome, url + "/#/devices/zorvex/settings")
+    page = open_page(chrome, url + "/#/devices/zorvex/settings?group=danger")
     page.wait_for_selector('[data-action="format"]')
     page.locator('[data-action="format"]').click()
     page.wait_for_selector("#typedName")
@@ -168,7 +184,7 @@ def test_format_from_device_settings_with_a_file_system_choice(server, chrome, m
     url, app = server
     calls: list = []
     run_on(app, _disk_device(app, calls))
-    page = open_page(chrome, url + "/#/devices/zorvex/settings")
+    page = open_page(chrome, url + "/#/devices/zorvex/settings?group=danger")
     page.wait_for_selector('#formatZone [data-action="format"]')
     assert "NTFS - mkfs.ntfs is not installed" in page.locator("#formatZone").inner_text()
     page.locator('#formatZone [data-action="format"]').click()
@@ -223,7 +239,7 @@ def test_register_a_detected_disk_from_the_list(server, chrome):
     page.wait_for_function("location.hash.startsWith('#/devices/stick/overview')")
     cfg = _api(url, "GET", "/devices/stick")["config"]
     assert cfg["mount_path"] is None and cfg["identity"]["usb_serial"] == "S9"
-    page.goto(url + "/#/devices/stick/settings")
+    page.goto(url + "/#/devices/stick/settings?group=danger")
     page.wait_for_selector('[data-action="format"]')  # a disk device can be formatted
     assert [e for e in page.errors if "Failed to load resource" not in e] == []
 
@@ -256,26 +272,27 @@ def test_ipod_clock_time_zone_and_reverse_sync(server, chrome, tmp_path):
             "library_ids": ["nd"],  # links its "All" default
         },
     )
-    page = open_page(chrome, url + "/#/devices/pod/settings")
+    page = open_page(chrome, url + "/#/devices/pod/settings?group=device")
     page.wait_for_selector('input[id$="d-timezone"]')
     options = page.locator('datalist[id$="d-timezone-l"] option')
     assert options.count() > 300
     page.locator('input[id$="d-time_sync"]').check()
     page.fill('input[id$="d-timezone"]', "Asia/Tokyo")
+    page.locator("[data-ds-group-btn=listen]").click()
     assert page.locator('#reverseCard input[id$="r-plays"]').is_visible()
     page.locator('#reverseCard input[id$="r-ratings"]').uncheck()
-    # the iPod card and the Save bar
+    # the iPod card; every change saves itself
     assert page.locator('#typeCard[data-type-card="ipod"] input[id$="d-timezone"]').count() == 1
-    page.locator(".savebar [data-savebar=save]").click()
-    page.wait_for_selector(".toast:has-text('Settings saved')")
+    _autosave(
+        page, lambda: _api(url, "GET", "/devices/pod")["config"]["reverse_sync"]["ratings"] is False
+    )
     cfg = _api(url, "GET", "/devices/pod")["config"]
     assert cfg["settings"]["timezone"] == "Asia/Tokyo" and cfg["settings"]["time_sync"] is True
     assert cfg["reverse_sync"]["ratings"] is False and cfg["reverse_sync"]["plays"] is True
 
-    page.wait_for_selector(".savebar[hidden]", state="attached")
-    page.locator(".toast").last.wait_for(state="detached")
+    page.locator("[data-ds-group-btn=device]").click()
     page.fill('input[id$="d-timezone"]', "Mars/Olympus")
-    page.locator(".savebar [data-savebar=save]").click()
+    page.evaluate("document.activeElement.blur()")
     page.wait_for_selector(".toast.error:has-text('unknown time zone')")
     assert _api(url, "GET", "/devices/pod")["config"]["settings"]["timezone"] == "Asia/Tokyo"
     assert [e for e in page.errors if "Failed to load resource" not in e] == []
@@ -293,12 +310,11 @@ def test_rename_from_device_settings(server, chrome, tmp_path):
     body = {"name": "Old iPod", "mount_path": str(mount), "type": "ipod", "library_ids": ["music"]}
     dev = _api(url, "POST", "/devices/register", json=body)["id"]
     page = open_page(chrome, url + f"/#/devices/{dev}/settings")
-    # the design: the Name card's "Also rename it on the device", saved by the Save bar
+    # the design: the Name card's "Also rename it on the device", saved as it changes
     page.wait_for_selector("#nameCard #dsRename:enabled")
     assert "the iPod's name" in page.locator("#nameCard").inner_text()
     page.fill("#dsName", "Плеєр на кухні")
     page.locator("#dsRename").check()
-    page.locator(".savebar [data-savebar=save]").click()
     page.wait_for_selector(".modal")
     assert "Rename Old iPod to Плеєр на кухні?" in page.locator(".modal").inner_text()
     assert "disk label is not changed" in page.locator(".modal").inner_text()
@@ -313,7 +329,7 @@ def test_rename_from_device_settings(server, chrome, tmp_path):
     assert "Плеєр на кухні" in page.locator("#content h1").inner_text()
     # without the box only the name in SyncMusic changes
     page.fill("#dsName", "Тільки тут")
-    page.locator(".savebar [data-savebar=save]").click()
+    page.evaluate("document.activeElement.blur()")
     page.wait_for_selector(".toast:has-text('Renamed to Тільки тут')")
     assert _api(url, "GET", f"/devices/{dev}")["config"]["name"] == "Тільки тут"
     assert Database(str(mount), apply_play_counts=False).master_playlist.name == "Плеєр на кухні"
@@ -330,7 +346,7 @@ def test_rockbox_play_log_toggle_in_device_settings(server, chrome, tmp_path):
     cfg_file.write_text("volume: -23\n")
     body = {"name": "Mini", "mount_path": str(mount), "type": "rockbox", "library_ids": ["music"]}
     dev = _api(url, "POST", "/devices/register", json=body)["id"]
-    page = open_page(chrome, url + f"/#/devices/{dev}/settings")
+    page = open_page(chrome, url + f"/#/devices/{dev}/settings?group=device")
     page.wait_for_selector("#playLogCard")
     card = page.locator("#playLogCard")
     assert "On the player now: not set (off)." in card.inner_text()
@@ -350,8 +366,13 @@ def test_rockbox_play_log_toggle_in_device_settings(server, chrome, tmp_path):
     assert _api(url, "GET", "/jobs") == []  # not a sync
     # saving the other settings keeps the toggle's value
     page.locator("#typeCard input[id$='d-playlist_dir']").fill("Playlists2")
-    page.locator(".savebar [data-savebar=save]").click()
-    page.wait_for_selector(".toast:has-text('Settings saved')")
+    _autosave(
+        page,
+        lambda: (
+            _api(url, "GET", f"/devices/{dev}")["config"]["settings"]["playlist_dir"]
+            == "Playlists2"
+        ),
+    )
     assert _api(url, "GET", f"/devices/{dev}")["config"]["settings"]["enable_play_log"] is True
     assert [e for e in page.errors if "Failed to load resource" not in e] == []
 
@@ -445,7 +466,7 @@ def test_danger_zone_per_type(server, chrome, tmp_path, width):
     (mount / "Music" / "x.mp3").write_bytes(b"x")
     body = {"name": "Міні", "type": "rockbox", "mount_path": str(mount), "library_ids": ["music"]}
     dev = _api(url, "POST", "/devices/register", json=body)["id"]
-    page = open_page(chrome, url + f"/#/devices/{dev}/settings", width=width)
+    page = open_page(chrome, url + f"/#/devices/{dev}/settings?group=danger", width=width)
     zone = page.locator("#formatZone")
     zone.wait_for()
     assert [x.get_attribute("data-dz") for x in zone.locator("[data-dz]").all()] == [
@@ -496,7 +517,7 @@ def test_danger_zone_per_type(server, chrome, tmp_path, width):
         "/devices/register",
         json={"name": "Stick", "type": "flashdrive", "mount_path": str(tmp_path / "stick")},
     )["id"]
-    page.goto(url + f"/#/devices/{stick}/settings")
+    page.goto(url + f"/#/devices/{stick}/settings?group=danger")
     page.wait_for_selector("#formatZone [data-dz]")
     assert [x.get_attribute("data-dz") for x in zone.locator("[data-dz]").all()] == ["delete"]
     zone.get_by_role("button", name="Delete device…").click()
@@ -554,7 +575,7 @@ def test_views_work_when_the_browser_blocks_site_storage(server, chrome):
         page.wait_for_function(
             "b => document.querySelector('[data-action=toggleAll]').textContent !== b", arg=before
         )
-        page.goto(url + "/#/devices/zorvex/settings")
+        page.goto(url + "/#/devices/zorvex/settings?group=danger")
         page.wait_for_selector('[data-action="format"]')
         page.goto(url + "/#/libraries/music")
         page.wait_for_selector("#content[data-route]")

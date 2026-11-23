@@ -133,6 +133,9 @@ def _close_pages():
     while _open_pages:
         page = _open_pages.pop()
         with contextlib.suppress(Exception):  # the browser of a finished module is already gone
+            # a route handler still fetching when the context closes leaves a disposed response behind, which
+            # the next test's new_page raises ("Response has been disposed"): drop the routes first
+            page.unroute_all(behavior="ignoreErrors")
             page.context.close()
 
 

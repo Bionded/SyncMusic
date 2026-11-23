@@ -115,16 +115,13 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 | Updates may remove items that no longer match | Off: removals wait for the next full sync and its review. |
 | Updates remove what was played on this device | An episode played to the end that an unplayed-only rule no longer selects goes at the next update. |
 
-### After a sync and mounting
+### After a sync
 
 | Setting | What it does |
 |---|---|
 | Verify after writing | Reads the files back after flushing the device. |
 | Eject after a sync | So it can be unplugged right away. Not after a sync that failed or was cancelled. |
 | Stay ready between syncs | Unmounted whenever no sync or view uses it, so unplugging it or switching the player off cannot damage its files. Syncs mount it again by themselves. |
-| Unmount other mounts when connected | For systems that mount every USB drive on their own (Umbrel, a desktop's automount): during the first minute after SyncMusic mounted the player, other programs' mounts of it are unmounted. A mount in use is left alone. Two programs writing to one FAT volume can damage it. |
-| Make other mounts read-only when connected | For systems that mount every USB drive again on their own: during the first minute after SyncMusic mounted the player, other programs' mounts of it are made read-only, so they can still read it but only SyncMusic writes. Unmount other mounts wins when both are on. |
-| Use an existing mount | When another program (Umbrel, a desktop's automount) has already mounted the player, SyncMusic writes through that mount instead of mounting it a second time. Off: the player is refused until that mount is gone. Two mounts of one FAT volume can damage it. |
 
 ### Safety
 
@@ -158,9 +155,19 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 
 | Setting | What it does |
 |---|---|
+| Keep the disk awake during pauses | While a gentle-mode sync waits (for a conversion, a library or a pause between batches), a few bytes are read from the player's disk at the interval below, so it never drops into standby. Only reads, nothing is written. For CF and SD adapters in modded iPods that never wake up from standby; under Rockbox, raising Disk Spindown to the maximum usually is enough. Only: USB flash drive, HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player. |
+| Keep-awake interval (s) | Only: USB flash drive, HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player. |
 | Files per batch | Only: USB flash drive, HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player. |
 | Pause between batches (s) | Only: USB flash drive, HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player. |
 | Write speed limit (MB/s) | Empty: no limit. Only: USB flash drive, HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player. |
+
+### Mounting
+
+| Setting | What it does |
+|---|---|
+| Unmount other mounts when connected | For systems that mount every USB drive on their own (Umbrel, a desktop's automount): during the first minute after SyncMusic mounted the player, other programs' mounts of it are unmounted. A mount in use is left alone. Two programs writing to one FAT volume can damage it. |
+| Make other mounts read-only when connected | For systems that mount every USB drive again on their own: during the first minute after SyncMusic mounted the player, other programs' mounts of it are made read-only, so they can still read it but only SyncMusic writes. Unmount other mounts wins when both are on. |
+| Use an existing mount | When another program (Umbrel, a desktop's automount) has already mounted the player, SyncMusic writes through that mount instead of mounting it a second time. Off: the player is refused until that mount is gone. Two mounts of one FAT volume can damage it. |
 
 ### Advanced
 
@@ -201,7 +208,7 @@ The fields only one device type has, shown in its own card and under *Files on t
 | Purpose |  |
 | Path layout | Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date} {library_path} (the path in the library, used by backups); {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths. |
 | Base folder | The folder on the drive the path layout starts in; empty: the drive's top level. A new folder is created by the first sync; after a change the next sync moves the files. |
-| File system | For the file name rules (vfat, exfat, ext4, ntfs); empty: detected. |
+| File system | Which file name rules apply; Detected reads them from the drive. |
 | ASCII-only file names |  |
 | Car stereo / old player mode | For head units and old players: file and folder names in plain ASCII (Cyrillic and accents transliterated, other characters replaced) and short paths. After a change the next sync renames the files already on the drive. |
 | Longest path (characters, car mode) |  |
@@ -233,7 +240,7 @@ The fields only one device type has, shown in its own card and under *Files on t
 |---|---|
 | Playable formats | Comma-separated, e.g. mp3, aac, flac. |
 | Path layout | Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date} {library_path} (the path in the library, used by backups); {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths. |
-| File system | For the file name rules (vfat, exfat, ext4, ntfs); empty: detected. |
+| File system | Which file name rules apply; Detected reads them from the drive. |
 | ASCII-only file names |  |
 | Lyrics |  |
 | Playlists |  |
@@ -264,12 +271,12 @@ The fields only one device type has, shown in its own card and under *Files on t
 |---|---|
 | Playable formats | Comma-separated, e.g. mp3, aac, flac. |
 | Path layout | Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date} {library_path} (the path in the library, used by backups); {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths. |
-| File system | For the file name rules (vfat, exfat, ext4, ntfs); empty: detected. |
+| File system | Which file name rules apply; Detected reads them from the drive. |
 | ASCII-only file names |  |
 | Lyrics |  |
 | Playlists |  |
 | Playlist folder | Where the playlists go on the device, e.g. Playlists. Changing it moves them on the next sync. |
-| Minimum played share for a play (0–1) |  |
+| Minimum played share for a play |  |
 | Or minimum played time (s) |  |
 | Rotated play logs to keep |  |
 | Turn on the Rockbox play log |  |
@@ -280,10 +287,11 @@ The fields only one device type has, shown in its own card and under *Files on t
 |---|---|
 | Path layout | Folders and file name per media kind, without the extension. Placeholders: {title} {artist} {album_artist} {album} {year} {disc} {disc_total} {track} {genre} {series} {author} {chapter} {date} {library_path} (the path in the library, used by backups); {track:02} pads to two digits. An emptied field goes back to its default. A release with two or more discs uses “Music, multi-disc” (one folder per disc). After a change the next sync moves the files already on the device to the new paths. |
 | Playlists |  |
-| Minimum played share for a play (0–1) |  |
+| Minimum played share for a play |  |
 | Or minimum played time (s) |  |
 | After a sync that changed something | What the client app does once new files are in place: nothing, refresh its library, or restart (players that read their library only at start). |
 | Player library built by the server | For players that cannot index their own files: the server builds the player's library database over the files it holds and the app installs it. Compás needs compas-sdtool on the server. |
+| Rebuild the player library from scratch on every sync | Off: the new songs are added to the library the player already has (fast). On: the server builds the whole library again from what it knows about each song, without the audio. It does that by itself whenever the player's library looks wrong. |
 | The player may confirm a sync | A sync that needs a confirmation (many removals, not enough space) can be confirmed in the app on the player after it shows what will change (on by default for every app). Off: only here. |
 | Outbox budget (MB) | The most the server prepares for the player at once. Apps that do not stream get a larger sync in parts (the Compás app streams the whole sync track by track), so the server never holds a second copy of the whole library. 0 = no limit. |
 

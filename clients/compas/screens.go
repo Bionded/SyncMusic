@@ -111,6 +111,7 @@ type App struct {
 	closing         bool        // forced exit: quit as soon as the sync stopped
 	quit            bool
 	online          atomic.Pointer[string]
+	listening       atomic.Bool               // the status long poll runs
 	update          atomic.Pointer[appUpdate] // a newer app release the server offers, nil = none
 	powerAt         time.Time                 // when the Power key went down (zero = not held)
 	offFlag         atomic.Bool               // the screen is off (read by the Wi-Fi log goroutine)
@@ -368,12 +369,25 @@ func (a *App) forceExit() {
 	})
 }
 
+// animFrame: the phase bar's band runs at 8 frames a second - smooth enough, a few rows per frame on the player
+const animFrame = 125 * time.Millisecond
+
 func (a *App) loop() error {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	anim := time.NewTicker(animFrame)
+	defer anim.Stop()
 	for !a.quit {
 		a.render()
+		var frame <-chan time.Time // the phase bar's band moves only while a sync is on screen
+		if a.syncing && a.mode == screenOn && a.s != nil && a.s.pulse.w > 0 {
+			frame = anim.C
+		}
+	wait:
 		select {
+		case now := <-frame:
+			a.s.animate(now) // only the band's rows: no page build between the once-a-second redraws
+			goto wait
 		case e := <-a.in:
 			a.handle(e, time.Now())
 			a.drainInput() // a swipe sends a move per touch report: draw once for all that are waiting
@@ -529,7 +543,7 @@ func (a *App) offerUpdate(u appUpdate) {
 		return
 	}
 	a.update.Store(&u)
-	if a.syncing || a.build().title != T("home.title") {
+	if t := a.build().title; a.syncing || (t != T("home.title") && t != T("pair.done")) {
 		return // the home page keeps the Update button; no interruption of a sync or pairing
 	}
 	a.go_(func() page {
@@ -593,6 +607,7 @@ func (a *App) settings() page {
 		{label: T("set.after", T("after."+s.AfterSync)), act: func() { s.AfterSync = next(afterChoices, s.AfterSync); save() }, group: T("set.g_sync")},
 		{label: T("set.min_battery", s.MinBattery), act: func() { s.MinBattery = next(batteryChoices, s.MinBattery); save() }, group: T("set.g_sync")},
 		{label: T("set.templates"), act: a.openTemplates, group: T("set.g_sync")},
+		{label: T("set.rebuild"), act: func() { a.go_(a.rebuildConfirm) }, group: T("set.g_sync")},
 		{label: T("set.name", a.shownName()), act: func() { a.go_(a.message(T("set.name_where"), T("set.name_hint"), false)) }, group: T("set.g_server")},
 		{label: T("set.server", serverOnly(a.c.st.Server)), act: func() { a.go_(a.pairMenu) }, group: T("set.g_server")},
 		{label: T("btn.about"), act: func() { a.go_(a.about) }, group: T("set.g_server")},
@@ -600,6 +615,26 @@ func (a *App) settings() page {
 		{label: T("btn.exit_app"), act: func() { a.quit = true }, group: T("set.g_server")},
 		{label: T("btn.back"), kind: btnBack, act: func() { a.go_(a.home) }},
 	}}
+}
+
+// rebuildConfirm asks before the server is told to build the player's library again from scratch; the sync that
+// installs it starts right away.
+func (a *App) rebuildConfirm() page {
+	return page{title: T("rebuild.title"), lines: []line{{text: T("rebuild.text"), col: colText}}, buttons: []button{
+		{label: T("rebuild.yes"), kind: btnPrimary, act: a.rebuildDatabase},
+		{label: T("btn.back"), kind: btnBack, act: func() { a.go_(a.settings) }},
+	}}
+}
+
+func (a *App) rebuildDatabase() {
+	if a.syncing {
+		return
+	}
+	if err := a.c.call("POST", "rebuild-database", map[string]any{}, nil); err != nil {
+		a.go_(a.message(T("rebuild.failed"), err.Error(), true))
+		return
+	}
+	a.startSync()
 }
 
 // resetConfirm asks before the app's own data is deleted.
@@ -1015,16 +1050,23 @@ func runApp() error {
 		}()
 	}
 	if c.st.Token != "" {
-		go a.listen()
+		a.startListen()
 	}
 	return a.loop()
+}
+
+// startListen starts the status long poll once (at start for a paired app, else right after pairing).
+func (a *App) startListen() {
+	if a.listening.CompareAndSwap(false, true) {
+		go a.listen()
+	}
 }
 
 // listen: while the app is open, a long poll on the server's status; "Sync now" pressed on the server starts the
 // sync here at once (unless one runs or the user is pairing).
 func (a *App) listen() {
-	lp := &Client{st: State{Server: a.c.st.Server, Token: a.c.st.Token}, http: newHTTPClient(40 * time.Second)}
 	for {
+		lp := &Client{st: State{Server: a.c.st.Server, Token: a.c.st.Token}, http: newHTTPClient(40 * time.Second)}
 		var st struct {
 			Requested bool   `json:"requested"`
 			Name      string `json:"name"`
@@ -1044,14 +1086,18 @@ func (a *App) listen() {
 		if st.Requested {
 			started := make(chan bool, 1)
 			a.later <- func() {
-				ok := !a.syncing && a.build().title == T("home.title")
+				t := a.build().title
+				ok := !a.syncing && (t == T("home.title") || t == T("pair.done"))
 				if ok {
 					a.runSync(true)
+					if a.syncing {
+						a.pwhat = T("sync.from_server") // until the first phase arrives
+					}
 				}
 				started <- ok
 			}
 			if !<-started {
-				time.Sleep(5 * time.Second) // busy now: the request waits on the server
+				time.Sleep(2 * time.Second) // busy now: the request waits on the server
 			}
 		}
 		time.Sleep(time.Second)
@@ -1178,6 +1224,7 @@ func (a *App) pairWithCode(url, code string) {
 }
 
 func (a *App) paired() {
+	a.startListen()                // "Sync" pressed on the server reaches this app from now on, without a restart
 	a.set = loadSettings(a.c.data) // the server may have given back this player's settings
 	a.online.Store(ptr(T("home.online")))
 	a.waitRegistration(a.message(T("pair.done"), T("pair.done_text"), false))
@@ -1214,6 +1261,11 @@ func (a *App) waitRegistration(after func() page) {
 					if gen == a.gen {
 						a.go_(after)
 					}
+				}
+				// registered: the server fetched its app builds since pairing began; offer an update before
+				// the first sync instead of on a later start
+				if u, err := a.c.CheckUpdate(); err == nil {
+					a.later <- func() { a.offerUpdate(u) }
 				}
 				return
 			}

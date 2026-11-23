@@ -34,6 +34,11 @@ type screen struct {
 	tall    []uint16        // the whole scrolling content of the last page (see drawPage)
 	tallKey string          // what tall shows
 	pageKey string          // frameKey(page, sel) of the page about to be drawn, "" = unknown
+	// the current step's segment of a phase bar on screen (w 0: none) - animate redraws only that; tallPulse is
+	// where it is in the scrolling surface, inTall says the page is being drawn into that surface
+	pulse, tallPulse rect
+	inTall           bool
+	flowTop, limit   int
 }
 
 func rgb(r, g, b uint8) uint16 { return uint16(r>>3)<<11 | uint16(g>>2)<<5 | uint16(b>>3) }

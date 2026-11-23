@@ -355,6 +355,25 @@
         "title": "ClientInfo",
         "type": "object"
       },
+      "DatabaseFile": {
+        "properties": {
+          "data": {
+            "title": "Data",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "data"
+        ],
+        "title": "DatabaseFile",
+        "type": "object"
+      },
       "DiagnosticsRequest": {
         "properties": {
           "log": {
@@ -541,6 +560,23 @@
           "client"
         ],
         "title": "PairRequest",
+        "type": "object"
+      },
+      "PlayerDatabaseRequest": {
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/DatabaseFile"
+            },
+            "maxItems": 500,
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "title": "PlayerDatabaseRequest",
         "type": "object"
       },
       "SyncRequest": {
@@ -1272,6 +1308,68 @@
           }
         },
         "summary": "Pair Request State"
+      }
+    },
+    "/api/client/v1/player-database": {
+      "put": {
+        "description": "The card's current player database (Compás tagcache files), uploaded before a sync: the server builds\nthe next database for the card over it, reading only the files that are new.",
+        "operationId": "player_database_api_client_v1_player_database_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlayerDatabaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Player Database Api Client V1 Player Database Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Player Database"
+      }
+    },
+    "/api/client/v1/rebuild-database": {
+      "post": {
+        "description": "'Rebuild player database' in the app: the next sync builds the player's database from scratch (the\napp syncs right after asking).",
+        "operationId": "rebuild_database_api_client_v1_rebuild_database_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rebuild Database Api Client V1 Rebuild Database Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Rebuild Database"
       }
     },
     "/api/client/v1/status": {

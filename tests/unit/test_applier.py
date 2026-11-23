@@ -1192,3 +1192,78 @@ async def test_cancel_leaves_no_unretrieved_prepare_error(
     gc.collect()
     await asyncio.sleep(0)
     assert "never retrieved" not in caplog.text
+
+
+async def test_writer_waiting_for_a_slow_prepare_keeps_the_disk_awake(
+    tmp_path, library, preparer, monkeypatch
+):
+    """a disk left idle while the writer waits for a transcode drops into standby, and some CF/SD adapters
+    never wake from it: the writer pokes the disk at least every keep_awake_s while it waits."""
+    real = preparer.prepared
+
+    def slow(library, item, *a, **kw):
+        class Ctx:
+            async def __aenter__(self):
+                await asyncio.sleep(0.1)
+                self.cm = real(library, item, *a, **kw)
+                return await self.cm.__aenter__()
+
+            async def __aexit__(self, *exc):
+                return await self.cm.__aexit__(*exc)
+
+        return Ctx()
+
+    monkeypatch.setattr(preparer, "prepared", slow)
+    pokes: list[float] = []
+
+    async def keep_awake():
+        pokes.append(asyncio.get_running_loop().time())
+
+    _, rep = await _sync(
+        _flash(tmp_path), library, preparer, workers=1, keep_awake=keep_awake, keep_awake_s=0.01
+    )
+    assert rep.status == "succeeded"
+    assert len(pokes) >= 3 * 3  # ~0.1 s per item at 0.01 s: several pokes per item
+
+
+async def test_disk_keeper_reads_past_the_cache_and_never_writes_again(tmp_path, monkeypatch):
+    from syncmusic.core import applier as applier_mod
+
+    keep = applier_mod.disk_keeper(tmp_path)
+    await keep()
+    await asyncio.sleep(0.2)
+    f = tmp_path / ".syncmusic" / "keepalive"
+    assert f.stat().st_size == applier_mod.KEEP_AWAKE_BLOCK * applier_mod.KEEP_AWAKE_BLOCKS
+    before = f.stat().st_mtime_ns
+
+    opened: list[int] = []
+    real_open = applier_mod.os.open
+
+    def spy_open(path, flags, *a):
+        opened.append(flags)
+        return real_open(path, flags, *a)
+
+    monkeypatch.setattr(applier_mod.os, "open", spy_open)
+    for _ in range(3):
+        await keep()
+        await asyncio.sleep(0.1)
+    monkeypatch.undo()
+    assert opened and all(fl & (os.O_WRONLY | os.O_RDWR | os.O_CREAT) == 0 for fl in opened)
+    assert f.stat().st_mtime_ns == before  # reads only
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def to_thread(fn):
+        calls.append(fn)
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(applier_mod.asyncio, "to_thread", to_thread)
+    await keep()
+    await started.wait()
+    await keep()  # the last poke still hangs (a wedged disk): no second one piles up
+    assert len(calls) == 1
+    release.set()
+    await asyncio.sleep(0)

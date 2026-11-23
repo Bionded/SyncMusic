@@ -12,7 +12,8 @@ Tagcache (database format 8, a Rockbox tagcache descendant) in `.compas/`:
   on the player (`/data/mnt/sd_0/...`). M is N unless `tagcache.refs.gN` (magic 0x54435231, version 1,
   generation, 10 source generations, FNV-1a checksum) names an older generation for the file name tag.
 - numeric tags used: 15 playcount, 16 rating (0 = unrated, 1 = 5 stars =
-  the favourite, 2..5 = 4..1 stars since Compás 1.6.0), 18 last played (unix seconds, player clock).
+  the favourite, 2..5 = 4..1 stars since Compás 1.6.0), 18 last played (unix seconds, player clock), 20 the
+  file's mtime and 22 its size when it was read (the indexer reads a file again only when either differs).
 
 Audiobooks plugin: `.plugins/.audiobooks_state_v3`, tab-separated, percent-encoded fields; `P` lines are
 `P, book key, file, position s, duration s, finished, last played, ...` (key = folder under Audiobooks/,
@@ -42,6 +43,7 @@ REFS_MAGIC, REFS_VERSION, REFS_COUNT = 0x54435231, 1, 10
 REFS_FILENAME_INDEX = 9  # position of the file name tag in the refs' source list
 TAG_COUNT = 23
 TAG_FILENAME, TAG_PLAYCOUNT, TAG_RATING, TAG_LASTPLAYED = 4, 15, 16, 18
+TAG_MTIME, TAG_SIZE = 20, 22  # the file's mtime (player frame) and size the row was read at
 FLAG_DELETED = 0x1
 MASTER_HEADER, TAG_HEADER = 24, 12
 ENTRY_SIZE = (TAG_COUNT + 1) * 4
@@ -97,18 +99,25 @@ def _suffix(gen: int) -> str:
     return f".g{gen}" if gen > 0 else ""
 
 
-def filename_generation(db: Path, gen: int) -> int:
-    """The generation whose file holds the file name strings (refs file; missing or invalid = `gen`)."""
+def ref_sources(db: Path, gen: int) -> list[int] | None:
+    """The generations whose tag files generation `gen` reuses (its refs file), None without a valid one."""
     try:
         raw = (db / f"tagcache.refs.g{gen}").read_bytes()
     except OSError:
-        return gen
+        return None
     fmt = f"<IIi{REFS_COUNT}iI"
     if gen == 0 or len(raw) != struct.calcsize(fmt):
-        return gen
+        return None
     magic, version, g, *rest = struct.unpack(fmt, raw)
-    sources = rest[:REFS_COUNT]
     if magic != REFS_MAGIC or version != REFS_VERSION or g != gen or rest[-1] != _fnv1a(raw[:-4]):
+        return None
+    return list(rest[:REFS_COUNT])
+
+
+def filename_generation(db: Path, gen: int) -> int:
+    """The generation whose file holds the file name strings (refs file; missing or invalid = `gen`)."""
+    sources = ref_sources(db, gen)
+    if sources is None:
         return gen
     source = sources[REFS_FILENAME_INDEX]
     return source if 0 <= source <= gen else gen
@@ -128,6 +137,8 @@ class CompasEntry:
     rating: int
     last_played: int
     slot: int = -1  # its row in the master index
+    mtime: int = 0
+    size: int = 0
 
 
 def parse_tagcache(master: bytes, names: bytes) -> list[CompasEntry]:
@@ -158,7 +169,15 @@ def parse_tagcache(master: bytes, names: bytes) -> list[CompasEntry]:
         rel = card_rel(raw.decode("utf-8", errors="replace"))
         if rel:
             out.append(
-                CompasEntry(rel, max(e[TAG_PLAYCOUNT], 0), e[TAG_RATING], e[TAG_LASTPLAYED], slot)
+                CompasEntry(
+                    rel,
+                    max(e[TAG_PLAYCOUNT], 0),
+                    e[TAG_RATING],
+                    e[TAG_LASTPLAYED],
+                    slot,
+                    e[TAG_MTIME],
+                    e[TAG_SIZE],
+                )
             )
     return out
 

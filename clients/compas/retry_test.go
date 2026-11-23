@@ -122,3 +122,67 @@ func TestPowerKeyTogglesTheScreen(t *testing.T) {
 		t.Fatal("a long press must not act (the player powers off)")
 	}
 }
+
+// TestUpdateOfferedRightAfterRegistration: once the server says the registration is finished, the app asks for an
+// update at once and opens the prompt over the "Paired" page, before the first sync.
+func TestUpdateOfferedRightAfterRegistration(t *testing.T) {
+	old := version
+	version = "1.0.0"
+	defer func() { version = old }()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/client/v1/status":
+			_, _ = w.Write([]byte(`{"registration": "done"}`))
+		case "/api/client/v1/app-update":
+			_, _ = w.Write([]byte(`{"available": true, "version": "9.9.9", "server_version": "9.9.9",
+				"files": [{"path": "syncmusic-compas", "size": 1, "sha256": "x", "url": "u"}]}`))
+		}
+	}))
+	defer srv.Close()
+	a := &App{c: &Client{root: t.TempDir(), st: State{Server: srv.URL, Token: "t"}, http: newHTTPClient(0)},
+		set: defaultSettings(), later: make(chan func(), 4)}
+	a.waitRegistration(a.message(T("pair.done"), T("pair.done_text"), false))
+	deadline := time.After(5 * time.Second)
+	for a.build().title != T("update.title") {
+		select {
+		case f := <-a.later:
+			f()
+		case <-deadline:
+			t.Fatalf("no update prompt after registration, page %q", a.build().title)
+		}
+	}
+}
+
+// TestServerSyncReachesAFreshlyPairedApp: right after pairing (no restart) "Sync" pressed on the server starts the
+// sync in the app, which says the server started it.
+func TestServerSyncReachesAFreshlyPairedApp(t *testing.T) {
+	fakeSys(t, nil)
+	var asked int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/client/v1/status" && r.URL.Query().Get("wait") != "" {
+			atomic.AddInt32(&asked, 1)
+			_, _ = w.Write([]byte(`{"requested": true}`)) // stays requested until the app picks it up
+			return
+		}
+		_, _ = w.Write([]byte(`{"registration": "done"}`))
+	}))
+	defer srv.Close()
+	defer srv.CloseClientConnections() // the sync it started still talks to the server
+	a := &App{c: &Client{root: t.TempDir(), data: t.TempDir(), st: State{Server: srv.URL, Token: "t"}, http: newHTTPClient(0)},
+		set: defaultSettings(), later: make(chan func(), 8)}
+	a.paired()
+	deadline := time.After(10 * time.Second)
+	for !a.syncing {
+		select {
+		case f := <-a.later:
+			f()
+		case <-deadline:
+			t.Fatalf("server sync never started, page %q", a.build().title)
+		}
+	}
+	if a.pwhat != T("sync.from_server") || atomic.LoadInt32(&asked) == 0 {
+		t.Fatalf("sync page says %q", a.pwhat)
+	}
+}

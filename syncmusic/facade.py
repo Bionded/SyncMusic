@@ -238,7 +238,14 @@ def _general_schema() -> dict[str, Any]:
 
 
 # gentle write mode: disk devices only, not network ones such as FTP
-GENTLE_SYNC_FIELDS = ("gentle_write", "gentle_batch_files", "gentle_pause_s", "gentle_rate_mb_s")
+GENTLE_SYNC_FIELDS = (
+    "gentle_write",
+    "gentle_batch_files",
+    "gentle_pause_s",
+    "gentle_rate_mb_s",
+    "keep_disk_awake",
+    "keep_disk_awake_s",
+)
 
 
 def _sync_schema(device_type: str) -> dict[str, Any]:
@@ -3413,7 +3420,14 @@ class AppFacade:
         return (await self.app.jobs.wait(job_id)).model_dump(mode="json")
 
     def cancel_job(self, job_id: str) -> bool:
-        self.job(job_id)
+        from syncmusic.devices.client import STREAMS
+
+        info = self.job(job_id)
+        dev = info.get("device_id")
+        if dev and (st := STREAMS.get(dev)) is not None:
+            # a Wi-Fi sync: Stop on the server also ends the client's session (it is told at its next call)
+            self.app.client_sessions.cancel(dev)
+            st.stopped = True
         return self.app.jobs.cancel(job_id)
 
     async def _activity_targets(self) -> dict[str, tuple[str, str]]:

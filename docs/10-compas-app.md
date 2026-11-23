@@ -146,6 +146,9 @@ reloads its library database and rescans the card when it starts. When a sync ch
 - **Power off**,
 - **Exit**: the player shows the changes after its next restart.
 
+If the player's library ever lists songs wrongly or misses some, **Settings → Rebuild player library** asks the
+server to build it again from scratch and starts a sync that installs it (no music is sent again).
+
 ![After a sync](img/compas-app-done.png)
 
 The app's setting **After sync** can do this without asking (restart or power off after a 5 second countdown;

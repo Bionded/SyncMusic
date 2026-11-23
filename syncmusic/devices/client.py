@@ -25,7 +25,9 @@ import datetime as dt
 import hashlib
 import logging
 import os
+import shutil
 import threading
+import time
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
@@ -34,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from syncmusic.base.capabilities import DeviceCapabilities, PathRules
 from syncmusic.base.device import UNKNOWN_SPACE, Device, DeviceSession, ProbeResult
+from syncmusic.base.progress import report_status
 from syncmusic.core import manifest as manifest_io
 from syncmusic.core.models import (
     DeviceContents,
@@ -79,6 +82,9 @@ class ClientSettings(BaseModel):
     # a library database the server builds over the files the client holds (players that cannot index their own
     # files): none, or the Compás player's database (needs compas-sdtool on the server)
     player_database: Literal["none", "compas"] = "none"
+    # build that database from scratch on every sync (from what the server knows of each file, no audio needed)
+    # instead of adding the new files to the card's own database
+    rebuild_player_database: bool = False
     # the client app may confirm a plan that waits for confirmation (many removals, not enough space) itself,
     # after showing it to the user on the player (every client by default); off: only the web UI confirms
     client_may_confirm: bool = True
@@ -95,9 +101,15 @@ class Stream:
     """A streaming client session: the sync job prepares items only a few ahead of what the client acked, so
     the server never holds more than that, and the session lists every file as soon as the job wrote it."""
 
-    def __init__(self, ahead_files: int, ahead_bytes: int) -> None:
+    def __init__(self, ahead_files: int, ahead_bytes: int, plan: Any = None) -> None:
         self.ahead_files = ahead_files
         self.ahead_bytes = ahead_bytes
+        # a sync applied on the server (Apply, a schedule, an automatic sync): its plan, until the client's
+        # session attaches to the running job; the job gives up when the client does not come
+        self.plan = plan
+        self.attached = plan is None
+        self.since = time.monotonic()
+        self.committed = asyncio.Event()  # the job wrote the manifest: the session lists the rest
         self.written: list[
             tuple[str, str, str]
         ] = []  # (device path, item key, role) in write order
@@ -107,6 +119,10 @@ class Stream:
 # device id -> its open streaming session (the job's device object and the session's are not the same)
 STREAMS: dict[str, Stream] = {}
 STREAM_POLL_S = 0.1
+PENDING_TTL_S = 2.0  # free_space() walks the outbox at most this often (it runs before every file a sync writes)
+STREAM_ATTACH_S = (
+    1800.0  # a sync applied on the server waits this long for the client to start its session
+)
 
 
 class GeneratedFile(BaseModel):
@@ -216,6 +232,8 @@ class ClientDevice(FileDeviceMixin, Device):
     def __init__(self, config, mount, ctx) -> None:  # type: ignore[no-untyped-def]
         super().__init__(config, mount, ctx)
         self.state = self.load_state()
+        self._pending: tuple[float, int] | None = None  # (when, outbox bytes) of the last walk
+        self._written_since = 0  # bytes put_track wrote since that walk
 
     @classmethod
     def probe(cls, blk: BlockDeviceInfo | None, mount: Path | None) -> ProbeResult | None:
@@ -313,7 +331,8 @@ class ClientDevice(FileDeviceMixin, Device):
 
     def outbox(self) -> dict[str, int]:
         """Device path -> size of every file waiting for the client (the outbox tree)."""
-        return {self._rel(p): p.stat().st_size for p in self._walk()}
+        root = len(str(self.mount)) + 1
+        return {str(p)[root:].replace(os.sep, "/"): p.stat().st_size for p in self._walk()}
 
     def clear_outbox(self) -> int:
         """Drop every file waiting for the client (the next sync prepares again what it still needs). Returns
@@ -363,6 +382,7 @@ class ClientDevice(FileDeviceMixin, Device):
             # the database is built over every file the client holds: keep what the indexer reads of it
             compas_tagset.tag_copy(p, self._shadow / rel)
         p.unlink(missing_ok=True)
+        self._pending = None
         d = p.parent
         while d.resolve() != base and d.is_dir() and not any(d.iterdir()):
             d.rmdir()
@@ -419,22 +439,36 @@ class ClientDevice(FileDeviceMixin, Device):
             update["max_file_size"] = limits["max_file_bytes"]
         return rules.model_copy(update=update) if update else rules
 
-    def generated_files(self, manifest: Manifest | None) -> GeneratedSet | None:
+    def generated_files(
+        self, manifest: Manifest | None, from_scratch: bool = False
+    ) -> GeneratedSet | None:
         """Files the server builds for this client after a sync (e.g. a player's own database over the files it
-        holds), or None: the database chosen in the `player_database` setting."""
+        holds), or None: the database chosen in the `player_database` setting.
+
+        Compás: normally built over the card's own database as the client uploaded it (only new files are read);
+        from scratch — every file the server holds no copy of made from what the manifest knows of it — when asked
+        (`from_scratch`, the device setting), and whenever the incremental build looks wrong (no usable card
+        database, rows that do not match the card's files)."""
         if self.settings.player_database != "compas" or manifest is None:
             return None
+        from syncmusic.devices.HibyR1 import compas_feedback as cf
         from syncmusic.devices.HibyR1 import compas_sdtool as sd
         from syncmusic.devices.HibyR1 import compas_tagset
 
+        entries = {
+            e.path: e
+            for e in manifest.items.values()
+            if e.path.split("/", 1)[0] not in compas_tagset.IGNORED_DIRS
+        }
+        held = sorted(entries)
+        if not held:
+            return None
         files: dict[str, Path] = {}
-        for rel in sorted({e.path for e in manifest.items.values()}):
+        for rel in held:
             for base in (self.mount, self._shadow):
                 if (base / rel).is_file():
                     files[rel] = base / rel
                     break
-        if not files:
-            return None
         data_dir = self.ctx.data_dir if self.ctx is not None else Path("/nonexistent")
         tool = sd.locate(sd.configured(), data_dir)
         if tool is None:
@@ -442,7 +476,78 @@ class ClientDevice(FileDeviceMixin, Device):
                 "%s: compas-sdtool not found, the player builds its own library", self.config.name
             )
             return None
-        sid, out, names = compas_tagset.build_cached(files, self._side("gen"), tool)
+        asked = self._side("rebuild").exists()
+        scratch = from_scratch or asked or self.settings.rebuild_player_database
+        why = "asked for" if scratch else ""
+        base_db = None if scratch else self._card_database()
+        rows: dict[str, cf.CompasEntry] = {}
+        if base_db is not None:
+            try:
+                rows = {e.path: e for e in cf.read_tagcache(base_db.parent) or []}
+            except cf.CompasDbError as e:
+                base_db, why = None, f"the card's database is unusable ({e})"
+        elif not scratch and self._side("carddb").exists():
+            why = "the card's database is missing"
+        while True:
+            stubs: dict[str, compas_tagset.Stub] = {}
+            synth: dict[str, compas_tagset.Synth] = {}
+            for rel in held:
+                if rel in files:
+                    continue
+                row = rows.get(rel) if base_db is not None else None
+                e = entries[rel]
+                if row is not None and row.size > 0:
+                    stubs[rel] = (row.size, row.mtime)
+                elif (
+                    e.duration_s
+                    and e.size > 0
+                    and Path(rel).suffix.lower() in compas_tagset.SYNTH_FORMATS
+                ):
+                    synth[rel] = (
+                        e.meta,
+                        e.duration_s,
+                        e.size,
+                        int(e.synced_at.timestamp()) // 2 * 2,
+                    )
+            if why:
+                log.info(
+                    "%s: building the player database from scratch (%s)", self.config.name, why
+                )
+            try:
+                built = self._build_set(held, files, stubs, synth, base_db, tool)
+                if built is not None and asked:
+                    self._side("rebuild").unlink(missing_ok=True)
+                return built
+            except compas_tagset.StandInRead as e:
+                if base_db is None:
+                    raise
+                base_db, why = None, f"the card's database does not match its files: {e}"
+
+    def _build_set(
+        self,
+        held: list[str],
+        files: dict[str, Path],
+        stubs: dict[str, tuple[int, int]],
+        synth: dict[str, Any],
+        base_db: Path | None,
+        tool: Path,
+    ) -> GeneratedSet | None:
+        from syncmusic.devices.HibyR1 import compas_tagset
+
+        missing = len(held) - len(files) - len(stubs) - len(synth)
+        if missing > max(5, len(held) // 50):
+            # a database over only part of the card would replace the complete one the player has
+            log.warning(
+                "%s: player database not built: the server knows only %d of the %d songs on the card; "
+                "the player keeps its own library (sync once over USB, or let the player rescan)",
+                self.config.name,
+                len(held) - missing,
+                len(held),
+            )
+            return None
+        sid, out, names = compas_tagset.build_cached(
+            files, self._side("gen"), tool, base_db, stubs or None, synth or None
+        )
         return GeneratedSet(
             set_id=sid,
             commit=COMPAS_COMMIT,
@@ -472,6 +577,47 @@ class ClientDevice(FileDeviceMixin, Device):
         if not out.is_file() or out.read_bytes() != data:
             manifest_io.atomic_write(out, data)
         return out
+
+    def request_rebuild(self) -> None:
+        """'Rebuild player database': the next sync builds the player's database from scratch (once)."""
+        p = self._side("rebuild")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+
+    @property
+    def rebuild_requested(self) -> bool:
+        return self._side("rebuild").exists()
+
+    def store_card_database(self, files: dict[str, bytes]) -> int:
+        """Keep the card's current player database as the client uploaded it (replacing the last upload); the next
+        generated set is built over it. Raises ValueError for anything that is not a tagcache file or a set
+        without its generation pointer. Returns the bytes kept."""
+        from syncmusic.devices.HibyR1 import compas_tagset
+
+        bad = [n for n in files if not compas_tagset.TCD_FILE.match(n)]
+        if bad:
+            raise ValueError(f"not a player database file: {bad[0]!r}")
+        if "tagcache.gen" not in files:
+            raise ValueError("the upload lacks tagcache.gen")
+        side = self._side("carddb")
+        tmp = side.with_name(side.name + ".tmp")
+        shutil.rmtree(tmp, ignore_errors=True)
+        (tmp / ".compas").mkdir(parents=True)
+        for name, data in files.items():
+            (tmp / ".compas" / name).write_bytes(data)
+        old = side.with_name(side.name + ".old")
+        shutil.rmtree(old, ignore_errors=True)
+        if side.exists():
+            side.rename(old)
+        tmp.rename(side)
+        shutil.rmtree(old, ignore_errors=True)
+        return sum(len(d) for d in files.values())
+
+    def _card_database(self) -> Path | None:
+        """The card's current player database as the client last uploaded it (`.compas/` with its tagcache files),
+        None when the server has none."""
+        db = self._side("carddb") / ".compas"
+        return db if (db / "tagcache.gen").is_file() else None
 
     def _side(self, what: str) -> Path:
         return self.mount.parent / f"{self.mount.name}.{what}"
@@ -504,7 +650,11 @@ class ClientDevice(FileDeviceMixin, Device):
         """The client's last reported free space less what waits for it in the outbox."""
         if self.state.storage_free is None:
             return UNKNOWN_SPACE
-        pending = sum((await asyncio.to_thread(self.outbox)).values())
+        now = time.monotonic()
+        if self._pending is None or now - self._pending[0] > PENDING_TTL_S:
+            self._pending = (now, sum((await asyncio.to_thread(self.outbox)).values()))
+            self._written_since = 0
+        pending = self._pending[1] + self._written_since
         queued = sum(self.state.inventory.get(d, 0) for d in self.state.deletes)
         return max(0, self.state.storage_free - pending + queued)
 
@@ -513,17 +663,26 @@ class ClientDevice(FileDeviceMixin, Device):
 
     async def missing(self, manifest: Manifest) -> set[str]:
         """Entries whose file is neither on the client (inventory) nor waiting for it (outbox)."""
-        held = self.state.inventory
         root = str(self.mount)
 
-        def work() -> set[str]:
+        def work(held: dict[str, int]) -> set[str]:
             return {
                 k
                 for k, e in manifest.items.items()
                 if e.path not in held and not os.path.isfile(os.path.join(root, e.path))
             }
 
-        return await asyncio.to_thread(work)
+        gone = await asyncio.to_thread(work, self.state.inventory)
+        for _ in range(
+            10
+        ):  # a streaming client acks meanwhile: a file leaves the outbox for its inventory
+            if not gone or self.id not in STREAMS:
+                break
+            await asyncio.sleep(STREAM_POLL_S)
+            gone &= await asyncio.to_thread(
+                work, (await asyncio.to_thread(self.load_state)).inventory
+            )
+        return gone
 
     async def read_contents(self) -> DeviceContents:
         """The client's files and the ones waiting for it."""
@@ -683,11 +842,18 @@ class ClientDevice(FileDeviceMixin, Device):
         while st is not None:  # wait until the client took enough of what waits for it
             if st.stopped:
                 raise StreamCancelled("the client's sync session ended")
+            if not st.attached and time.monotonic() - st.since > STREAM_ATTACH_S:
+                raise StreamCancelled("the client did not start its sync")
             held = await asyncio.to_thread(self.outbox)
             if not held or (len(held) < st.ahead_files and sum(held.values()) < st.ahead_bytes):
                 break
             await asyncio.sleep(STREAM_POLL_S)
         ref = await super().put_track(s, item)
+        self._written_since += sum(
+            (self.mount / rel).stat().st_size
+            for rel in (ref.path, *ref.sidecars)
+            if (self.mount / rel).is_file()
+        )
         if st is not None:
             key = item.track.ref.key()
             st.written += [(ref.path, key, "track"), *((x, key, "sidecar") for x in ref.sidecars)]
@@ -703,6 +869,7 @@ class ClientDevice(FileDeviceMixin, Device):
 
     async def remove_track(self, s: DeviceSession, ref: DeviceTrackRef) -> None:
         await super().remove_track(s, ref)
+        self._pending = None
         for rel in (ref.path, *ref.sidecars):
             if rel in self.state.inventory and rel not in self.state.deletes:
                 self.state.deletes.append(rel)
@@ -737,6 +904,22 @@ class ClientDevice(FileDeviceMixin, Device):
                 p.unlink()
         self.save_state()  # the manifest is written last
         await super().commit(s, manifest)
+        st = STREAMS.get(self.id)
+        if st is None:
+            return
+        # a streaming job ends when the client took everything that waits for it, so the sync shows as running
+        # on the server for as long as the client downloads; its session lists the rest from now on
+        st.committed.set()
+        total = 0
+        shown = -1
+        while not st.stopped and (left := len(await asyncio.to_thread(self.outbox))):
+            total = max(total, left)
+            if left != shown:
+                report_status(f"waiting for the player to take {left:,} of {total:,} files")
+                shown = left
+            if not st.attached and time.monotonic() - st.since > STREAM_ATTACH_S:
+                break
+            await asyncio.sleep(STREAM_POLL_S)
 
     async def abort(self, s: DeviceSession) -> None:
         await super().abort(s)

@@ -91,6 +91,45 @@ def _kernel_messages(dev_path: str, lines: int = 30) -> list[str]:
     return [ln for ln in out.splitlines()[-lines:] if f"({name})" in ln or f" {name}:" in ln]
 
 
+# options that write back on every write or close: known to stall or break slow cards (a CF/SD-modded iPod)
+RISKY_OPTIONS = frozenset({"sync", "flush", "dirsync"})
+
+
+def kernel_excerpt(dev_paths: Iterable[str], lines: int = 400, keep: int = 10) -> list[str]:
+    """The last kernel log lines about the disks behind `dev_paths` (partition and whole disk: FAT, SCSI and
+    block-layer messages) plus USB resets/disconnects, best effort (dmesg may need root)."""
+    names = {Path(p).name for p in dev_paths if p}
+    names |= {re.sub(r"p?\d+$", "", n) for n in names if n.startswith(("sd", "mmcblk"))}
+    names.discard("")
+    if not names:
+        return []
+    try:
+        out = subprocess.run(
+            privileged(["dmesg"]), capture_output=True, text=True, timeout=5, check=True
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    pat = re.compile(
+        r"\((?:%s)\d*\)|\[(?:%s)\]|\b(?:%s)\d*:|\busb \S+: (?:reset|USB disconnect)"
+        % (("|".join(map(re.escape, sorted(names))),) * 3)
+    )
+    return [ln for ln in out.splitlines()[-lines:] if pat.search(ln)][-keep:]
+
+
+# a SCSI command that waited this long before it failed: the disk stopped answering
+_STUCK_CMD = re.compile(r"cmd_age=(\d+)s")
+_MEDIA_ERROR = re.compile(r"medium error|write error", re.IGNORECASE)
+
+
+def wedged(kernel: Iterable[str], stuck_s: int = 30) -> bool:
+    """The kernel lines show a disk that stopped answering: a command that hung `stuck_s` or longer and a medium
+    or write error (a CF/SD adapter that never woke from standby). Only a replug or a reboot of the player helps;
+    a file system repair would hang on it."""
+    lines = list(kernel)
+    stuck = any(int(m.group(1)) >= stuck_s for ln in lines if (m := _STUCK_CMD.search(ln)))
+    return stuck and any(_MEDIA_ERROR.search(ln) for ln in lines)
+
+
 def unmountable_message(dev_path: str, fstype: str, error: str, kernel: list[str]) -> str:
     """A human message for a failed mount: what happened and what the user can do."""
     if fstype == "ntfs" and any("dirty" in ln for ln in kernel):
@@ -226,6 +265,9 @@ class MountEntry:
     fstype: str = ""
     ro: bool = False
     peers: frozenset[str] = frozenset()  # propagation groups (shared:N / master:N) of this mount
+    options: frozenset[str] = (
+        frozenset()
+    )  # per-mount and file-system options (rw, sync, flush, ...)
 
 
 def is_view_of(path: str, own: str, entries: list[MountEntry] | None = None) -> bool:
@@ -267,6 +309,10 @@ def mount_table() -> list[MountEntry]:
                 parts[sep + 1],
                 "ro" in parts[5].split(","),
                 peers,
+                frozenset(
+                    parts[5].split(",")
+                    + (parts[sep + 3].split(",") if len(parts) > sep + 3 else [])
+                ),
             )
         )
     return out
@@ -416,6 +462,17 @@ async def mount(
             raise ForeignMountError(
                 f"{dev_path} is mounted read-only by another program at {first}: SyncMusic cannot write "
                 "through it. Unmount it, or remount it writable"
+            )
+        risky = sorted(
+            RISKY_OPTIONS & next((e.options for e in entries if e.path == first), frozenset())
+        )
+        if risky and not read_only:
+            log.warning(
+                "%s: the existing mount at %s uses %s: every write waits for the device, which stalls or "
+                "breaks slow cards; let SyncMusic mount it (turn off 'Use an existing mount' and unmount it)",
+                dev_path,
+                first,
+                ",".join(risky),
             )
         # the file system type comes from lsblk/blkid (the real one, also behind a fuseblk mount)
         log.info("%s already mounted at %s: using the existing mount", dev_path, first)

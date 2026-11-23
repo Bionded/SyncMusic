@@ -42,6 +42,7 @@ type State struct {
 	DeviceID    string               `json:"device_id,omitempty"`
 	Name        string               `json:"name,omitempty"` // this player's name on the server (the server's name wins)
 	Seq         int                  `json:"seq"`
+	DBUploaded  string               `json:"db_uploaded,omitempty"` // signature of the card database last sent up
 	Events      []map[string]any     `json:"events"`
 	Files       map[string]int64     `json:"files"`                     // what this app put on the card: path -> size
 	Keys        map[string]string    `json:"keys"`                      // path -> item key (events refer to keys)
@@ -398,8 +399,15 @@ type view struct {
 	Code       string  `json:"code"`
 	RetryAfter float64 `json:"retry_after_s"`
 	MayConfirm bool    `json:"may_confirm"` // needs_review that the user may confirm here
-	Review     Totals  `json:"review"`
-	Plan       struct {
+	// Planning: what the server does while the status is planning (step, items counted, fraction, detail)
+	Planning *struct {
+		Step     string   `json:"step"`
+		Items    int      `json:"items"`
+		Fraction *float64 `json:"fraction"`
+		Detail   string   `json:"detail"`
+	} `json:"planning"`
+	Review Totals `json:"review"`
+	Plan   struct {
 		Totals Totals             `json:"totals"`
 		Delete []item             `json:"delete"`
 		Fetch  []item             `json:"fetch"`
@@ -495,6 +503,15 @@ func (c *Client) start() (*view, error) {
 				continue
 			}
 			c.progress(0, 0, "Confirm the sync on the server: "+v.Message)
+		case "planning":
+			if pl := v.Planning; pl != nil {
+				c.pr.update(func(p *Progress) {
+					p.PlanStep, p.PlanItems, p.PlanDetail, p.PlanFraction = pl.Step, pl.Items, pl.Detail, -1
+					if pl.Fraction != nil {
+						p.PlanFraction = *pl.Fraction
+					}
+				})
+			}
 		default:
 			c.progress(0, 0, "Waiting for the server: "+v.Status)
 		}
@@ -693,6 +710,8 @@ func (c *Client) syncOnce() (Result, bool, error) {
 			p.Sent[k] = v
 		}
 	})
+	c.progress(0, 0, "Sending the player's library to the server")
+	c.uploadDatabase()
 	c.progress(0, 0, "Asking the server what to sync")
 	v, err := c.start()
 	if err != nil {

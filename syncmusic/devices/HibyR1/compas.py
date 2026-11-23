@@ -549,6 +549,9 @@ class HibyCompas(FileDeviceMixin, Device):
         """Build the player's library on the card with compas-sdtool (compas_sdtool), so the music is there right
         after unplugging; without a usable tool the player indexes it itself after the USB session."""
         added = s.data.pop("compas_music_changed", False)
+        if not added and self._library_readable():
+            log.info("%s: player library unchanged, not rewritten", self.id)
+            return
         data_dir = self.ctx.data_dir if self.ctx is not None else Path("/nonexistent")
         tool = sd.locate(sd.configured(), data_dir)
         if tool is None:
@@ -577,6 +580,22 @@ class HibyCompas(FileDeviceMixin, Device):
                 f"the player's library was not built on this computer ({why}); the player indexes the new music "
                 "after unplugging"
             )
+
+    def _library_readable(self) -> bool:
+        """The card carries a player library this code can read (else a build replaces it)."""
+        try:
+            return cf.read_tagcache(self.mount) is not None
+        except (cf.CompasDbError, OSError, ValueError):
+            return False
+
+    async def rewrite_tags(
+        self, s: DeviceSession, ref: DeviceTrackRef, item: PreparedItem
+    ) -> DeviceTrackRef | None:
+        """New tags go into the player's library like a new file."""
+        out = await super().rewrite_tags(s, ref, item)
+        if not _spoken(ref.path):
+            s.data["compas_music_changed"] = True
+        return out
 
     async def _patch_stats(self, s: DeviceSession, manifest: Manifest) -> None:
         """The library's hearts, play counts and last played into the rows the player has indexed for our files

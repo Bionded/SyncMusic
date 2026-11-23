@@ -575,3 +575,68 @@ func TestEveryMenuHasAWayOut(t *testing.T) {
 		t.Error("the Wi-Fi busy page has no Exit")
 	}
 }
+
+// TestPlanningShowsWhatTheServerDoes: while the server plans, the sync page names its step with the items counted,
+// and after 10 s says it is still working with the elapsed time; the dots move every second.
+func TestPlanningShowsWhatTheServerDoes(t *testing.T) {
+	t0 := time.Unix(1_800_000_000, 0)
+	p := Progress{Phase: phasePlan, PhaseAt: t0, PlanStep: "device", PlanItems: 15427, PlanFraction: 0.5, PlanDetail: "card"}
+	texts := func(now time.Time) []string {
+		var out []string
+		for _, l := range syncLines(p, now) {
+			out = append(out, l.text)
+		}
+		return out
+	}
+	got := strings.Join(texts(t0.Add(45*time.Second)), "|")
+	for _, want := range []string{T("plan.step.device") + " · " + T("plan.items", 15427), "card", T("sync.still_working", "45 s")} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("%q missing in %q", want, got)
+		}
+	}
+	if texts(t0.Add(time.Second))[1] == texts(t0.Add(2 * time.Second))[1] {
+		t.Fatal("the heading must move each second")
+	}
+	if strings.Contains(strings.Join(texts(t0.Add(3*time.Second)), "|"), T("sync.still_working", "3 s")) {
+		t.Fatal("a short step shows no 'still working'")
+	}
+}
+
+// The phase bar's band moves inside the current step's segment only: an animation frame changes no other row.
+func TestAnimateMovesOnlyThePhaseSegment(t *testing.T) {
+	f, err := loadFonts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &screen{w: 480, h: 800, pix: make([]uint16, 480*800), out: make([]byte, 480*800*2), stride: 960, font: f}
+	now := time.Date(2026, 11, 21, 1, 0, 0, 0, time.UTC)
+	p := page{title: T("sync.title"), lines: syncLines(Progress{Phase: phaseDatabase, PhaseAt: now}, now)}
+	s.drawPage(p, 0, "64%")
+	r := s.pulse
+	if r.w < 12 || r.h != 6 {
+		t.Fatalf("no current segment recorded: %+v", r)
+	}
+	before := append([]uint16(nil), s.pix...)
+	if !s.animate(now.Add(400 * time.Millisecond)) {
+		t.Fatal("animate drew nothing")
+	}
+	changed := false
+	for i := range s.pix {
+		if s.pix[i] == before[i] {
+			continue
+		}
+		x, y := i%s.w, i/s.w
+		if !r.has(x, y) {
+			t.Fatalf("pixel %d,%d outside the segment %+v changed", x, y, r)
+		}
+		changed = true
+	}
+	if !changed {
+		t.Fatal("the band did not move")
+	}
+	mid := append([]uint16(nil), s.pix...)
+	s.animate(now.Add(1200 * time.Millisecond))
+	if string(u16bytes(mid)) == string(u16bytes(s.pix)) {
+		t.Fatal("the band stands still")
+	}
+}

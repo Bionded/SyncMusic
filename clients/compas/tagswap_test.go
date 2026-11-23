@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,5 +132,83 @@ func TestInstallTagcacheFailureLeavesNoDatabase(t *testing.T) {
 		if e.Type().IsRegular() && strings.HasPrefix(e.Name(), "database_") {
 			t.Fatalf("half database left: %s", e.Name())
 		}
+	}
+}
+
+// A set built over the card's own database: generation G with its refs file and an older tag file it reuses.
+func TestInstallTagcacheTakesALaterGeneration(t *testing.T) {
+	built := t.TempDir()
+	writeTC(t, built, []tcRowSpec{{"Music/A/01.flac", 2, false}, {"Music/A/02.flac", 0, false}})
+	src := filepath.Join(built, ".compas")
+	ents, _ := os.ReadDir(src)
+	for _, e := range ents {
+		if m := tcdName.FindStringSubmatch(e.Name()); m != nil && m[2] == "" {
+			os.Rename(filepath.Join(src, e.Name()), filepath.Join(src, m[1]+".g3"+m[3]))
+		}
+	}
+	os.WriteFile(filepath.Join(src, "database_0.tcd.g2"), []byte("reused"), 0o644)
+	if _, err := installTagcache(t.TempDir(), src); err == nil {
+		t.Fatal("generation 3 without its refs file accepted")
+	}
+	os.WriteFile(filepath.Join(src, "tagcache.refs.g3"), []byte("refs"), 0o644)
+	card := t.TempDir()
+	writeTC(t, card, []tcRowSpec{{"Music/Old/x.mp3", 1, false}})
+	gen, err := installTagcache(card, src)
+	if err != nil || gen != 3 {
+		t.Fatalf("gen %d err %v", gen, err)
+	}
+	db := filepath.Join(card, ".compas")
+	if b, _ := os.ReadFile(filepath.Join(db, "tagcache.gen")); string(b) != "3" {
+		t.Fatalf("tagcache.gen = %q", b)
+	}
+	for _, n := range []string{"tagcache.refs.g3", "database_0.tcd.g2"} {
+		if _, err := os.Stat(filepath.Join(db, n)); err != nil {
+			t.Fatalf("%s not installed", n)
+		}
+	}
+	if got, err := readTagcache(card); err != nil || len(got) != 2 {
+		t.Fatalf("read back %v %v", got, err)
+	}
+	os.WriteFile(filepath.Join(src, "database_idx.tcd.g2"), make([]byte, 30), 0o644)
+	if _, err := installTagcache(t.TempDir(), src); err == nil {
+		t.Fatal("a set with two master indexes accepted")
+	}
+}
+
+// The card's database goes up once per change, before the server plans.
+func TestUploadDatabaseOnlyWhenItChanged(t *testing.T) {
+	card := t.TempDir()
+	writeTC(t, card, []tcRowSpec{{"Music/A/01.flac", 1, false}})
+	db := filepath.Join(card, ".compas")
+	os.WriteFile(filepath.Join(db, "tagcache.gen"), []byte("0"), 0o644)
+	os.WriteFile(filepath.Join(db, "device.json"), []byte("{}"), 0o644) // the player's own: not sent
+	var got []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PUT" || !strings.HasSuffix(r.URL.Path, "/player-database") {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		got = append(got, body)
+		w.Write([]byte(`{"files": 1, "size": 1}`))
+	}))
+	defer srv.Close()
+	c := &Client{root: card, data: filepath.Join(card, ".apps-data/syncmusic"), http: srv.Client(), st: State{Server: srv.URL}}
+	c.uploadDatabase()
+	c.uploadDatabase()
+	if len(got) != 1 {
+		t.Fatalf("%d uploads, want 1", len(got))
+	}
+	names := []string{}
+	for _, f := range got[0]["files"].([]any) {
+		names = append(names, f.(map[string]any)["name"].(string))
+	}
+	if !strings.Contains(strings.Join(names, " "), "database_idx.tcd") || strings.Contains(strings.Join(names, " "), "device.json") {
+		t.Fatalf("sent %v", names)
+	}
+	os.WriteFile(filepath.Join(db, "tagcache.gen"), []byte("1"), 0o644)
+	c.uploadDatabase()
+	if len(got) != 2 {
+		t.Fatal("a changed database was not sent again")
 	}
 }

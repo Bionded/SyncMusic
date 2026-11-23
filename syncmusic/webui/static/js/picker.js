@@ -119,7 +119,8 @@ function apply(root, kind, req, path) {
     const field = root.querySelector(sel);
     if (!field) return;
     field.value = v;
-    field.dispatchEvent(new Event("input", { bubbles: true })); // the unsaved bar follows it
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.dispatchEvent(new Event("change", { bubbles: true })); // forms that save themselves save it
   };
   if (kind === "lib-local") return set('[id$="-src-root"]', path);
   if (kind === "dev-flash") return set('[id$="-base_folder"]', path === req.root ? "" : path.slice(req.root.replace(/\/$/, "").length + 1));

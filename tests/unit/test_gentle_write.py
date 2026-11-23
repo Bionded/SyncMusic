@@ -162,3 +162,31 @@ def test_the_app_write_limit_paces_every_disk_device():
     assert gentle_pacer(gentle, applier.Path("/x"), 3.0).rate == 3_000_000
     assert gentle_pacer(gentle, applier.Path("/x"), 8.0).rate == 5_000_000
     assert gentle_pacer(SyncSettings(gentle_write=True), applier.Path("/x"), None).rate is None
+
+
+async def test_gentle_pauses_keep_the_disk_awake():
+    clock, pokes = _Clock(), []
+
+    async def flush():
+        pass
+
+    async def keep_awake():
+        pokes.append(clock.t)
+
+    pacer = WritePacer(1, 5.0, None, flush, sleep=clock.sleep, clock=clock, keep_awake=keep_awake)
+    await pacer.after_file(1000)
+    assert clock.sleeps == [2.0, 2.0, 1.0] and pokes == [2.0, 4.0, 5.0]
+
+
+def test_keep_awake_is_an_opt_in_gentle_option():
+    assert SyncSettings().keep_disk_awake is False
+    keeper = object()
+    plain = gentle_pacer(SyncSettings(), applier.Path("/x"), 3.0, keeper)  # type: ignore[arg-type]
+    assert plain is not None and plain.keep_awake is None  # no gentle mode: never pokes
+    gentle = gentle_pacer(
+        SyncSettings(gentle_write=True, keep_disk_awake=True, keep_disk_awake_s=5.0),
+        applier.Path("/x"),
+        None,
+        keeper,  # type: ignore[arg-type]
+    )
+    assert gentle is not None and gentle.keep_awake is keeper and gentle.keep_awake_s == 5.0

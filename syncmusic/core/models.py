@@ -407,6 +407,11 @@ class SyncSettings(BaseModel):
     # full sync writes `gentle_batch_files` files, syncs
     # the file system and pauses `gentle_pause_s`; optional write rate limit. Disk devices only; updates unaffected
     gentle_write: bool = False
+    # gentle-mode option: while a sync holds the device and waits (for a transcode, a library, a gentle pause), read
+    # a few uncached bytes from it every `keep_disk_awake_s` so the disk never idles into standby (some CF/SD adapters
+    # in modded iPods never wake from it). Only with gentle_write on; disk devices only
+    keep_disk_awake: bool = False
+    keep_disk_awake_s: float = Field(2.0, ge=0.5, le=30)
     # unmount other programs' mounts of the device (a host automounter) during the first minute after the app
     # mounted it; disk devices only
     unmount_foreign: bool = False

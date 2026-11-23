@@ -100,6 +100,15 @@ continues where it stopped.
 Turn on **gentle write mode** (device *Settings* tab) for players with tired disks or cheap SD/CF adapters, and use a
 direct USB port instead of a hub.
 
+iPods with a CF or SD card adapter under Rockbox: if a sync with conversion fails with an I/O error after a pause
+and the player stops answering every write (the system log shows `MEDIUM ERROR` / `WRITE ERROR` after a 180 s
+timeout), the adapter fell into standby and never woke up. Unplug and replug the player (or reboot it), then sync
+again. The real fix is on the player: under Rockbox raise **Settings → General Settings → System → Disk → Disk
+Spindown** to the maximum. For players that cannot, turn on gentle write mode and its option **Keep the disk awake
+during pauses** (device *Settings* tab): while the sync waits for a conversion, a library or a pause between
+batches, a few bytes are read from the disk every 2 seconds (adjustable), so it is never idle long enough to fall
+asleep. It only reads, nothing is written.
+
 ## "Storage may be failing"
 
 The dashboard and the device's **Storage health** card warn when a sync or an integrity check hit an I/O error in

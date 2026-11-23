@@ -7,6 +7,7 @@ package main
 import (
 	"math"
 	"strings"
+	"time"
 )
 
 var (
@@ -390,6 +391,13 @@ func (s *screen) drawBlock(l line, x, y, w int) {
 				c = colAccDim
 			}
 			s.fillRound(x+i*(sw+6), y, sw, 6, 3, c)
+			if i+1 == l.steps[0] {
+				if s.inTall {
+					s.tallPulse = rect{x + i*(sw+6), y, sw, 6}
+				} else {
+					s.pulse = rect{x + i*(sw+6), y, sw, 6}
+				}
+			}
 		}
 		if len(l.names) > 0 {
 			fs := s.font.face(13, wSemi)
@@ -639,6 +647,7 @@ func (s *screen) drawPage(p page, sel int, status string) []rect {
 	W := s.w - 2*uiPad
 	s.fill(0, 0, s.w, s.h, colBg)
 	rects := make([]rect, len(p.buttons))
+	s.pulse = rect{}
 
 	// the main buttons at the bottom: everything that is not a key, a settings row or the back key
 	var bottom []int
@@ -906,6 +915,7 @@ func (s *screen) drawPage(p page, sel int, status string) []rect {
 		off = min(off, y-view)
 	}
 	s.off = off
+	s.flowTop, s.limit = flowTop, limit
 	blit := y > view && y <= 8*s.h && !noBlit
 	if blit {
 		// scrolling content: drawn once into a surface as tall as the content, then a swipe frame only copies the
@@ -921,12 +931,16 @@ func (s *screen) drawPage(p page, sel int, status string) []rect {
 			pix, h := s.pix, s.h
 			s.pix, s.h = s.tall, y
 			s.fill(0, 0, s.w, y, colBg)
+			s.tallPulse, s.inTall = rect{}, true
 			for _, it := range items {
 				it.draw(it.y)
 			}
-			s.pix, s.h = pix, h
+			s.pix, s.h, s.inTall = pix, h, false
 		}
 		copy(s.pix[flowTop*s.w:limit*s.w], s.tall[off*s.w:(off+view)*s.w])
+		if r := s.tallPulse; r.w > 0 {
+			s.pulse = rect{r.x, flowTop + r.y - off, r.w, r.h}
+		}
 	} else {
 		s.tallKey = ""
 	}
@@ -1089,4 +1103,23 @@ func (s *screen) drawCentered(p page, sel int) []rect {
 	}
 	s.flush()
 	return rects
+}
+
+// animate moves a light band along the current step's segment of the phase bar (a running sync shows it is
+// alive between the once-a-second redraws); only that segment's rows change, so a frame costs a few rows.
+func (s *screen) animate(now time.Time) bool {
+	r := s.pulse
+	if r.w < 12 || r.y < s.flowTop || r.y+r.h > s.limit {
+		return false
+	}
+	s.fillRound(r.x, r.y, r.w, r.h, 3, colAccDim)
+	band := max(r.w/4, 8)
+	const period = 1600 * time.Millisecond
+	pos := r.x - band + int(int64(r.w+band)*int64(now.UnixNano()%int64(period))/int64(period))
+	x0, x1 := max(pos, r.x+3), min(pos+band, r.x+r.w-3)
+	if x1 > x0 {
+		s.fill(x0, r.y, x1-x0, r.h, colAcc)
+	}
+	s.flush()
+	return true
 }

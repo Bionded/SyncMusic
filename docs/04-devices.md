@@ -218,7 +218,8 @@ prepares the files (with the device's processors) and the app downloads them whe
 The device page shows what the app reported (app, system, formats it plays, free space, last seen) and the
 progress of the whole sync while the app downloads. The server prepares (converts, retags) each file just before
 the app downloads it, so even a first sync of a large library needs almost no disk on the server and runs in one
-go; stop it and the next sync continues where it stopped. Apps that do not support this yet get a large sync in
+go; stop it and the next sync continues where it stopped. After the last file is ready, the job shows *waiting for the player to take N of M files*
+until the app has downloaded them all. Apps that do not support this yet get a large sync in
 parts: the server prepares at most the device's **Outbox budget** (2 GB by default, 0 = no limit) at a time and
 the app syncs again for the next part. Plays, ratings, favourites and positions the app sends go back to your libraries
 with its next sync. **Rename** or **Revoke** a client under Settings → Wi-Fi clients; a revoked client keeps its
@@ -231,7 +232,12 @@ network you trust.
 to *Compás* and **After a sync that changed something** set to *Restart the player*: the server builds the player's
 library database over the files on the card (this needs compas-sdtool on the server, see
 [HiBy R1 (Compás)](#hiby-r1-compás)), the app installs it and restarts the player, so new music shows at once.
-Without the tool the app only copies the files and the player indexes them itself. Installing, pairing and using
+Without the tool the app only copies the files and the player indexes them itself. Before each sync the app sends
+the card's current library database to the server, which adds the new songs to it (only the new files are read).
+When that database is missing or does not match the card, the server builds the whole library again from what it
+knows about each song (no music is sent again); **Rebuild player database** on the device page (and *Rebuild player
+library* in the app's Settings) does the same on request at the next sync. The server never sends a library that
+misses songs on the card: then the player keeps its own. Installing, pairing and using
 the app: [SyncMusic app for Compás players](10-compas-app.md).
 
 **Device settings of a Wi-Fi client** (its **Settings** tab; the shared sync settings are in the
@@ -241,10 +247,11 @@ the app: [SyncMusic app for Compás players](10-compas-app.md).
 |---|---|---|
 | Path layout | as for USB players | Folders and file name per media kind on the player. |
 | Playlists | on | Send playlists to the player. |
-| Minimum played share for a play (0–1) | 0.5 | A play the app did not mark as completed counts from this share of the track... |
+| Minimum played share for a play (%) | 50 | A play the app did not mark as completed counts from this share of the track... |
 | Or minimum played time (s) | 240 | ...or from this many seconds played, whichever comes first. |
 | After a sync that changed something | Nothing | What the app does once new files are in place: nothing, refresh its library, or restart the player. |
 | Player library built by the server | None | *Compás*: the server builds the player's library database over its files (needs compas-sdtool). |
+| Rebuild the player library from scratch on every sync | off | Off: new songs are added to the library the player has. On: the whole library is built again at every sync. |
 | The player may confirm a sync | on | A sync that needs a confirmation (many removals, not enough space) can be confirmed in the app on the player. Off: only in the web UI. |
 | Outbox budget (MB) | 2048 | For apps that do not stream a sync file by file: the most the server prepares at once; a larger sync comes in parts. 0 = no limit. The Compás app streams and does not use it. |
 

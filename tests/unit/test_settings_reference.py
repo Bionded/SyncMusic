@@ -31,7 +31,7 @@ def test_reference_has_every_group_and_known_settings():
         "### Storage & backups",
         "### Notifications",
         "### Maintenance",
-        "### After a sync and mounting",
+        "### Mounting",
         "### Safety",
     ):
         assert group in text

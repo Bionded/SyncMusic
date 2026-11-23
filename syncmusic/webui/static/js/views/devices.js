@@ -6,7 +6,7 @@ import { html, bytes, when, setHtml } from "../dom.js";
 import { t, addStrings } from "../i18n.js";
 import { helpTip, DOCS_BASE } from "../help.js";
 import { get, post, patch, del } from "../api.js";
-import { badge, pageHead, toast, confirm, dialog, typedConfirm, errorBox, errorMessage, problemBox, suggestionBox, emptyState, updateLine, indetBar, capacityBar, unsavedBar } from "../ui.js";
+import { badge, pageHead, toast, confirm, dialog, typedConfirm, errorBox, errorMessage, problemBox, suggestionBox, emptyState, updateLine, indetBar, capacityBar } from "../ui.js";
 import { schemaForm, FormError } from "../forms.js";
 import { go, goFrom } from "../router.js";
 import { refreshSidebar } from "../sidebar.js";
@@ -48,11 +48,19 @@ addStrings({
   "dev.cl_failed": "The last sync request failed: {reason}",
   "dev.cl_requested": "Waiting for the player: open the SyncMusic app on it and the sync starts there.",
   "dev.cl_request_cancel": "Cancel",
+  "dev.cl_picking_up": "Sent to the player: waiting for its app to start the sync…",
   "dev.cl_sync_now": "Sync now",
   "dev.cl_outbox": "Waiting on the server",
   "dev.cl_outbox_val": "{n} files, {size}",
   "dev.cl_outbox_val_one": "{n} file, {size}",
   "dev.cl_outbox_clear": "Clear",
+  "dev.cl_playerdb": "Player library",
+  "dev.cl_playerdb_val": "built by the server",
+  "dev.cl_playerdb_pending": "rebuilt from scratch at the next sync",
+  "dev.cl_rebuild": "Rebuild player database",
+  "dev.cl_rebuild_title": "Rebuild the player library of {name}?",
+  "dev.cl_rebuild_text": "At the next sync the server builds the player's whole library again from what it knows about each song (no music is sent again), and the player restarts into it. The sync is asked for now.",
+  "dev.cl_rebuild_asked": "The library is rebuilt at the next sync",
   "dev.cl_outbox_cleared": "Cleared: {size} freed",
   "dev.cl_outbox_confirm_title": "Clear what waits for {name}?",
   "dev.cl_outbox_confirm_text": "The prepared files on the server are deleted. The player keeps what it has; the next sync prepares again what it still needs.",
@@ -130,13 +138,14 @@ addStrings({
   "dev.set_what_sub": "Templates and rules choose the music, podcasts and audiobooks for this device. Opens the Templates tab.",
   "dev.set_how": "How files are processed",
   "dev.set_how_sub": "Conversion, tags, covers and lyrics before files are written. Opens the Processors tab.",
-  "dev.set_part.general": "General",
-  "dev.set_part.when": "When to sync",
-  "dev.set_part.after": "After a sync and mounting",
-  "dev.set_part.safety": "Safety",
+  "dev.set_part.basic": "Basic",
+  "dev.set_part.files": "Files and paths",
   "dev.set_part.listen": "Listening data",
-  "dev.set_part.writing": "Writing",
-  "dev.set_part.more": "Player and maintenance",
+  "dev.set_part.safety": "Safety and writing",
+  "dev.set_part.device": "This player",
+  "dev.set_part.more": "Maintenance",
+  "dev.set_part.danger": "Danger zone",
+  "dev.set_advanced": "Advanced",
   "dev.set_groups": "Settings sections",
   "dev.set_all": "Show all settings on one page",
   "dev.set_one": "One section at a time",
@@ -408,6 +417,7 @@ addStrings({
   "dev.set_gentle_suggest": "Suggested: the last full sync stopped because the player's storage failed or it dropped off USB.",
   "dev.set_gentle_estimate": "With these values a full sync of this device takes about twice as long. Automatic updates are not affected.",
   "dev.set_saved": "Settings saved.",
+  "dev.set_autosaved": "Saved",
   "dev.settings_reverse": "Reverse sync",
   "dev.accounts": "Library accounts",
   "dev.accounts_sub": "Whose plays, ratings, stars and positions this device uses. Pick another user of the library to sync a family member's profile; accounts are managed in the library's settings.",
@@ -708,7 +718,7 @@ async function renderDevice(ctx) {
         : html`<button type="button" class="btn small" data-action="foreignReadOnly" ${live.busy ? "disabled" : ""}>${t("dev.foreign_ro")}</button>`}
       <button type="button" class="btn small" data-action="unmountAll" ${live.busy ? "disabled" : ""}>${t("dev.unmount")}</button></div>` : ""}
     ${syncing ? progressStrip(cfg, live.busy, ctx.state.job) : ""}
-    ${client ? clientCard(client) : ""}
+    ${client ? clientCard(client, syncing) : ""}
     ${live?.fs_damaged ? problemBox({ title: t("dev.fs_damaged"), message: t("dev.fs_damaged_text", { error: live.fs_damaged }),
       action: html`<span data-fs-damaged><button type="button" class="btn small" data-action="repairFs" ${live.busy ? "disabled" : ""}>${t("dev.repair")}</button>
         <a class="btn small" href="#/devices/${id}/settings">${t("dev.repair_wipe")}</a></span>` })
@@ -746,8 +756,9 @@ function appUpdateNote(cl) {
   return cl.no_server_build ? t("dev.cl_no_build") : "";
 }
 
-// a paired Wi-Fi client: what it reported when it paired / last synced, and its sync while it runs
-function clientCard(c) {
+// a paired Wi-Fi client: what it reported when it paired / last synced, and its sync while it runs (while the
+// sync job runs, its progress strip above shows the transfer, like a USB sync)
+function clientCard(c, syncing) {
   const cl = c.client || {}, caps = c.capabilities || {}, st = caps.storage || {};
   const rows = [
     ["app", [[cl.app, cl.app_version].filter(Boolean).join(" "), appUpdateNote(cl)].filter(Boolean).join(" · ")],
@@ -758,14 +769,17 @@ function clientCard(c) {
     ["space", st.total ? t("dev.cl_space_val", { free: bytes(st.free || 0), total: bytes(st.total) }) : ""],
     ["outbox", c.outbox?.files ? html`${t("dev.cl_outbox_val", { n: c.outbox.files, size: bytes(c.outbox.bytes) })}
       ${c.session ? "" : html`<button type="button" class="btn small ghost" data-action="clearOutbox">${t("dev.cl_outbox_clear")}</button>`}` : ""],
+    ["playerdb", c.player_database === "compas" ? html`<span data-playerdb>${t(c.rebuild_requested ? "dev.cl_playerdb_pending" : "dev.cl_playerdb_val")}</span>
+      ${c.rebuild_requested ? "" : html`<button type="button" class="btn small ghost" data-action="rebuildPlayerDb">${t("dev.cl_rebuild")}</button>`}` : ""],
   ].filter(([, v]) => v);
   return html`<section class="card ds-card dev-client" data-client-card="${c.device_id}" aria-label="${t("dev.cl_title")}">
     ${c.revoked ? html`<p class="hint warn" data-client-revoked>${t("dev.cl_revoked")}</p>` : ""}
     <dl class="dev-client-facts">${rows.map(([k, v]) => html`<div><dt>${t(`dev.cl_${k}`)}</dt><dd>${v}</dd></div>`)}</dl>
     ${c.diagnostics ? html`<p class="dev-client-diag" data-client-diag>${t("dev.cl_diag")}: ${t("dev.cl_diag_val", { when: when(c.diagnostics.received_at) })}
       <a class="btn small ghost" href="/api/v1/clients/${encodeURIComponent(c.device_id)}/diagnostics" download>${t("dev.cl_diag_get")}</a></p>` : ""}
-    <div class="dev-client-sync" data-client-sync aria-live="polite">${c.session ? clientSession(c.session, encodeURIComponent(c.device_id))
-      : c.sync_requested ? html`<span data-client-requested>${t("dev.cl_requested")}</span>
+    <div class="dev-client-sync" data-client-sync aria-live="polite">${c.session && syncing && c.session.status === "ready" ? ""
+      : c.session ? clientSession(c.session, encodeURIComponent(c.device_id))
+      : c.sync_requested ? html`<span data-client-requested data-app-listening="${c.app_listening ? "yes" : "no"}">${t(c.app_listening ? "dev.cl_picking_up" : "dev.cl_requested")}</span>
         <button type="button" class="btn small ghost" data-action="cancelClientSync">${t("dev.cl_request_cancel")}</button>` : ""}</div>
     <a class="btn small ghost" href="#/settings?q=${encodeURIComponent(t("dev.cl_title"))}">${t("dev.cl_manage")}</a></section>`;
 }
@@ -1089,7 +1103,7 @@ const TYPE_CARD = {
 };
 // a type's own i18n name for a shared field name
 const TYPE_KEYS = { android: { base_path: "android_base_path" } };
-const GENTLE = ["gentle_batch_files", "gentle_pause_s", "gentle_rate_mb_s"];
+const GENTLE = ["gentle_batch_files", "gentle_pause_s", "gentle_rate_mb_s", "keep_disk_awake", "keep_disk_awake_s"];
 
 function orphansBody(orphans) {
   return orphans === null ? html`<p class="muted">${t("dev.orphans_offline")}</p>`
@@ -1106,14 +1120,14 @@ async function renderDeviceSettings(ctx) {
   const rockbox = type.type === "rockbox";
   const own = TYPE_CARD[type.type] || [];
   // the Rockbox play log has its own control: it is applied at once
-  const typeForm = own.length ? schemaForm(type.settings_schema, cfg.settings, { prefix: "d-", only: own }) : null;
+  const typeForm = own.length ? schemaForm(type.settings_schema, cfg.settings, { tips: true, prefix: "d-", only: own }) : null;
   const skip = [...own, "enable_play_log"];
-  const settings = schemaForm(type.settings_schema, cfg.settings, { prefix: "d-", skip, keys: TYPE_KEYS[type.type] });
+  const settings = schemaForm(type.settings_schema, cfg.settings, { tips: true, prefix: "d-", skip, keys: TYPE_KEYS[type.type] });
   const hasFiles = Object.keys(type.settings_schema?.properties || {}).some((k) => !skip.includes(k));
   const noReverse = reverseSupport(type, libraries, libTypes, ctx.state.libs);
-  const reverse = noReverse ? null : schemaForm(type.reverse_sync_schema, cfg.reverse_sync, { prefix: "r-" });
+  const reverse = noReverse ? null : schemaForm(type.reverse_sync_schema, cfg.reverse_sync, { tips: true, prefix: "r-" });
   const canGentle = !type.network && "gentle_write" in (type.sync_schema?.properties || {});
-  const gentle = canGentle ? schemaForm(type.sync_schema, cfg.sync, { prefix: "s-", only: GENTLE }) : null;
+  const gentle = canGentle ? schemaForm(type.sync_schema, cfg.sync, { tips: true, prefix: "s-", only: GENTLE }) : null;
   const accounts = accountForms(cfg, libraries, libTypes, ctx.state.libs);
   ctx.state.forms = { typeForm, settings, reverse, gentle, accounts };
   const idle = !!live?.connected && !live.busy && !live.ejecting && !live.ejected && !live.setting_clock && !live.no_medium;
@@ -1145,51 +1159,57 @@ async function renderDeviceSettings(ctx) {
   const sync = syncTab(ctx, updateRow(cfg, live, ctx.state.update, !!live?.busy));
   // one Settings tab: what goes on it and how files are processed link to their tabs, then
   // Sync behaviour and Device under one Save / Discard bar, with a search over every card
-  return html`<div class="ds-search" data-nosave><input type="search" data-ds-search placeholder="${t("dev.set_search_ph")}" aria-label="${t("dev.set_search")}" autocomplete="off" spellcheck="false">
-      <p class="muted" data-ds-none hidden>${t("dev.set_search_none")}</p></div>
-    <div class="dev-settings ds-links">
-      <a class="card ds-card ds-link" href="#/devices/${id}/rules"><b>${t("dev.set_what")}</b><small>${t("dev.set_what_sub")}</small></a>
-      <a class="card ds-card ds-link" href="#/devices/${id}/processors"><b>${t("dev.set_how")}</b><small>${t("dev.set_how_sub")}</small></a>
-      ${hasTips(cfg.type) ? html`<a class="card ds-card ds-link" href="#/devices/${id}/overview" data-tips-link><b>${t("tips.link")}</b><small>${t("tips.link_sub")}</small></a>` : ""}</div>
-    <form class="dev-settings" data-devset data-settings-form data-sync-form>
-    <h2 class="ds-part" id="dsPart_general">${t("dev.set_part.general")}</h2>
-    <section class="card ds-card" id="nameCard"><h2>${t("dev.set_name")}</h2>
-      <div class="field"><label for="dsName">${t("dev.set_name_label")}</label><input id="dsName" value="${cfg.name}" maxlength="64" autocomplete="off"></div>
-      ${renamable ? html`<label class="ds-check"><input type="checkbox" id="dsRename" ${idle ? "" : "disabled"}>
-        <span class="ds-label">${t("dev.set_rename")}<small>${idle ? t("dev.rename_help", { what }) : t("dev.set_rename_offline")}</small></span></label>` : ""}</section>
-    ${typeForm || db || playLog ? html`<section class="card ds-card" id="typeCard" data-type-card="${type.type}"><h2>${t(`dev.set_type.${type.type}`) === `dev.set_type.${type.type}` ? typeLabel(type.type) : t(`dev.set_type.${type.type}`)}</h2>
+  const part = (id) => html`<h2 class="ds-part" id="dsPart_${id}">${t(`dev.set_part.${id}`)}</h2>`;
+  const typeCard = typeForm || db || playLog ? html`<section class="card ds-card" id="typeCard" data-type-card="${type.type}" ${type.network ? "data-nosave" : ""}><h2>${t(`dev.set_type.${type.type}`) === `dev.set_type.${type.type}` ? typeLabel(type.type) : t(`dev.set_type.${type.type}`)}</h2>
       ${db ? html`<div id="dbSize">${dbSizeLine(db.size, db.limit, db.level)}${dbSizeBar(db.size, db.limit, db.level)}</div>` : ""}
       ${typeForm ? typeForm.html : ""}
       ${playLog ? playLogBlock(playLog, live) : ""}
       ${type.network ? html`<div class="ds-row"><button type="button" class="btn" data-action="ftpTest">${t("dev.set_test")}</button>
-        <span class="ds-test" data-ftp-result role="status"></span></div>` : ""}</section>` : ""}
-    ${hasFiles ? html`<section class="card ds-card" id="filesCard"><div><h2>${t("dev.settings_device")}</h2><p class="ds-sub">${t("dev.set_files_sub")}</p></div>${settings.html}
-      ${type.type === "flashdrive" && (cfg.mount_path || live?.mounted_at) && idle ? pickerButton("dev-flash", { mount: cfg.mount_path || live.mounted_at }) : ""}</section>` : ""}
-    <h2 class="ds-part" id="dsPart_when">${t("dev.set_part.when")}</h2>
+        <span class="ds-test" data-ftp-result role="status"></span></div>` : ""}</section>` : "";
+  // one Settings tab, one section at a time from the menu on the left: Basic holds the everyday settings, the
+  // advanced sections the rest, the danger zone comes last; every change saves itself, the search covers all
+  return html`<div class="ds-layout" data-ds-layout>
+  <nav class="ds-nav" data-nosave aria-label="${t("dev.set_groups")}">
+    <div class="ds-search"><input type="search" data-ds-search placeholder="${t("dev.set_search_ph")}" aria-label="${t("dev.set_search")}" autocomplete="off" spellcheck="false"></div>
+    <div class="ds-menu" role="tablist" data-ds-groups></div></nav>
+  <div class="ds-main">
+    <p class="muted" data-ds-none hidden>${t("dev.set_search_none")}</p>
+    <form class="dev-settings" data-devset data-settings-form data-sync-form>
+    ${part("basic")}
+    <section class="card ds-card" id="nameCard"><h2>${t("dev.set_name")}</h2>
+      <div class="field"><label for="dsName">${t("dev.set_name_label")}</label><input id="dsName" value="${cfg.name}" maxlength="64" autocomplete="off"></div>
+      ${renamable ? html`<label class="ds-check"><input type="checkbox" id="dsRename" ${idle ? "" : "disabled"}>
+        <span class="ds-label">${t("dev.set_rename")}<small>${idle ? t("dev.rename_help", { what }) : t("dev.set_rename_offline")}</small></span></label>` : ""}</section>
     ${sync.when}
-    <h2 class="ds-part" id="dsPart_after">${t("dev.set_part.after")}</h2>
     ${sync.after}
-    <h2 class="ds-part" id="dsPart_safety">${t("dev.set_part.safety")}</h2>
-    ${sync.safety}
-    <h2 class="ds-part" id="dsPart_listen">${t("dev.set_part.listen")}</h2>
-    <section class="card ds-card" id="reverseCard"><h2>${t("dev.settings_reverse")} ${helpTip("reverse")}</h2>
-      ${reverse ? reverse.html : html`<p class="muted" data-no-reverse="${noReverse}">${t(`dev.reverse_none_${noReverse}`)}</p>`}</section>
-    ${sync.listen}
-    ${accountsCard(cfg, accounts)}
-    ${gentle || sync.writing ? html`<h2 class="ds-part" id="dsPart_writing">${t("dev.set_part.writing")}</h2>` : ""}
     ${gentle ? html`<section class="card ds-card" id="gentleCard" aria-labelledby="hGentle">
       <label class="ds-check ds-switch"><span class="ds-label"><b id="hGentle">${t("dev.set_gentle")}</b><small>${t("dev.set_gentle_sub")}</small></span>
         <input type="checkbox" id="dsGentle" ${cfg.sync.gentle_write ? "checked" : ""}></label>
       ${suggest ? html`<div class="ds-hint" data-gentle-suggest>${icon("info", { size: 14 })}${t("dev.set_gentle_suggest")}</div>` : ""}
       <div data-gentle-fields ${cfg.sync.gentle_write ? "" : "hidden"}>${gentle.html}<p class="ds-sub">${t("dev.set_gentle_estimate")}</p></div></section>` : ""}
+    <div class="ds-links" data-nosave>
+      <a class="card ds-card ds-link" href="#/devices/${id}/rules"><b>${t("dev.set_what")}</b><small>${t("dev.set_what_sub")}</small></a>
+      <a class="card ds-card ds-link" href="#/devices/${id}/processors"><b>${t("dev.set_how")}</b><small>${t("dev.set_how_sub")}</small></a>
+      ${hasTips(cfg.type) ? html`<a class="card ds-card ds-link" href="#/devices/${id}/overview" data-tips-link><b>${t("tips.link")}</b><small>${t("tips.link_sub")}</small></a>` : ""}</div>
+    ${hasFiles ? part("files") : ""}
+    ${hasFiles ? html`<section class="card ds-card" id="filesCard"><div><h2>${t("dev.settings_device")}</h2><p class="ds-sub">${t("dev.set_files_sub")}</p></div>${settings.html}
+      ${type.type === "flashdrive" && (cfg.mount_path || live?.mounted_at) && idle ? pickerButton("dev-flash", { mount: cfg.mount_path || live.mounted_at }) : ""}</section>` : ""}
+    ${reverse || accounts.length ? part("listen") : ""}
+    ${reverse ? html`<section class="card ds-card" id="reverseCard"><h2>${t("dev.settings_reverse")} ${helpTip("reverse")}</h2>${reverse.html}</section>` : ""}
+    ${reverse ? sync.listen : ""}
+    ${accounts.length ? accountsCard(cfg, accounts) : ""}
+    ${part("safety")}
+    ${sync.safety}
     ${sync.writing}
     ${sync.advanced}
+    ${typeCard ? part("device") : ""}
+    ${typeCard}
   </form>
   <div class="dev-settings ds-after">
     ${profileCard(profile)}
     <section class="card ds-card" id="orphansCard"><div><h2>${t("dev.orphans")}</h2><p class="ds-sub">${t("dev.orphans_help")}</p></div>
       <div data-orphans-body>${idle ? html`<p class="muted" data-orphans-checking>${t("dev.orphans_checking")}</p>` : orphansBody(null)}</div></section>
-    ${dangerZone(cfg, type, live, idle, ctx.state.home)}</div>`;
+    ${dangerZone(cfg, type, live, idle, ctx.state.home)}</div></div></div>`;
 }
 
 // the library account the device signs in as, per attached library that keeps data per user:
@@ -1476,6 +1496,7 @@ export function mounted(ctx, root) {
     const both = settings, syncForm = ctx.state.syncForms ? settings : null; // one form holds every group
     if (syncForm) syncMounted(syncForm, ctx.state.appDefaults);
     settings.addEventListener("change", (e) => {
+      if (e.target.name === "dsWhen") settings.querySelector("[data-when-text]").textContent = t(`ds.when.${e.target.value}_text`);
       if (e.target.id === "dsGentle") settings.querySelector("[data-gentle-fields]").hidden = !e.target.checked;
       if (e.target.dataset.accountPick && e.target.value === "__add") addAccount(e.target, ctx); //
       else if (e.target.dataset.accountPick) { // "Browse … as this account" follows the pick
@@ -1483,9 +1504,10 @@ export function mounted(ctx, root) {
         link.href = `#/libraries/${encodeURIComponent(e.target.dataset.accountPick)}/browse${e.target.value ? `?as=${encodeURIComponent(e.target.value)}` : ""}`;
       }
     });
-    unsavedBar(both, { save: () => saveBoth(ctx, both, syncForm), discard: () => ctx.rerender() });
+    autosave(ctx, both, syncForm);
     const search = root.querySelector("[data-ds-search]");
     groupSettings(root, ctx);
+    if (ctx.query.get("q")) root.querySelector("[data-ds-groups-host]")?.setAttribute("data-searching", "");
     search?.addEventListener("input", () => {
       root.querySelector("[data-ds-groups-host]")?.toggleAttribute("data-searching", search.value.trim().length > 0); // the search covers every section
       filterCards(root, search.value);
@@ -1499,66 +1521,91 @@ export function mounted(ctx, root) {
   }
 }
 
-// the Settings tab one section at a time (like Settings): a menu of its parts, "Show all settings on one page"
-// (remembered per browser, shared with Settings), the search always over every part
-const ALL_KEY = "sm.settingsAll";
+// the Settings tab one section at a time (all on one page when the browser keeps Settings that way): a menu on the left (Basic, then the advanced sections, the danger zone
+// last); while the search has text every section shows, a hit's section is where its card is
+const ADVANCED = ["files", "listen", "safety", "device", "more"];
 function groupSettings(root, ctx) {
-  const panel = root.querySelector("[role=tabpanel]");
+  const panel = root.querySelector("[data-ds-layout]");
   const form = panel?.querySelector("[data-devset]");
-  if (!form || panel.querySelector("[data-ds-groups]")) return;
+  const menu = panel?.querySelector("[data-ds-groups]");
+  if (!form || !menu || menu.children.length) return;
   const groups = [];
   let cur = null;
   for (const n of form.children) {
-    if (n.matches(".ds-part")) { cur = n.id.replace("dsPart_", ""); groups.push([cur, n.textContent]); }
+    if (n.matches(".ds-part")) { cur = n.id.replace("dsPart_", ""); groups.push(cur); }
     if (cur) n.dataset.dsGroup = cur;
   }
   const after = panel.querySelector(".ds-after");
-  if (after?.children.length) { after.dataset.dsGroup = "more"; groups.push(["more", t("dev.set_part.more")]); }
-  if (groups.length < 2) return;
+  const more = [...after.children].filter((n) => !n.matches(".dangerzone"));
+  if (more.length) { groups.push("more"); for (const n of more) n.dataset.dsGroup = "more"; }
+  const danger = after.querySelector(".dangerzone");
+  if (danger) { groups.push("danger"); danger.dataset.dsGroup = "danger"; }
+  const btn = (id) => html`<button type="button" role="tab" class="ds-menu-item${id === "danger" ? " danger" : ""}" data-ds-group-btn="${id}">${t(`dev.set_part.${id}`)}</button>`;
+  const adv = groups.filter((g) => ADVANCED.includes(g));
+  setHtml(menu, html`${btn("basic")}${adv.length ? html`<span class="ds-menu-cap">${t("dev.set_advanced")}</span>${adv.map(btn)}` : ""}${groups.includes("danger") ? btn("danger") : ""}`);
   panel.setAttribute("data-ds-groups-host", "");
-  const all = () => local.get(ALL_KEY) === "all";
-  const nav = document.createElement("div");
-  nav.className = "ds-groups";
-  nav.dataset.nosave = "";
-  setHtml(nav, html`<div class="seg" role="tablist" aria-label="${t("dev.set_groups")}" data-ds-groups>${groups.map(([id, label]) =>
-    html`<button type="button" role="tab" data-ds-group-btn="${id}">${label}</button>`)}</div>
-    <button type="button" class="btn ghost small" data-ds-all>${t(all() ? "dev.set_one" : "dev.set_all")}</button>`);
-  panel.querySelector(".ds-search").after(nav);
+  // "Show all settings on one page" (Settings → the menu's switch, remembered per browser) applies here too
+  const all = local.get("sm.settingsAll") === "all";
+  panel.toggleAttribute("data-one", !all);
   const show = (id) => {
     ctx.state.dsGroup = id;
-    panel.toggleAttribute("data-one", !all());
     for (const el of panel.querySelectorAll("[data-ds-group]")) el.toggleAttribute("data-ds-shown", el.dataset.dsGroup === id);
-    for (const b of nav.querySelectorAll("[data-ds-group-btn]")) b.setAttribute("aria-selected", String(b.dataset.dsGroupBtn === id));
+    for (const b of menu.querySelectorAll("[data-ds-group-btn]")) b.setAttribute("aria-selected", String(b.dataset.dsGroupBtn === id));
   };
+  ctx.state.dsShow = show;
   const want = ctx.query.get("group") || ctx.state.dsGroup;
-  show(groups.some(([id]) => id === want) ? want : groups[0][0]);
-  nav.addEventListener("click", (e) => {
+  show(groups.includes(want) ? want : "basic");
+  menu.addEventListener("click", (e) => {
     const b = e.target.closest("[data-ds-group-btn]");
-    if (b) { show(b.dataset.dsGroupBtn); if (all()) panel.querySelector(`#dsPart_${b.dataset.dsGroupBtn}, .ds-after[data-ds-group="${b.dataset.dsGroupBtn}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
-    if (e.target.closest("[data-ds-all]")) {
-      local.set(ALL_KEY, all() ? "one" : "all");
-      e.target.closest("[data-ds-all]").textContent = t(all() ? "dev.set_one" : "dev.set_all");
-      show(ctx.state.dsGroup);
-    }
+    if (!b) return;
+    const search = panel.querySelector("[data-ds-search]");
+    if (search.value) { search.value = ""; search.dispatchEvent(new Event("input")); }
+    show(b.dataset.dsGroupBtn);
+    if (all) panel.querySelector(`#dsPart_${b.dataset.dsGroupBtn}, [data-ds-group="${b.dataset.dsGroupBtn}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 }
 
 // --- actions ---------------------------------------------------------------------------------------------------
 
-/** Sync behaviour and Device in one PATCH (632.2): gentle write mode's values join the sync settings. */
-function saveBoth(ctx, root, syncForm) {
-  const s = syncForm ? readSync(ctx, syncForm) : {};
-  if (!s) return false;
-  const d = readSettings(ctx, root);
-  if (!d) return false;
-  return saveSettings(ctx, root, { ...s, ...d, sync: { ...(s.sync || ctx.state.cfg.sync), ...(d.sync || {}) } });
+// Settings save themselves: every change is saved at once (text fields when they lose focus), with a
+// "Saved" toast whose Undo puts the previous values back; invalid input stays marked and is not saved; a network
+// device's connection is saved by its Test and save button (after the login worked)
+const UNDO_KEYS = ["name", "settings", "sync", "reverse_sync", "library_accounts"];
+function autosave(ctx, form, syncForm) {
+  let timer = null, busy = Promise.resolve();
+  const run = () => {
+    busy = busy.then(async () => {
+      if (!form.isConnected) return;
+      const before = structuredClone(ctx.state.cfg);
+      const s = syncForm ? readSync(ctx, syncForm) : {};
+      const d = s && readSettings(ctx, form);
+      if (!s || !d) return;
+      if (ctx.state.type?.network) { // the connection keeps its saved values until Test and save
+        for (const k of TYPE_CARD[ctx.state.type.type] || []) if (k in before.settings) d.settings[k] = before.settings[k];
+      }
+      try {
+        const saved = await saveSettings(ctx, form, { ...s, ...d, sync: { ...(s.sync || before.sync), ...(d.sync || {}) } }, { quiet: true });
+        if (!saved) return;
+        toast(t("dev.set_autosaved"), "ok", { undo: async () => {
+          ctx.state.cfg = await patch(`/devices/${encodeURIComponent(before.id)}`, Object.fromEntries(UNDO_KEYS.filter((k) => k in before).map((k) => [k, before[k]])));
+          ctx.rerender();
+        } });
+      } catch (err) { toast(errorMessage(err), "error"); }
+    });
+  };
+  const onChange = (e) => {
+    if (e.target.closest?.("[data-nosave]") || e.target.dataset?.accountPick && e.target.value === "__add") return;
+    clearTimeout(timer);
+    timer = setTimeout(run, 300);
+  };
+  form.addEventListener("change", onChange);
 }
 
 // the device Settings search (632.2): a card stays when its text contains every word; hits are highlighted
 function filterCards(root, query) {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   let any = false;
-  for (const card of root.querySelectorAll("[role=tabpanel] :is(.ds-card, #profileCard, .dangerzone)")) {
+  for (const card of root.querySelectorAll("[role=tabpanel] :is(.ds-card, #profileCard, .dangerzone):not(.ds-link)")) {
     const x = card.textContent.toLowerCase();
     card.hidden = !words.every((w) => x.includes(w));
     any ||= !card.hidden;
@@ -1592,7 +1639,7 @@ function readSettings(ctx, root) {
   const [typed, files, rev, gentle] = parts;
   const out = { settings: { ...cfg.settings, ...typed, ...files } };
   if (forms.reverse) out.reverse_sync = { ...cfg.reverse_sync, ...rev };
-  if (forms.gentle) out.sync = { ...gentle, gentle_write: root.querySelector("#dsGentle").checked }; // saveBoth adds the rest
+  if (forms.gentle) out.sync = { ...gentle, gentle_write: root.querySelector("#dsGentle").checked }; // autosave adds the rest
   if (forms.accounts?.length) {
     out.library_accounts = readAccounts(ctx, root);
   }
@@ -1601,7 +1648,7 @@ function readSettings(ctx, root) {
 
 /** Save bar: a new name - on the device too when asked (it shows what the disk label becomes first) -
  * and the settings. False keeps the bar. */
-async function saveSettings(ctx, root, changes = readSettings(ctx, root)) {
+async function saveSettings(ctx, root, changes = readSettings(ctx, root), { quiet = false } = {}) {
   if (!changes) return false;
   const { cfg } = ctx.state;
   const id = encodeURIComponent(cfg.id);
@@ -1618,8 +1665,12 @@ async function saveSettings(ctx, root, changes = readSettings(ctx, root)) {
     ctx.state.cfg = (await post(`/devices/${id}/rename`, { name })).config;
   }
   ctx.state.cfg = await patch(`/devices/${id}`, { ...changes, ...(onDevice || name === cfg.name ? {} : { name }) });
+  if (name !== cfg.name) { // a new name shows in the header and the sidebar
+    refreshSidebar();
+    if (quiet) { toast(t("dev.renamed", { name })); ctx.rerender(); return false; }
+  }
+  if (quiet) return true;
   toast(name !== cfg.name ? t("dev.renamed", { name }) : t("dev.set_saved"));
-  if (name !== cfg.name) refreshSidebar();
   ctx.rerender();
   return true;
 }
@@ -1738,6 +1789,16 @@ export const actions = {
     try {
       const r = await del(`/clients/${encodeURIComponent(cfg.id)}/outbox`);
       toast(t("dev.cl_outbox_cleared", { size: bytes(r.freed) }));
+      ctx.rerender();
+    } catch (e) { toast(e.message, "error"); }
+  },
+  async rebuildPlayerDb(el, ctx) {
+    const { cfg } = ctx.state;
+    if (!await confirm({ title: t("dev.cl_rebuild_title", { name: cfg.name }), message: t("dev.cl_rebuild_text"),
+      ok: t("dev.cl_rebuild") })) return;
+    try {
+      await post(`/clients/${encodeURIComponent(cfg.id)}/rebuild-database`);
+      toast(t("dev.cl_rebuild_asked"));
       ctx.rerender();
     } catch (e) { toast(e.message, "error"); }
   },

@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import shutil
+import struct
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,25 @@ def test_a_set_is_built_once_per_card_contents(tmp_path, tool):
     more = files | _files(tmp_path / "src", "Music/B/3.mp3")
     sid2, out2, _ = compas_tagset.build_cached(more, cache, tool)
     assert sid2 != sid and not out.exists() and out2.is_dir()
+
+
+def test_the_installed_set_uploaded_again_is_not_rebuilt(tmp_path, tool):
+    files = _files(tmp_path / "src", "Music/A/1.mp3", "Music/A/2.mp3")
+    cache = tmp_path / "gen"
+    sid, out, names = compas_tagset.build_cached(files, cache, tool)
+    card = tmp_path / "card" / ".compas"
+    card.mkdir(parents=True)
+    for n in names:
+        shutil.copyfile(out / n, card / n)
+    (card / "tagcache.gen").write_text("1")
+    scans = (tmp_path / "scans.log").read_text()
+    assert compas_tagset.build_cached(files, cache, tool, card) == (sid, out, names)
+    assert (tmp_path / "scans.log").read_text() == scans
+    # the player wrote into its database (plays), or the files changed: built again
+    more = files | _files(tmp_path / "src", "Music/B/3.mp3")
+    assert compas_tagset._delivered_unchanged(more, cache, card, None, None) is None
+    (card / "database_0.tcd.g1").write_text("played")
+    assert compas_tagset._delivered_unchanged(files, cache, card, None, None) is None
 
 
 def test_a_set_that_does_not_load_is_not_offered(tmp_path, tool, monkeypatch):
@@ -227,3 +247,194 @@ async def test_a_delivered_file_is_kept_as_a_sparse_tag_copy(tmp_path):
     assert kept.read_bytes()[:2_000] == data[:2_000]
     assert st.st_blocks * 512 < len(data) // 2  # not a whole copy (no hard link either)
     assert st.st_nlink == 1
+
+
+def test_a_set_over_part_of_the_card_is_not_offered(tmp_path, tool, caplog):
+    """The server holds copies of only the last sync's files (the rest came over USB): no set, or the player's
+    complete library would be replaced by one listing only those files."""
+    cfg = DeviceConfig(id="c3", type="client", name="P", settings={"player_database": "compas"})
+    dev = ClientDevice(cfg, tmp_path / "box", None)
+    m = Manifest(header=ManifestHeader(device_id=dev.id))
+    for i in range(40):
+        rel = f"Music/A/{i:02}.mp3"
+        if i < 3:
+            _files(dev.mount, rel)
+        m.items[f"k{i}"] = ManifestEntry.model_validate(
+            {
+                "ref": {"library_id": "l", "item_id": f"i{i}"},
+                "device_ref": rel,
+                "path": rel,
+                "size": 1,
+            }
+        )
+    assert dev.generated_files(m) is None
+    assert "knows only 3 of the 40 songs" in caplog.text
+
+
+REAL_TOOL = os.environ.get("COMPAS_SDTOOL") or shutil.which("compas-sdtool")
+
+
+@pytest.mark.skipif(not REAL_TOOL, reason="set COMPAS_SDTOOL to a built compas-sdtool")
+def test_real_tool_builds_incrementally_over_the_cards_database(tmp_path):
+    """Card indexed over USB with 2 songs; the server holds none of them, only the one new song: the set built over
+    the card's database lists all 3 and reads only the new file."""
+    tool = Path(REAL_TOOL)
+    samples = sorted(Path("tests/integration/abs-samples").rglob("*.mp3"))
+    assert len(samples) >= 3
+    card = tmp_path / "card"
+    rels = [f"Music/Тест/{i:02}.mp3" for i in range(3)]
+    for rel, s in zip(rels[:2], samples, strict=False):
+        (card / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(s, card / rel)
+        compas_tagset.even_mtime(card / rel)
+    (card / ".compas").mkdir()
+    asyncio.run(sd.scan(tool, card))
+    new = tmp_path / "src" / "new.mp3"
+    new.parent.mkdir()
+    shutil.copy2(samples[2], new)
+    rows = {e.path: e for e in compas_tagset.cf.read_tagcache(card) or []}
+    stubs = {rel: (rows[rel].size, rows[rel].mtime) for rel in rels[:2]}
+    _, out, names = compas_tagset.build_cached(
+        {rels[2]: new}, tmp_path / "gen", tool, card / ".compas", stubs
+    )
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["songs"] == 3 and manifest["generation"] == 2 and manifest["read"] == 1
+    assert "tagcache.refs.g2" in names and "database_idx.tcd.g2" in names
+    # a stand-in whose size does not match its row would be read as a song without tags: refused
+    bad = {**stubs, rels[0]: (stubs[rels[0]][0] + 1, stubs[rels[0]][1])}
+    with pytest.raises(compas_tagset.TagsetError, match="read 2 files"):
+        compas_tagset.build_cached({rels[2]: new}, tmp_path / "gen2", tool, card / ".compas", bad)
+
+
+@pytest.mark.skipif(
+    not REAL_TOOL or not shutil.which("ffmpeg"), reason="needs compas-sdtool and ffmpeg"
+)
+@pytest.mark.parametrize("ext", ["flac", "mp3"])
+def test_real_tool_reads_the_same_song_from_a_synthetic_stand_in(tmp_path, ext):
+    """A stand-in made from the manifest's metadata alone gives the same library row as the real file: same
+    strings, numbers and (within a second) length."""
+    import subprocess
+
+    from syncmusic.devices.HibyR1 import compas_feedback as cf
+
+    meta = {
+        "title": "Пісня",
+        "artist": "Гурт",
+        "album_artist": "Гурт",
+        "album": "Альбом",
+        "track_no": "3",
+        "disc_no": "1",
+        "year": "2011",
+        "genres": "Rock",
+    }
+    real = tmp_path / "real" / "Music" / f"a.{ext}"
+    real.parent.mkdir(parents=True)
+    tags = {"title": "title", "artist": "artist", "album_artist": "album_artist", "album": "album"}
+    args = [f"{v}={meta[k]}" for k, v in tags.items()]
+    args += ["track=3", "disc=1", "date=2011", "genre=Rock"]
+    cmd = ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=d=7.5:r=44100"]
+    cmd += ["-ac", "2", *[x for a in args for x in ("-metadata", a)], str(real)]
+    subprocess.run(cmd, check=True)
+    os.utime(real, (1_700_000_000, 1_700_000_000))
+    synth = tmp_path / "synth" / "Music" / f"a.{ext}"
+    assert compas_tagset.synthetic(synth, meta, 7.5, real.stat().st_size, 1_700_000_000)
+    tool = Path(REAL_TOOL)
+    rows = []
+    for card in (tmp_path / "real", tmp_path / "synth"):
+        (card / ".compas").mkdir()
+        asyncio.run(sd.scan(tool, card))
+        db = card / ".compas"
+        master = (db / "database_idx.tcd.g1").read_bytes()
+        rows.append(struct.unpack_from("<24i", master, cf.MASTER_HEADER))
+        tables = {p.name: p.read_bytes() for p in db.glob("database_[0-9]*.tcd.g1")}
+        rows.append(tables)
+    real_row, real_tables, synth_row, synth_tables = rows
+    assert real_tables == synth_tables  # every string tag the same
+    length = 14
+    assert abs(real_row[length] - synth_row[length]) < 1000
+    differ = {i for i, (a, b) in enumerate(zip(real_row, synth_row, strict=True)) if a != b}
+    assert differ <= {length, 13, 19}  # length, bitrate (from it) and the scan's commit id
+
+
+def _entries(m: Manifest, n: int, ext: str = "mp3") -> list[str]:
+    rels = []
+    for i in range(n):
+        rel = f"Music/A/{i:02}.{ext}"
+        m.items[f"k{i}"] = ManifestEntry.model_validate(
+            {
+                "ref": {"library_id": "l", "item_id": f"i{i}"},
+                "device_ref": rel,
+                "path": rel,
+                "size": 500_000,
+                "duration_s": 30.0,
+                "meta": {"title": f"Song {i}", "artist": "Гурт", "album": "A"},
+            }
+        )
+        rels.append(rel)
+    return rels
+
+
+def test_from_scratch_the_set_is_made_from_the_manifest_alone(tmp_path, tool, caplog):
+    """No audio on the server, no card database: asked to rebuild, the server makes every song from what the
+    manifest knows; formats it cannot make still count as missing."""
+    caplog.set_level("INFO")
+    cfg = DeviceConfig(id="c4", type="client", name="P", settings={"player_database": "compas"})
+    dev = ClientDevice(cfg, tmp_path / "box", None)
+    m = Manifest(header=ManifestHeader(device_id=dev.id))
+    _entries(m, 20)
+    assert dev.generated_files(m) is not None  # nothing better known: made from scratch
+    dev.request_rebuild()  # 'Rebuild player database': once, at the next build
+    gen = dev.generated_files(m)
+    assert gen is not None and not dev.rebuild_requested
+    assert (gen.files[1].source).read_text().strip() == "20"
+    assert "from scratch (asked for)" in caplog.text
+    _entries(m, 30, "opus")  # 30 more the server cannot make: too many missing
+    m2 = Manifest(header=ManifestHeader(device_id=dev.id))
+    _entries(m2, 30, "opus")
+    assert dev.generated_files(m2, from_scratch=True) is None
+
+
+@pytest.mark.skipif(
+    not REAL_TOOL or not shutil.which("ffmpeg"), reason="needs compas-sdtool and ffmpeg"
+)
+def test_real_tool_rebuilds_from_scratch_when_the_card_database_does_not_match(
+    tmp_path, caplog, monkeypatch
+):
+    """The indexer reads stand-ins of the card's rows anyway (here: rows read back with another size, as when the
+    player's clock frame differs): they would become empty songs, so the server builds from scratch instead."""
+    import dataclasses
+    import subprocess
+
+    from syncmusic.devices.HibyR1 import compas_feedback as cf
+
+    caplog.set_level("INFO")
+    sd.configure(REAL_TOOL)
+    cfg = DeviceConfig(id="c5", type="client", name="P", settings={"player_database": "compas"})
+    dev = ClientDevice(cfg, tmp_path / "box", None)
+    m = Manifest(header=ManifestHeader(device_id=dev.id))
+    rels = _entries(m, 3)
+    card = tmp_path / "card"
+    for rel in rels:
+        (card / rel).parent.mkdir(parents=True, exist_ok=True)
+        cmd = ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=d=2", str(card / rel)]
+        subprocess.run(cmd, check=True)
+    (card / ".compas").mkdir()
+    asyncio.run(sd.scan(tool := Path(REAL_TOOL), card))
+    assert tool
+    db = card / ".compas"
+    dev.store_card_database(
+        {p.name: p.read_bytes() for p in db.iterdir() if compas_tagset.TCD_FILE.match(p.name)}
+    )
+    real_read = cf.read_tagcache
+    monkeypatch.setattr(
+        cf,
+        "read_tagcache",
+        lambda mount: [dataclasses.replace(e, size=e.size + 1) for e in real_read(mount) or []],
+    )
+    try:
+        gen = dev.generated_files(m)
+    finally:
+        sd.configure(None)
+    assert gen is not None and "does not match its files" in caplog.text
+    manifest = json.loads((gen.files[0].source.parent / "manifest.json").read_text())
+    assert manifest["songs"] == 3 and manifest["generation"] == 1

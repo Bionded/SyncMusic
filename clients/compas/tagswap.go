@@ -1,11 +1,13 @@
 // Primary way of getting the player's library up to date after a sync: the server builds the tagcache for exactly
-// what is on the card and the app replaces the whole library database with it (generation 1), so the player boots straight into it
+// what is on the card and the app replaces the whole library database with it, so the player boots straight into it
 // (no rescan). Format notes are in syncmusic/devices/HibyR1/compas_feedback.py.
 package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -73,33 +76,64 @@ func syncDir(dir string) {
 // albumart/, catalog.incarnation, playlists.list, queue.bin, …) belongs to the player and stays.
 var oldTagcache = regexp.MustCompile(`^(database_(?:idx|\d+)\.tcd(\..*)?|tagcache\.refs(\..*)?)$`)
 
-// installTagcache replaces the card's whole library database with the generation-1 set in src (as compas-sdtool
-// builds it on an empty .compas/): the set is checked, every old database file is removed, the new files are
-// written, and tagcache.gen = 1 goes last. No generation is renamed (the generation is stored inside several index
+// refsName: the refs file of a generation (which older generations' tag files it reuses).
+var refsName = regexp.MustCompile(`^tagcache\.refs\.g(\d+)$`)
+
+// installTagcache replaces the card's whole library database with the set in src, as compas-sdtool builds it:
+// generation 1 on an empty .compas/, or generation G over the card's own database (then with G's refs file and
+// the older tag files G reuses). The set is checked, every old database file is removed, the new files are
+// written, and tagcache.gen = G goes last. No generation is renamed (the generation is stored inside several index
 // files). An interrupted swap leaves no valid database, so the player starts fresh and rescans — never a corrupt
-// state. Returns the installed generation (always 1).
+// state. Returns the installed generation.
 func installTagcache(root, src string) (int, error) {
 	ents, err := os.ReadDir(src)
 	if err != nil {
 		return 0, err
 	}
-	files := map[string][]byte{}
+	gen := 0
 	for _, e := range ents {
-		m := tcdName.FindStringSubmatch(e.Name())
-		if m == nil || !e.Type().IsRegular() {
+		if m := tcdName.FindStringSubmatch(e.Name()); m != nil && m[1] == "database_idx.tcd" && m[3] == "" {
+			g, _ := strconv.Atoi(strings.TrimPrefix(m[2], ".g"))
+			if g < 1 || gen != 0 {
+				return 0, fmt.Errorf("the downloaded tagcache is not one built generation (%s)", e.Name())
+			}
+			gen = g
+		}
+	}
+	if gen == 0 {
+		return 0, errors.New("the downloaded tagcache is incomplete")
+	}
+	suffix := ".g" + strconv.Itoa(gen)
+	files := map[string][]byte{}
+	namesFile := ""
+	for _, e := range ents {
+		if !e.Type().IsRegular() {
 			continue
 		}
-		if m[2] != ".g1" {
-			return 0, fmt.Errorf("the downloaded tagcache is not generation 1 (%s)", e.Name())
-		}
-		if m[3] != "" && m[1] != "database_idx.tcd" {
+		if m := refsName.FindStringSubmatch(e.Name()); m != nil {
+			if m[1] != strconv.Itoa(gen) {
+				return 0, fmt.Errorf("the downloaded tagcache has a stray refs file (%s)", e.Name())
+			}
+		} else if m := tcdName.FindStringSubmatch(e.Name()); m == nil {
 			continue
+		} else if m[3] != "" && m[1] != "database_idx.tcd" {
+			continue
+		} else if g, _ := strconv.Atoi(strings.TrimPrefix(m[2], ".g")); g < 1 || g > gen || (g < gen && (m[1] == "database_idx.tcd" || gen == 1)) {
+			return 0, fmt.Errorf("the downloaded tagcache is not generation %d (%s)", gen, e.Name())
+		} else if m[1] == "database_4.tcd" && (namesFile == "" || g == gen) {
+			namesFile = e.Name()
 		}
 		if files[e.Name()], err = os.ReadFile(filepath.Join(src, e.Name())); err != nil {
 			return 0, err
 		}
 	}
-	master, names := files["database_idx.tcd.g1"], files["database_4.tcd.g1"]
+	if gen > 1 && files["tagcache.refs"+suffix] == nil {
+		return 0, errors.New("the downloaded tagcache lacks its refs file")
+	}
+	if n := files["database_4.tcd"+suffix]; n != nil {
+		namesFile = "database_4.tcd" + suffix
+	}
+	master, names := files["database_idx.tcd"+suffix], files[namesFile]
 	if len(master) < 24 || len(names) < 12 {
 		return 0, errors.New("the downloaded tagcache is incomplete")
 	}
@@ -161,13 +195,13 @@ func installTagcache(root, src string) (int, error) {
 			return fail(fmt.Errorf("the player's library file %s did not stay intact on the card", name))
 		}
 	}
-	gen := filepath.Join(db, "tagcache.gen")
-	if err := writeFresh(gen, []byte("1")); err != nil {
+	genFile := filepath.Join(db, "tagcache.gen")
+	if err := writeFresh(genFile, []byte(strconv.Itoa(gen))); err != nil {
 		return fail(err)
 	}
-	written = append(written, gen)
+	written = append(written, genFile)
 	syncDir(db)
-	return 1, nil
+	return gen, nil
 }
 
 // setMtime gives a written file the modification time the server built the tagcache with, so the player's
@@ -293,7 +327,7 @@ func (c *Client) installGenerated(g genSet) (int, error) {
 		} else if d != dir {
 			return 0, errors.New("the generated files are not in one folder")
 		}
-		if m := tcdName.FindStringSubmatch(filepath.Base(t)); m != nil && (m[3] == "" || m[1] == "database_idx.tcd") {
+		if m := tcdName.FindStringSubmatch(filepath.Base(t)); refsName.MatchString(filepath.Base(t)) || m != nil && (m[3] == "" || m[1] == "database_idx.tcd") {
 			names = append(names, filepath.Base(t))
 		}
 	}
@@ -315,4 +349,56 @@ func (c *Client) installGenerated(g genSet) (int, error) {
 	}
 	sort.Strings(names)
 	return gen, writeSynced(commit, []byte(g.SetID+"\n"+strings.Join(names, "\n")+"\n"))
+}
+
+// dbFile is one tagcache file of the card for PUT player-database (data goes as base64).
+type dbFile struct {
+	Name string `json:"name"`
+	Data []byte `json:"data"`
+}
+
+// cardDatabase: the card's tagcache files and their signature (a hash over every name and content); nil without
+// a database.
+func cardDatabase(root string) ([]dbFile, string, error) {
+	db := filepath.Join(root, ".compas")
+	if _, err := os.Stat(filepath.Join(db, "tagcache.gen")); err != nil {
+		return nil, "", nil
+	}
+	ents, err := os.ReadDir(db)
+	if err != nil {
+		return nil, "", err
+	}
+	files, sig := []dbFile{}, sha256.New()
+	for _, e := range ents {
+		n := e.Name()
+		if !e.Type().IsRegular() || (n != "tagcache.gen" && !oldTagcache.MatchString(n)) || strings.HasSuffix(n, ".tmp") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(db, n))
+		if err != nil {
+			return nil, "", err
+		}
+		files = append(files, dbFile{n, b})
+		sig.Write([]byte(n + "\x00"))
+		sig.Write(b)
+	}
+	return files, hex.EncodeToString(sig.Sum(nil)), nil
+}
+
+// uploadDatabase sends the card's library database to the server when it changed since the last upload, so the
+// server builds the next one over it (reading only the new files). Errors are only logged: an older server
+// without the call builds over the files it holds.
+func (c *Client) uploadDatabase() {
+	files, sig, err := cardDatabase(c.root)
+	if err != nil || files == nil || sig == c.st.DBUploaded {
+		return
+	}
+	if err := c.call("PUT", "player-database", map[string]any{"files": files}, nil); err != nil {
+		fmt.Fprintln(os.Stderr, "player database not uploaded:", err)
+		return
+	}
+	c.st.DBUploaded = sig
+	if err := c.save(); err != nil {
+		fmt.Fprintln(os.Stderr, "state not saved:", err)
+	}
 }

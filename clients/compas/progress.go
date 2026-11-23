@@ -35,6 +35,12 @@ type Progress struct {
 	Sent              map[string]int
 	HeartsDown        int
 	PositionsDown     int
+	PhaseAt           time.Time // when the current phase began (the elapsed time on the sync page)
+	// what the server reports while it plans (phasePlan): step, items counted, step fraction (-1 = unknown), detail
+	PlanStep     string
+	PlanItems    int
+	PlanFraction float64
+	PlanDetail   string
 }
 
 type progressBox struct {
@@ -44,7 +50,11 @@ type progressBox struct {
 
 func (b *progressBox) update(f func(p *Progress)) {
 	b.mu.Lock()
+	old := b.p.Phase
 	f(&b.p)
+	if b.p.Phase != old || (b.p.PhaseAt.IsZero() && b.p.Phase != "") {
+		b.p.PhaseAt = time.Now()
+	}
 	b.mu.Unlock()
 }
 
@@ -65,6 +75,11 @@ type countWriter struct{ b *progressBox }
 func (w countWriter) Write(p []byte) (int, error) {
 	w.b.update(func(pr *Progress) { pr.Bytes += int64(len(p)) })
 	return len(p), nil
+}
+
+// working: a dot that walks along each second (the page redraws every second), so a long step shows it is alive.
+func working(now time.Time) string {
+	return [...]string{" ·", " ··", " ···"}[now.Unix()%3]
 }
 
 func mb(n int64) string {
@@ -108,7 +123,28 @@ func syncLines(p Progress, now time.Time) []line {
 	}
 	ls := []line{{steps: []int{step, len(phaseOrder)}, names: names}}
 	if p.Phase != phaseDownload {
-		ls = append(ls, line{text: T("phase." + p.Phase), size: sizeHead, box: boxCard})
+		ls = append(ls, line{text: T("phase."+p.Phase) + working(now), size: sizeHead, box: boxCard})
+		if p.Phase == phasePlan && p.PlanStep != "" {
+			step := T("plan.step." + p.PlanStep)
+			if p.PlanItems > 0 {
+				step += " · " + T("plan.items", p.PlanItems)
+			}
+			ls = append(ls, line{text: step, col: colSoft, box: boxCard})
+			if p.PlanDetail != "" {
+				ls = append(ls, line{text: p.PlanDetail, size: sizeSmall, col: colDim, box: boxCard})
+			}
+			if p.PlanFraction >= 0 {
+				ls = append(ls, line{bar: []int64{int64(p.PlanFraction * 1000), 1000}, box: boxCard})
+			}
+		}
+		if !p.PhaseAt.IsZero() {
+			el := now.Sub(p.PhaseAt)
+			text := duration(el)
+			if el >= 10*time.Second {
+				text = T("sync.still_working", text) // a long step must never look frozen
+			}
+			ls = append(ls, line{text: text, size: sizeSmall, col: colDim, box: boxCard})
+		}
 	}
 	if p.Phase == phaseDownload {
 		if p.File != "" {

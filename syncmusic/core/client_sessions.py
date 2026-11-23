@@ -10,6 +10,7 @@ Sessions live in memory: after a restart a client gets `session_expired` and sim
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -46,6 +47,7 @@ log = logging.getLogger(__name__)
 SESSION_HOURS = 24
 # a streaming session whose client neither pages nor acks for this long is ended (its job stops)
 STREAM_IDLE_S = 1800.0  # long enough for one large file on slow Wi-Fi
+LISTEN_GRACE_S = 45.0  # s: a long poll lasts at most 30 s, the app asks again within seconds
 PAGE_MAX = 500
 # events that arrive in a burst (a client uploading its offline backlog) are handed on once
 EVENTS_DEBOUNCE_S = 20.0
@@ -132,6 +134,15 @@ class DiagnosticsRequest(BaseModel):
     summary: dict[str, Any] = {}
 
 
+class DatabaseFile(BaseModel):
+    name: str = Field(max_length=200)
+    data: str  # base64
+
+
+class PlayerDatabaseRequest(BaseModel):
+    files: list[DatabaseFile] = Field(max_length=500)
+
+
 class FinishRequest(BaseModel):
     status: Literal["complete", "partial", "cancelled"] = "complete"
 
@@ -179,6 +190,7 @@ class ClientSession(BaseModel):
     planned: tuple[int, int] = (0, 0)  # streaming: files and bytes the plan fetches
     metas: dict[str, dict[str, Any]] = {}  # streaming: item key -> what the client shows for it
     seen: int = 0  # streaming: entries of the job's written list already looked at
+    own_stream: Any = None  # streaming: this session's Stream (devices.client.STREAMS)
     last_seen: float = Field(
         default_factory=time.monotonic
     )  # the client's last call for this session
@@ -312,7 +324,7 @@ def _stop_stream(s: ClientSession) -> None:
     from syncmusic.devices.client import STREAMS
 
     st = STREAMS.get(s.device_id)
-    if s.stream and st is not None and not s.job_done:
+    if s.stream and st is not None and st is s.own_stream:
         st.stopped = True
 
 
@@ -321,6 +333,8 @@ class ClientSessions:
         self.sync = sync
         self.clients = clients
         self._more: dict[str, int] = {}  # device id -> files its last session held back
+        # device id -> monotonic time the open app last waited on its status long poll
+        self.listened: dict[str, float] = {}
         # device id -> (files, bytes) the windows of an unfinished sync delivered so far
         self._run: dict[str, tuple[int, int]] = {}
         self.sessions: dict[str, ClientSession] = {}
@@ -482,13 +496,18 @@ class ClientSessions:
         if sync.ctx.jobs.device_busy(s.device_id):
             running = sync.ctx.jobs.running_for_device(s.device_id)
             if running is not None:
+                if s.stream and await self._attach(s, running.id):
+                    return
                 await sync.ctx.jobs.wait(running.id)
         if not sync.ctx.jobs.device_busy(s.device_id):  # nothing writes the outbox now
             await asyncio.to_thread((await self.device(s.device_id)).prune_outbox)
         if s.mode == "update":
             job = await sync.update_sync(s.device_id)
         else:
-            pc = await sync.plan(s.device_id, auto=True)
+            # tracked: the app and the device page see the planning steps while a big plan runs
+            pc = await sync.planning.run(
+                s.device_id, False, lambda: sync.plan(s.device_id, auto=True)
+            )
             plan = pc.plan
             s.plan_id = plan.id
             first: Literal["keep"] | None = None
@@ -514,13 +533,22 @@ class ClientSessions:
         if info.status != JobStatus.SUCCEEDED:
             raise ClientError("server_error", info.error or f"sync job {info.status.value}", 500)
 
-    async def _start_stream(
-        self, s: ClientSession, plan: SyncPlan, first: Literal["keep"] | None
-    ) -> None:
-        """Start the sync job without waiting for it: it prepares the files a few ahead of the client's acks
-        (`ClientDevice.put_track`), the fetch pages list them as they come, the rest follows when it ends."""
-        from syncmusic.devices.client import STREAMS, Stream
+    async def _attach(self, s: ClientSession, job_id: str) -> bool:
+        """A sync applied on the server (Apply, a schedule) waits for this client: the session streams that job's
+        files instead of planning again. False when the running job is no such sync."""
+        from syncmusic.devices.client import STREAMS
 
+        st = STREAMS.get(s.device_id)
+        if st is None or st.attached or st.stopped or st.plan is None:
+            return False
+        st.attached = True
+        self._stream_plan(s, st.plan)
+        s.plan_id, s.job_id = st.plan.id, job_id
+        s.own_stream = st
+        self._tasks[f"{s.id}:job"] = asyncio.create_task(self._stream_job(s, job_id))
+        return True
+
+    def _stream_plan(self, s: ClientSession, plan: SyncPlan) -> None:
         adds = [
             a
             for a in plan.actions
@@ -528,10 +556,19 @@ class ClientSessions:
         ]
         s.planned = (len(adds), sum(max(a.item.file.size or 0, 0) for a in adds if a.item))
         s.metas = {a.ref.key(): track_meta(a.item.track) for a in adds if a.item is not None}
+
+    async def _start_stream(
+        self, s: ClientSession, plan: SyncPlan, first: Literal["keep"] | None
+    ) -> None:
+        """Start the sync job without waiting for it: it prepares the files a few ahead of the client's acks
+        (`ClientDevice.put_track`), the fetch pages list them as they come, the rest follows when it ends."""
+        from syncmusic.devices.client import STREAMS, Stream
+
+        self._stream_plan(s, plan)
         old = STREAMS.get(s.device_id)
         if old is not None:
             old.stopped = True
-        STREAMS[s.device_id] = Stream(STREAM_AHEAD_FILES, STREAM_AHEAD_BYTES)
+        STREAMS[s.device_id] = s.own_stream = Stream(STREAM_AHEAD_FILES, STREAM_AHEAD_BYTES)
         job = await self.sync.apply(plan.id, first_sync=first)
         s.job_id = job.id
         self._tasks[f"{s.id}:job"] = asyncio.create_task(self._stream_job(s, job.id))
@@ -539,13 +576,19 @@ class ClientSessions:
     async def _stream_job(self, s: ClientSession, job_id: str) -> None:
         from syncmusic.devices.client import STREAMS
 
+        job = asyncio.ensure_future(self.sync.ctx.jobs.wait(job_id))
         try:
-            info = await self.sync.ctx.jobs.wait(job_id)
+            st = s.own_stream
+            if st is not None:  # the job commits, then waits for the client to take the rest
+                committed = asyncio.ensure_future(st.committed.wait())
+                await asyncio.wait({job, committed}, return_when=asyncio.FIRST_COMPLETED)
+                committed.cancel()
+            info = job.result() if job.done() else None
             while s.status == "planning":  # noqa: ASYNC110 - _plan lists the outbox first, then it is ready
                 await asyncio.sleep(0.05)
             if s.status != "ready":
                 return  # the session ended meanwhile
-            if info.status not in (JobStatus.SUCCEEDED, JobStatus.CANCELLED):
+            if info is not None and info.status not in (JobStatus.SUCCEEDED, JobStatus.CANCELLED):
                 s.status, s.message = "failed", info.error or f"sync job {info.status.value}"
                 s.code = "server_error"
                 return
@@ -557,12 +600,13 @@ class ClientSessions:
             s.status, s.message = "failed", str(e)
         finally:
             s.job_done = True
-            st = STREAMS.get(s.device_id)
-            if st is not None and s.job_id == job_id:
-                STREAMS.pop(s.device_id, None)
+            with contextlib.suppress(Exception):
+                await job  # the stream stays registered (Stop reaches it) until the job ended
+            if s.own_stream is not None and STREAMS.get(s.device_id) is s.own_stream:
+                STREAMS.pop(s.device_id, None)  # never a newer session's stream
             self._tasks.pop(f"{s.id}:job", None)
 
-    async def _stream_refresh(self, s: ClientSession) -> None:
+    async def stream_refresh(self, s: ClientSession) -> None:
         """List the files the streaming job wrote since the last look (each once, in write order)."""
         from syncmusic.devices.client import STREAMS
 
@@ -624,7 +668,7 @@ class ClientSessions:
         end_at = time.monotonic() + STREAM_PAGE_WAIT_S
         while True:
             s.last_seen = time.monotonic()  # a client waiting on this page is alive
-            await self._stream_refresh(s)
+            await self.stream_refresh(s)
             if s.status != "ready" or self.sessions.get(s.id) is not s:
                 raise ClientError("server_error", s.message or "the sync stopped", 500)
             if len(s.fetch) > start or s.job_done or time.monotonic() >= end_at:
@@ -827,6 +871,7 @@ class ClientSessions:
         }
         if s.status == "planning":
             out["retry_after_s"] = 2
+            out["planning"] = self.planning_view(s)
         elif s.status in ("needs_review", "failed"):
             out["message"] = s.message
             if s.code:
@@ -881,6 +926,22 @@ class ClientSessions:
         limit = max(1, min(limit, PAGE_MAX))
         end = start + limit
         return {"items": items[start:end], "next": str(end) if end < len(items) else None}
+
+    def planning_view(self, s: ClientSession) -> dict[str, Any]:
+        """What the server is doing for a session that is still planning: the plan's step (libraries, device,
+        compare, checks) with the items counted so far, else preparing the files; and how long it has run."""
+        p = self.sync.planning.get(s.device_id)
+        out: dict[str, Any] = {"elapsed_s": round((_now() - s.created_at).total_seconds(), 1)}
+        if p is not None:
+            keys = ("step", "index", "steps", "fraction", "items", "detail")
+            return out | {k: p[k] for k in keys}
+        return out | {"step": "prepare" if s.plan_id is not None else "waiting"}
+
+    def app_listening(self, device_id: str) -> bool:
+        """True while the client's app is open and waits on its status long poll: a Sync pressed on the server
+        reaches it at once."""
+        at = self.listened.get(device_id)
+        return at is not None and time.monotonic() - at < LISTEN_GRACE_S
 
     def status(self, device_id: str, dev: ClientDevice, poll_s: int) -> dict[str, Any]:
         """What the client's poll learns: whether there is something to sync."""

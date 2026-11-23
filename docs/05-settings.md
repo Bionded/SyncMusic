@@ -118,7 +118,21 @@ browser only; the sun/moon/monitor button in the top bar switches between the th
 
 ## Device settings
 
-A device's *Settings* tab is split the same way: General, When to sync, After a sync and mounting, Safety, Listening data, Writing and Player and maintenance, one at a time (or all on one page). One Save bar saves the changes of every part.
+A device's *Settings* tab opens on **Basic**: the device's name, automatic updates, full sync when connected, the
+schedule, what happens after a sync and gentle write mode, plus links to its templates and processors. The menu on
+the left (a row at the top on a phone) holds the **advanced** sections — Files and paths, Listening data, Safety and
+writing, This player, Maintenance — and the **Danger zone** last. A section only appears when it applies to the
+device (no listening data for a player that records none, no mount options for a folder or a network device). The
+search above the menu covers every section. With **Show all settings on one page** (Settings) every section is on
+one page and the menu jumps to it.
+
+Every change is saved at once (a text field when you leave it): a short *Saved* note with **Undo** confirms it.
+Input that is not valid is marked and not saved. A setting changed from the app-wide default shows *Changed* with a
+reset button.
+
+**Files and paths → Folders and file names** offers ready-made layouts (Album artist / Year – Album / Track,
+Artist / Album / Track, Album artist – Album / Track, All in one folder) with an example path; **Custom…** shows the
+templates for every media kind.
 
 ### Settings tab - sync settings
 | Key | Default | Meaning |
@@ -147,6 +161,7 @@ A device's *Settings* tab is split the same way: General, When to sync, After a 
 | `no_cache` | from Settings → New devices | No-cache mode for this device (see above). |
 | `no_cache_files`, `no_cache_budget_mb`, `no_cache_file_max_mb` | 4, 1000, 256 | Its memory limits. |
 | `gentle_write` | off | Gentle write mode: write in batches with pauses. |
+| `keep_disk_awake`, `keep_disk_awake_s` | off, 2 | Gentle-mode option: while the sync waits, read a few uncached bytes from the disk every `keep_disk_awake_s` seconds so it never falls into standby (CF/SD adapters that never wake up). Only reads. |
 | `unmount_foreign` | off | Unmount other programs' mounts of the player (a system automount) during the first minute after SyncMusic mounted it. |
 | `foreign_read_only` | off | Make other programs' mounts of the player read-only during the first minute after SyncMusic mounted it: they can still read it, only SyncMusic writes. `unmount_foreign` wins when both are on. |
 | `gentle_batch_files` | 25 | Files per batch. |

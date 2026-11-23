@@ -6,10 +6,17 @@
 // i18n (`field.<name>`, `.help`, `.<value>`). The service validates; the form only converts text to the type.
 import { html } from "./dom.js";
 import { t, addStrings } from "./i18n.js";
+import { textTip } from "./help.js";
 import "./fields.js";
 
 addStrings({
   "field.layout.example": "e.g. {path}",
+  "field.layout.preset": "Folders and file names",
+  "field.layout.preset.album_artist_year": "Album artist / Year – Album / Track",
+  "field.layout.preset.artist_album": "Artist / Album / Track",
+  "field.layout.preset.album_folder": "Album artist – Album / Track",
+  "field.layout.preset.one_folder": "All in one folder",
+  "field.layout.preset.custom": "Custom…",
   "form.show": "Show",
   "form.hide": "Hide",
   "form.tls_http": "Only used for HTTPS URLs.",
@@ -79,6 +86,7 @@ function kindOf(name, prop) {
   if (prop.type === "array" && prop.items?.enum) return "choices";
   if (prop.type === "array") return prop.items?.type === "string" ? "list" : "object";
   if (prop.type === "integer" && name.endsWith("_bytes")) return "megabytes";
+  if (prop.type === "number" && name.endsWith("_fraction")) return "percent"; // stored 0–1, shown 0–100 %
   if (prop.type === "object" && prop.properties && Object.values(prop.properties).every((p) => p.type === "string")) return "texts";
   return prop.type || "object";
 }
@@ -86,7 +94,7 @@ function kindOf(name, prop) {
 /** A form for `schema` with `values`; returns {html, read(root) → values (throws FormError)}. `only`: field names
  * to show (others keep their stored values when read). `keys`: a field's own i18n name where the shared one does not
  * fit (an Android player's `base_path` is no "Folder on the server"). */
-export function schemaForm(schema, values = {}, { only = null, prefix = "", skip = [], keys = {} } = {}) {
+export function schemaForm(schema, values = {}, { only = null, prefix = "", skip = [], keys = {}, tips = false } = {}) {
   const id = `f${++formSeq}`;
   const required = new Set(schema.required || []);
   const fields = [];
@@ -95,7 +103,7 @@ export function schemaForm(schema, values = {}, { only = null, prefix = "", skip
     const [prop, nullable] = resolve(schema, raw);
     const kind = kindOf(name, prop);
     const value = name in values ? values[name] : raw.default ?? prop.default;
-    fields.push({ name, key: keys[name] || name, prop, nullable, kind, value, el: `${id}-${prefix}${name}`, url: values.url ?? "" });
+    fields.push({ name, key: keys[name] || name, tips, prop, nullable, kind, value, el: `${id}-${prefix}${name}`, url: values.url ?? "" });
   }
   const split = fields.find((f) => f.name === "split_genres");
   for (const f of fields) if (f.name === "genre_separators") f.hidden = split ? split.value !== "on" : false;
@@ -103,11 +111,21 @@ export function schemaForm(schema, values = {}, { only = null, prefix = "", skip
   return { html: tpl, read: (root) => read(root, fields, required) };
 }
 
+// a unit at the end of a label ("Pause between batches (s)") that `tips` forms show inside the number field
+const UNIT = /\s\((MB|MB\/s|GB|s|%)\)$/;
+// help longer than this goes behind a "?" in `tips` forms; a short one stays under the field
+const LONG_HELP = 90;
+
 function control(f, req) {
-  const lab = label(f.key) + (req ? " *" : "");
+  const whole = label(f.key) + (req ? " *" : "");
+  const fixed = { megabytes: "MB", percent: "%" }[f.kind];
+  const unit = f.tips ? (fixed || (whole.match(UNIT) || [])[1] || "") : "";
+  const name = unit && !fixed ? whole.replace(UNIT, "") : whole;
   const hint = help(f.key, f.prop);
-  const hintTpl = hint ? html`<div class="hint" id="${f.el}-h">${hint}</div>` : "";
-  const described = hint ? html`aria-describedby="${f.el}-h"` : "";
+  const long = f.tips && f.kind !== "boolean" && hint.length > LONG_HELP; // a switch row keeps its text under the title
+  const lab = long ? html`${name}${textTip(name, hint)}` : name;
+  const hintTpl = hint && !long ? html`<div class="hint" id="${f.el}-h">${hint}</div>` : "";
+  const described = hint && !long ? html`aria-describedby="${f.el}-h"` : "";
   if (f.kind === "boolean" && f.name === "verify_tls") {
     // only meaningful for HTTPS: greyed out while the form's URL is plain http, its value kept
     const off = isHttp(f.url);
@@ -126,13 +144,20 @@ function control(f, req) {
   }
   if (f.kind === "enum") {
     return html`<div class="field" data-field="${f.name}"><label for="${f.el}">${lab}</label><select id="${f.el}" ${described}>
-      ${f.nullable || f.value === null || f.value === undefined ? html`<option value="" ${f.value == null ? "selected" : ""}>-</option>` : ""}
-      ${f.prop.enum.map((o) => html`<option value="${o}" ${String(o) === String(f.value) ? "selected" : ""}>${option(f.name, o)}</option>`)}
+      ${f.nullable || f.value === null || f.value === undefined ? html`<option value="" ${f.value == null ? "selected" : ""}>${t(`field.${f.key}.none`) === `field.${f.key}.none` ? "-" : t(`field.${f.key}.none`)}</option>` : ""}
+      ${(f.value == null || f.prop.enum.some((o) => String(o) === String(f.value)) ? f.prop.enum : [...f.prop.enum, f.value]).map((o) =>
+        html`<option value="${o}" ${String(o) === String(f.value) ? "selected" : ""}>${option(f.name, o)}</option>`)}
     </select>${hintTpl}</div>`;
   }
   if (f.kind === "texts") { // one field per key; an emptied field goes back to its default
     const v = f.value || {};
-    return html`<fieldset class="field full texts" ${described}><legend>${lab}</legend>${Object.entries(f.prop.properties).map(([k, p]) =>
+    const layout = f.name === "layout" && "music" in (f.prop.properties || {});
+    const music = (k) => v[k] || f.prop.properties[k]?.default || "";
+    const preset = layout ? (Object.entries(LAYOUT_PRESETS).find(([, p]) => p.music === music("music") && p.music_multi_disc === music("music_multi_disc"))?.[0] || "custom") : null;
+    const pick = layout ? html`<div class="ds-row texts-preset"><span class="ds-label">${t("field.layout.preset")}<small data-preset-example>${pathExample(music("music"), "music")}</small></span>
+      <select data-layout-preset="${f.el}" aria-label="${t("field.layout.preset")}">${[...Object.keys(LAYOUT_PRESETS), "custom"].map((id) =>
+        html`<option value="${id}" ${id === preset ? "selected" : ""}>${t(`field.layout.preset.${id}`)}</option>`)}</select></div>` : "";
+    return html`<fieldset class="field full texts" ${described} ${layout ? html`data-layout-custom="${preset === "custom" ? "1" : "0"}"` : ""}><legend>${lab}</legend>${pick}${Object.entries(f.prop.properties).map(([k, p]) =>
       html`<label class="texts-row" for="${f.el}-${k}"><span>${option(f.name, k) === k ? p.title || k : option(f.name, k)}</span>
         <input type="text" id="${f.el}-${k}" value="${v[k] ?? p.default ?? ""}" placeholder="${p.default ?? ""}" autocomplete="off" spellcheck="false"
           ${f.name === "layout" && PATH_SAMPLES[k] ? html`data-path-tpl="${k}"` : ""}>
@@ -142,23 +167,26 @@ function control(f, req) {
   if (f.kind === "list") text = Array.isArray(f.value) ? f.value.join(", ") : "";
   else if (f.kind === "object") text = f.value === null || f.value === undefined ? "" : JSON.stringify(f.value);
   else if (f.kind === "megabytes" && typeof f.value === "number") text = String(+(f.value / MB).toFixed(3));
+  else if (f.kind === "percent" && typeof f.value === "number") text = String(+(f.value * 100).toFixed(2));
   else text = f.value === null || f.value === undefined ? "" : String(f.value);
   if (f.kind === "object") {
     return html`<div class="field full"><label for="${f.el}">${lab}</label><textarea class="codebox" style="min-height:80px" id="${f.el}" ${described}>${text}</textarea>${hintTpl}</div>`;
   }
   const type = f.kind === "secret" ? "password" : f.prop.format === "time" ? "time" : "text"; // time: HH:MM
-  const mode = ["integer", "number", "megabytes"].includes(f.kind) ? html`inputmode="decimal"` : "";
+  const mode = ["integer", "number", "megabytes", "percent"].includes(f.kind) ? html`inputmode="decimal"` : "";
   const full = (f.kind === "string" && f.prop.format !== "time") || f.kind === "secret" || f.kind === "list";
   // suggestions (`examples` of the schema, e.g. the IANA time zones of the iPod setting)
   const examples = f.kind === "string" && Array.isArray(f.prop.examples) ? f.prop.examples : null;
   const list = examples ? html`list="${f.el}-l"` : "";
   const datalist = examples ? html`<datalist id="${f.el}-l">${examples.map((x) => html`<option value="${x}"></option>`)}</datalist>` : "";
   const serverUrl = f.name === "url" ? html`data-server-url inputmode="url"` : "";
-  const input = html`<input type="${type}" id="${f.el}" value="${text}" ${req ? html`aria-required="true"` : ""} ${mode} ${serverUrl} ${list} ${described} autocomplete="off">`;
+  const named = unit ? html`aria-label="${name} (${unit})"` : "";
+  const box = html`<input type="${type}" id="${f.el}" value="${text}" ${req ? html`aria-required="true"` : ""} ${mode} ${serverUrl} ${list} ${described} ${named} autocomplete="off">`;
+  const input = unit ? html`<span class="unit-in">${box}<span class="unit" aria-hidden="true">${unit}</span></span>` : box;
   // a secret can be shown while typing it; a stored one is only ever the mask
   const field = f.kind === "secret"
     ? html`<span class="secret-wrap">${input}<button type="button" class="btn" data-show-secret="${f.el}" aria-pressed="false">${t("form.show")}</button></span>` : input;
-  return html`<div class="field ${full ? "full" : ""}"><label for="${f.el}">${lab}${f.kind === "megabytes" ? " (MB)" : ""}</label>
+  return html`<div class="field ${full ? "full" : ""}"><label for="${f.el}">${lab}${fixed && !unit ? ` (${fixed})` : ""}</label>
     ${field}${datalist}${hintTpl}</div>`;
 }
 
@@ -172,6 +200,14 @@ export function withScheme(url) {
   const v = String(url || "").trim();
   return v && !/^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? `${HTTP}//${v}` : v;
 }
+
+// ready-made music layouts: picking one fills both music templates; "Custom" shows every template
+const LAYOUT_PRESETS = {
+  album_artist_year: { music: "Music/{album_artist}/{year} - {album}/{disc:02}{track:02} - {title}", music_multi_disc: "Music/{album_artist}/{year} - {album}/CD{disc:02}/{track:02} - {title}" },
+  artist_album: { music: "Music/{artist}/{album}/{track:02} - {title}", music_multi_disc: "Music/{artist}/{album}/CD{disc:02}/{track:02} - {title}" },
+  album_folder: { music: "Music/{album_artist} - {album}/{track:02} - {title}", music_multi_disc: "Music/{album_artist} - {album}/{disc:02}{track:02} - {title}" },
+  one_folder: { music: "Music/{artist} - {title}", music_multi_disc: "Music/{artist} - {title}" },
+};
 
 // the path layout's live examples: a single-disc and a two-disc release
 const PATH_SAMPLES = {
@@ -214,7 +250,24 @@ export function initServerUrls(root) {
     e.target.value = withScheme(e.target.value);
     syncTls(e.target);
   });
+  root.addEventListener("change", (e) => {
+    const sel = e.target.closest?.("[data-layout-preset]");
+    if (!sel) return;
+    const box = sel.closest("fieldset");
+    box.dataset.layoutCustom = sel.value === "custom" ? "1" : "0";
+    const p = LAYOUT_PRESETS[sel.value];
+    if (p) {
+      for (const [k, tpl] of Object.entries(p)) {
+        const input = document.getElementById(`${sel.dataset.layoutPreset}-${k}`);
+        if (input) { input.value = tpl; input.dispatchEvent(new Event("input", { bubbles: true })); }
+      }
+    }
+  });
   root.addEventListener("input", (e) => {
+    if (e.target.matches?.("[data-path-tpl=music]")) {
+      const ex = e.target.closest("fieldset")?.querySelector("[data-preset-example]");
+      if (ex) ex.textContent = pathExample(e.target.value || e.target.placeholder, "music");
+    }
     if (e.target.matches?.("[data-server-url]")) syncTls(e.target);
     if (e.target.closest?.("[data-field=split_genres], [data-field=genre_separators]")) syncSplit(e.target.closest("[data-form]"));
     if (e.target.matches?.("[data-path-tpl]")) {
@@ -231,6 +284,7 @@ function convert(kind, text) {
   if (kind === "integer") { if (!/^-?\d+$/.test(text)) throw new Error("a whole number"); return parseInt(text, 10); }
   if (kind === "number") { const v = Number(text); if (Number.isNaN(v)) throw new Error("a number"); return v; }
   if (kind === "megabytes") { const v = Number(text); if (Number.isNaN(v)) throw new Error("a number of MB"); return Math.round(v * MB); }
+  if (kind === "percent") { const v = Number(text); if (Number.isNaN(v)) throw new Error("a percentage"); return +(v / 100).toFixed(4); }
   if (kind === "scalar") { const v = Number(text); return Number.isNaN(v) ? text : v; }
   if (kind === "list") return text.split(",").map((x) => x.trim()).filter(Boolean);
   if (kind === "object") { try { return JSON.parse(text); } catch (e) { throw new Error(`JSON: ${e.message}`); } }

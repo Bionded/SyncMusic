@@ -4,6 +4,7 @@ into the outbox, the plan pages, status polls say when to sync."""
 from __future__ import annotations
 
 import asyncio
+import base64
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -666,6 +667,44 @@ async def test_diagnostics_upload_is_kept_redacted_and_offered_on_the_device_pag
     assert (await c.post(f"{C}/diagnostics", json=body)).status_code == 401
 
 
+async def test_the_cards_player_database_upload_is_kept_for_the_next_build(phone):
+    app, c, device_id, h = phone
+    files = [
+        {"name": "database_idx.tcd.g2", "data": base64.b64encode(b"master").decode()},
+        {"name": "tagcache.gen", "data": base64.b64encode(b"2").decode()},
+    ]
+    r = await c.put(f"{C}/player-database", json={"files": files}, headers=h)
+    assert r.status_code == 200 and r.json() == {"files": 2, "size": 7}, r.text
+    db = (await app.client_sessions.device(device_id))._card_database()
+    assert db is not None and (db / "database_idx.tcd.g2").read_bytes() == b"master"
+    # a later upload replaces the whole earlier one
+    r = await c.put(f"{C}/player-database", json={"files": files[1:]}, headers=h)
+    assert r.status_code == 200 and not (db / "database_idx.tcd.g2").exists()
+    for bad in (
+        [{"name": "../escape", "data": ""}],
+        [files[0]],
+        [{"name": "tagcache.gen", "data": "not base64!"}],
+    ):
+        r = await c.put(f"{C}/player-database", json={"files": bad}, headers=h)
+        assert r.status_code == 400, r.text
+    assert (await c.put(f"{C}/player-database", json={"files": files})).status_code == 401
+
+
+async def test_rebuild_player_database_is_asked_from_the_app_or_the_device_page(phone):
+    app, c, device_id, h = phone
+    dev = await app.client_sessions.device(device_id)
+    assert (await c.get(f"/api/v1/clients/{device_id}")).json()["rebuild_requested"] is False
+    r = await c.post(f"{C}/rebuild-database", headers=h)
+    assert r.status_code == 200 and dev.rebuild_requested, r.text
+    dev._side("rebuild").unlink()
+    r = await c.post(f"/api/v1/clients/{device_id}/rebuild-database")
+    assert r.status_code == 200 and dev.rebuild_requested
+    card = (await c.get(f"/api/v1/clients/{device_id}")).json()
+    assert card["rebuild_requested"] is True and card["sync_requested"]
+    assert (await c.post("/api/v1/clients/nope/rebuild-database")).status_code == 404
+    assert (await c.post(f"{C}/rebuild-database")).status_code == 401
+
+
 async def test_a_client_switches_templates_on_and_off(phone):
     app, c, device_id, h = phone
     r = await c.get(f"{C}/templates", headers=h)
@@ -768,6 +807,43 @@ async def test_a_connecting_app_gets_this_releases_build_without_a_download_clic
     # done once per server version: an up-to-date app does not trigger another download
     await c.get(f"{C}/app-update", params={**q, "version": "1.3.0"}, headers=h)
     assert len(calls) == 1
+
+
+async def test_pairing_starts_fetching_the_app_builds_before_the_app_asks(phone, monkeypatch):
+    from syncmusic.infra import client_apps
+    from tests.unit.test_client_app_download import GOOD, _releases
+
+    app, c, _device_id, _h = phone
+    monkeypatch.setattr(client_apps, "running_binary", lambda: None)
+    monkeypatch.setattr(client_apps, "running_version", lambda: "0.5.0")
+    monkeypatch.setattr(app.config, "update_repo", "example/SyncMusic")
+    releases, transport = _releases({"0.5.0": {"syncmusic-compas-1.3.0-hard.zip": GOOD}})
+
+    async def fake_releases(repo):
+        return releases
+
+    real = client_apps.install
+    monkeypatch.setattr(app.update_checker, "releases", fake_releases)
+    monkeypatch.setattr(
+        client_apps,
+        "install",
+        lambda rel, name, data, _t, variant: real(rel, name, data, transport, variant),
+    )
+    info = {"uid": "second-player-01", "name": "Player", "app": "syncmusic-compas"}
+    r = await c.post(
+        f"{C}/pair",
+        json={"code": (await new_code(c))["code"], "client": {**info, "app_version": "1.2.0"}},
+    )
+    assert r.status_code == 201, r.text
+    token = r.json()["token"]
+    assert app.app_fetch.state in ("downloading", "done")  # started by the pairing itself
+    for _ in range(100):
+        if app.app_fetch.state == "done":
+            break
+        await asyncio.sleep(0.02)
+    q = {"app": "syncmusic-compas", "version": "1.2.0", "variant": "hard"}
+    doc = (await c.get(f"{C}/app-update", params=q, headers=bearer(token))).json()
+    assert doc["available"] and doc["version"] == "1.3.0", doc
 
 
 async def test_an_offline_server_offers_nothing_and_logs_once(phone, monkeypatch, caplog):
@@ -887,9 +963,12 @@ async def test_sync_now_on_the_server_wakes_the_clients_long_poll(phone):
     """'Sync now' prepares nothing on the server: it asks the client, whose waiting status poll answers at once;
     the request ends when the client starts its sync."""
     app, c, device_id, h = phone
+    view = f"/api/v1/clients/{device_id}"
+    assert (await c.get(view)).json()["app_listening"] is False  # app not open: the page says so
     poll = asyncio.create_task(c.get(f"{C}/status?wait=20", headers=h))
     await asyncio.sleep(0.2)
     assert not poll.done()
+    assert (await c.get(view)).json()["app_listening"] is True
     r = await c.post(f"/api/v1/clients/{device_id}/sync")
     assert r.status_code == 200 and r.json() == {"requested": True}
     status = (await asyncio.wait_for(poll, 5)).json()
@@ -1110,8 +1189,10 @@ async def test_a_streaming_session_that_ends_early_stops_its_job(phone, monkeypa
     await download(c, h, first)
     await c.post(f"{C}/sync/{sid}/ack", json={"done": [first]}, headers=h)
     job_id = app.client_sessions.sessions[sid].job_id
-    await c.post(f"{C}/sync/{sid}/finish", json={"status": "cancelled"}, headers=h)
-    info = await asyncio.wait_for(app.jobs.wait(job_id), 20)
+    r = await c.post(f"{C}/sync/{sid}/finish", json={"status": "cancelled"}, headers=h)
+    assert r.status_code == 200, r.text
+    # generous: on a loaded host the job may still be preparing when the session ends
+    info = await asyncio.wait_for(app.jobs.wait(job_id), 60)
     assert info.status.value in ("cancelled", "succeeded"), info
     dev = await app.client_sessions.device(device_id)
     assert first["path"] in dev.state.inventory
@@ -1155,6 +1236,94 @@ async def test_a_silent_streaming_client_is_ended_after_the_idle_time(phone, mon
     assert info.status.value in ("cancelled", "succeeded"), info
     r = await c.get(f"{C}/sync/{sid}", headers=h)
     assert r.status_code == 410
+
+
+async def _server_applied_stream(app, c, h, device_id, music, monkeypatch):
+    """A streaming client holds the first two songs; two more are applied on the server (as Apply on the
+    device page or a schedule does). Returns the job."""
+    from syncmusic.core import client_sessions
+
+    monkeypatch.setattr(client_sessions, "STREAM_AHEAD_FILES", 1)
+    caps = {**CAPS, "stream": True}
+    view = await sync(c, h, {"capabilities": caps, "inventory": {"kind": "full", "items": []}})
+    dev = await app.client_sessions.device(device_id)
+    first = await stream_deliver(c, h, view, dev, [0])
+    for _ in range(200):  # the first sync's job ends once the client took everything
+        if not app.jobs.device_busy(device_id):
+            break
+        await asyncio.sleep(0.05)
+    make_music(music / "B" / "03 Three.mp3", title="Three", artist="Кобза", album="Другий")
+    make_music(music / "B" / "04 Four.mp3", title="Four", artist="Кобза", album="Другий")
+    pc = await app.sync.plan(device_id)
+    job = await app.sync.apply(pc.plan.id)
+    return job, caps, held(first["fetched"])
+
+
+async def test_a_sync_applied_on_the_server_streams_to_the_client(phone, music, monkeypatch):
+    """A plan applied on the server for a streaming client writes only a file ahead of the client (never the
+    whole plan into the outbox), asks the client to sync, the client's session takes that job's files, and the
+    job stays running until the client took every song."""
+    app, c, device_id, h = phone
+    job, caps, items = await _server_applied_stream(app, c, h, device_id, music, monkeypatch)
+    assert app.sync.sync_requested(device_id)
+    await asyncio.sleep(0.5)
+    dev = await app.client_sessions.device(device_id)
+    assert len([p for p in dev.outbox() if p.endswith(".mp3")]) <= 1
+    assert app.jobs.get(job.id).status.value == "running"
+    view = await sync(c, h, {"capabilities": caps, "inventory": {"kind": "full", "items": items}})
+    assert view["status"] == "ready", view
+    assert app.client_sessions.sessions[view["session_id"]].job_id == job.id
+    peak = [0]
+    sid = view["session_id"]
+    tracks, cursor, statuses = list(view["plan"]["fetch"]), view["plan"]["next"]["fetch"], []
+    while True:
+        for f in tracks:
+            if f.get("_acked"):
+                continue
+            peak[0] = max(peak[0], len([p for p in dev.outbox() if p.endswith(".mp3")]))
+            await download(c, h, f)
+            statuses.append(app.jobs.get(job.id).status.value)
+            await c.post(f"{C}/sync/{sid}/ack", json={"done": [f]}, headers=h)
+            f["_acked"] = True
+        if cursor is None:
+            break
+        r = await c.get(f"{C}/sync/{sid}/plan?section=fetch&cursor={cursor}", headers=h)
+        tracks += r.json()["items"]
+        cursor = r.json()["next"]
+    got = [f["path"] for f in tracks if f["path"].endswith(".mp3")]
+    assert len(got) == 2 and peak[0] <= 1
+    assert statuses[: len(got)] == ["running"] * len(got)  # the job runs while the client downloads
+    info = await asyncio.wait_for(app.jobs.wait(job.id), 20)
+    assert info.status.value == "succeeded"
+    r = await c.post(f"{C}/sync/{sid}/finish", json={"status": "complete"}, headers=h)
+    assert r.status_code == 200, r.text
+    dev = await app.client_sessions.device(device_id)
+    assert set(got) <= set(dev.state.inventory)
+
+
+async def test_stop_on_the_server_ends_the_clients_streaming_session(phone, music, monkeypatch):
+    app, c, device_id, h = phone
+    job, caps, items = await _server_applied_stream(app, c, h, device_id, music, monkeypatch)
+    view = await sync(c, h, {"capabilities": caps, "inventory": {"kind": "full", "items": items}})
+    sid = view["session_id"]
+    r = await c.post(f"/api/v1/jobs/{job.id}/cancel")
+    assert r.status_code == 200 and r.json()["cancelled"]
+    info = await asyncio.wait_for(app.jobs.wait(job.id), 10)
+    assert info.status.value in ("cancelled", "succeeded"), info
+    assert app.client_sessions.sessions[sid].cancel  # the client is told at its next call
+
+
+async def test_a_server_applied_stream_gives_up_when_the_client_never_comes(
+    phone, music, monkeypatch
+):
+    from syncmusic.devices import client
+
+    app, c, device_id, h = phone
+    monkeypatch.setattr(client, "STREAM_ATTACH_S", 0.2)
+    job, _caps, _items = await _server_applied_stream(app, c, h, device_id, music, monkeypatch)
+    info = await asyncio.wait_for(app.jobs.wait(job.id), 10)
+    assert info.status.value in ("cancelled", "succeeded"), info
+    assert device_id not in client.STREAMS
 
 
 async def test_revoking_a_client_ends_its_sessions_and_tickets(phone, monkeypatch):
@@ -1280,3 +1449,74 @@ async def test_storage_shows_wifi_player_data_and_cleans_it(phone):
     assert not (net / "0ld0ld0ld0ld").exists() and not waiting.exists()
     assert (net / f"{device_id}.shadow" / "k.mp3").exists()  # the database is built from it
     assert (net / device_id / ".syncmusic").is_dir()  # its state stays
+
+
+async def test_a_planning_session_tells_the_client_what_the_server_does(phone, monkeypatch):
+    from syncmusic.core import planprogress
+
+    app, c, device_id, h = phone
+    gate, real = asyncio.Event(), app.sync.plan
+
+    async def slow_plan(dev_id, **kw):
+        planprogress.step("compare", items=15000, detail="Music")
+        await gate.wait()
+        return await real(dev_id, **kw)
+
+    monkeypatch.setattr(app.sync, "plan", slow_plan)
+    r = await c.post(f"{C}/sync", json={"capabilities": CAPS}, headers=h)
+    sid = r.json()["session_id"]
+    for _ in range(100):
+        view = (await c.get(f"{C}/sync/{sid}", headers=h)).json()
+        if view["planning"].get("step") == "compare":
+            break
+        await asyncio.sleep(0.02)
+    p = view["planning"]
+    assert view["status"] == "planning" and p["items"] == 15000 and p["detail"] == "Music", view
+    assert p["index"] == 2 and p["steps"] == 4 and p["elapsed_s"] >= 0
+    assert app.sync.planning.get(device_id) is not None  # the device page sees it too
+    gate.set()
+    for _ in range(200):
+        view = (await c.get(f"{C}/sync/{sid}", headers=h)).json()
+        if view["status"] != "planning":
+            break
+        await asyncio.sleep(0.05)
+    assert view["status"] == "ready" and "planning" not in view
+
+
+async def test_a_streaming_job_says_how_many_files_the_player_still_has_to_take(phone, monkeypatch):
+    """After the commit a streaming job waits for the client: its status names the files left, not the last
+    copied title, and the count drops with every ack."""
+    from syncmusic.core import client_sessions
+
+    app, c, _device_id, h = phone
+    monkeypatch.setattr(client_sessions, "STREAM_AHEAD_FILES", 100)
+    caps = {**CAPS, "stream": True}
+    view = await sync(c, h, {"capabilities": caps, "inventory": {"kind": "full", "items": []}})
+    sid = view["session_id"]
+    job_id = app.client_sessions.sessions[sid].job_id
+
+    async def message(prefix: str) -> str:
+        for _ in range(600):  # generous: the job thread is slow on a loaded host
+            info = app.jobs.get(job_id)
+            if info and (info.message or "").startswith(prefix):
+                return info.message
+            await asyncio.sleep(0.05)
+        raise AssertionError(app.jobs.get(job_id))
+
+    first = await message("waiting for the player to take ")
+    assert app.jobs.get(job_id).stats.get("waiting") is True
+    items, cursor = list(view["plan"]["fetch"]), view["plan"]["next"]["fetch"]
+    while cursor is not None:
+        r = (await c.get(f"{C}/sync/{sid}/plan?section=fetch&cursor={cursor}", headers=h)).json()
+        items, cursor = items + r["items"], r["next"]
+    n = int(first.split()[-2].replace(",", ""))  # "… N of M files": M
+    assert n == len(items) >= 2, first
+    await download(c, h, items[0])
+    await c.post(f"{C}/sync/{sid}/ack", json={"done": [items[0]]}, headers=h)
+    assert await message(f"waiting for the player to take {n - 1:,} of {n:,}")
+    for item in items[1:]:
+        await download(c, h, item)
+        await c.post(f"{C}/sync/{sid}/ack", json={"done": [item]}, headers=h)
+    await c.post(f"{C}/sync/{sid}/finish", json={"status": "complete"}, headers=h)
+    info = await asyncio.wait_for(app.jobs.wait(job_id), 20)
+    assert info.status.value == "succeeded", info

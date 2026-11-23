@@ -63,6 +63,28 @@ async def test_outbox_counts_against_free_space_until_acked(tmp_path):
     assert await dev.missing(m) == set(m.items)
 
 
+async def test_free_space_does_not_walk_the_outbox_for_every_file(tmp_path, monkeypatch):
+    dev = _client(tmp_path)
+    s = await dev.begin()
+    walks = 0
+    walk = dev.outbox
+
+    def counted() -> dict[str, int]:
+        nonlocal walks
+        walks += 1
+        return walk()
+
+    monkeypatch.setattr(dev, "outbox", counted)
+    monkeypatch.setattr("syncmusic.devices.client.PENDING_TTL_S", 3600.0)
+    for i in range(30):  # what the applier does: free space, then the file
+        assert await dev.free_space() == 800_000 - i * 10_000
+        await dev.put_track(s, work_item(tmp_path, f"Song {i}", size=10_000))
+    assert walks == 1
+    ref = next(iter(walk()))
+    dev.delivered(ref)  # an ack is seen at once
+    assert await dev.free_space() == 800_000 - 29 * 10_000 and walks == 2
+
+
 async def test_removed_track_held_by_the_client_is_queued(tmp_path):
     dev = _client(tmp_path)
     item, ref, m = await _put(dev, tmp_path, "One")

@@ -277,3 +277,49 @@ async def test_a_failed_check_after_eject_marks_the_device_damaged(env, tmp_path
     monkeypatch.setattr(app.sync, "_eject", ok)
     await app.sync.eject("flash")
     assert (await _device(c))["eject_failed"] is None
+
+
+_HUNG_WRITE = [
+    "[ 900.1] sd 0:0:0:0: [sdz] tag#0 FAILED Result: hostbyte=DID_OK driverbyte=DRIVER_OK cmd_age=180s",
+    "[ 900.1] sd 0:0:0:0: [sdz] tag#0 Sense Key : Medium Error [current]",
+    "[ 900.1] sd 0:0:0:0: [sdz] tag#0 Add. Sense: Write error",
+    "[ 900.1] I/O error, dev sdz, sector 1234 op 0x1:(WRITE) flags 0x0 phys_seg 8 prio class 0",
+]
+
+
+def test_wedged_needs_a_hung_command_and_a_media_error():
+    from syncmusic.infra.blockdev.mount import wedged
+
+    assert wedged(_HUNG_WRITE)
+    assert not wedged(_HUNG_WRITE[1:])  # a quick medium error: the card, not a hung disk
+    assert not wedged([_HUNG_WRITE[0].replace("180s", "2s"), *_HUNG_WRITE[1:]])
+    assert not wedged([])
+
+
+async def test_a_wedged_device_asks_for_a_replug_instead_of_a_repair(env, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from syncmusic.infra.blockdev import mount as mnt
+
+    app, c = env
+    await _register(c, tmp_path / "flash", name="Flash")
+    app.sync._mounts["flash"] = SimpleNamespace(dev_path="/dev/sdz1", path=tmp_path / "flash")
+    monkeypatch.setattr(mnt, "kernel_excerpt", lambda paths, *a, **kw: list(_HUNG_WRITE))
+    repairs = []
+
+    async def repair(device_id, resume=False):
+        repairs.append(device_id)
+
+    monkeypatch.setattr(app.sync, "repair", repair)
+    events = []
+    orig_publish = app.bus.publish
+    monkeypatch.setattr(
+        app.bus, "publish", lambda t, **kw: (events.append((t, kw)), orig_publish(t, **kw))[1]
+    )
+    try:
+        await app.sync._heal_and_resume("flash", _eio())
+    finally:
+        app.sync._mounts.pop("flash")
+    assert repairs == []
+    assert [kw["code"] for t, kw in events if t == "device.error"] == ["device_wedged"]
+    assert "Unplug and replug" in app.sync._errors["flash"]

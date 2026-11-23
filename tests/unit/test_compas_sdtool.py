@@ -286,3 +286,26 @@ async def test_automatic_update_offline_does_not_raise(tmp_path):
 
     got = await sd.check_update(releases, "0.3.0", tmp_path, None, True, httpx.MockTransport(down))
     assert got["status"] == "error" and "download failed" in got["error"]
+
+
+@pytest.mark.parametrize(
+    ("changed", "readable", "runs"),
+    [(False, True, False), (True, True, True), (False, False, True)],
+)
+async def test_the_players_library_is_built_only_when_needed(tmp_path, changed, readable, runs):
+    from types import SimpleNamespace
+
+    from syncmusic.base.device import DeviceSession
+    from syncmusic.devices.HibyR1.compas import HibyCompas
+
+    calls = tmp_path / "calls"
+    tool = _fake(tmp_path, f'echo "$1" >> {calls}\n' + OK)
+    dev = SimpleNamespace(id="card", mount=tmp_path, ctx=None, _library_readable=lambda: readable)
+    s = DeviceSession()
+    s.data["compas_music_changed"] = changed
+    sd.configure(str(tool))
+    try:
+        await HibyCompas._index(dev, s)  # type: ignore[arg-type]
+    finally:
+        sd.configure(None)
+    assert ("scan" in (calls.read_text() if calls.exists() else "")) is runs

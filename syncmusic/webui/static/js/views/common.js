@@ -293,6 +293,7 @@ export function stepText(job) {
   const st = job?.stats;
   if (!st?.phase || !["reverse", "copy", "database", "verify"].includes(st.phase)) return "";
   const speed = st.phase === "copy" ? writeSpeed(job.job_id || job.id, st.bytes) : null;
+  if (st.phase === "database" && st.waiting && job.message) return job.message; // a Wi-Fi player downloading
   return [t(`side.step.${st.phase}`, { n: st.files_done ?? 0, total: st.files_total ?? "?" }), speed ? `${bytes(speed)}/s` : ""]
     .filter(Boolean).join(" · ");
 }

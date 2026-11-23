@@ -148,3 +148,13 @@ func TestBlitScrollSamePixels(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkAnimateFrame(b *testing.B) {
+	a := benchApp(b)
+	now := time.Now()
+	a.s.drawPage(page{title: "Sync", lines: syncLines(Progress{Phase: phaseDatabase, PhaseAt: now}, now)}, 0, "64%")
+	b.ResetTimer()
+	for i := range b.N {
+		a.s.animate(now.Add(time.Duration(i) * animFrame))
+	}
+}

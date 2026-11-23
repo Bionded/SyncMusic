@@ -264,7 +264,10 @@ async def rockbox_scenario(a, mini, gentle: bool = False):
         real = snap["logs"].get("playback.log")  # type: ignore[attr-defined]
         if real is not None:  # the player's own log: put it back byte for byte
             (rb / "playback.log").write_bytes(real)
-    _assert_rockbox(dev.mount, _after_sync(snap), "/.rockbox changed")
+    expected = _after_sync(snap)
+    if real is not None:  # written back above, so it is expected again
+        expected["playback.log"] = hashlib.sha256(real).hexdigest()
+    _assert_rockbox(dev.mount, expected, "/.rockbox changed")
     assert _data_listing() == before, "the test media changed"
 
 
@@ -296,6 +299,10 @@ async def play_log_rename_scenario(a, mini, gentle: bool = False):
         sync = cfg.sync.model_copy(update={"gentle_write": True})
         cfg = await a.sync.update_device(cfg.model_copy(update={"sync": sync}))
     dev = await a.sync.open_device(cfg.id)
+    # the player was synced by another instance (every test has a fresh one): the play log is set by its home
+    if not await a.sync._home_of_mounted(cfg.id):
+        await a.sync.make_home(cfg.id)
+        dev = await a.sync.open_device(cfg.id)
     rockbox = {k: v for k, v in _rockbox_files(dev.mount).items() if k != "config.cfg"}
     files = sorted(p.relative_to(dev.mount).as_posix() for p in dev.mount.rglob("*") if p.is_file())
     raw = _config_bytes(dev.mount)

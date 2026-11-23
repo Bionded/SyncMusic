@@ -32,8 +32,12 @@ func TestScreenshots(t *testing.T) {
 	p := Progress{Phase: phaseDownload, Files: 37, FilesTotal: 412, Bytes: 912e6, BytesTotal: 9.8e9,
 		File: "Music/Океан Ельзи/Земля/07 Мало мені.flac", FileSize: 38.2e6, Started: t0.Add(-7 * time.Minute),
 		Received: 37, Removed: 5, Playlists: 2, Sent: map[string]int{"play": 14, "favourite": 3, "position": 2}}
+	plan := Progress{Phase: phasePlan, PhaseAt: t0.Add(-45 * time.Second), PlanStep: "device", PlanItems: 15427,
+		PlanFraction: 0.52, Sent: map[string]int{"play": 14}}
 	pages := map[string]page{
 		"sync": {title: T("sync.title_short"), showStatus: true, lines: syncLines(p, t0),
+			buttons: []button{{label: T("btn.stop"), kind: btnDanger}}},
+		"planning": {title: T("sync.title_short"), showStatus: true, lines: syncLines(plan, t0),
 			buttons: []button{{label: T("btn.stop"), kind: btnDanger}}},
 	}
 	fakeSys(t, map[string]string{

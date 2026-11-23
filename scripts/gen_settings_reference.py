@@ -42,7 +42,13 @@ SAFETY = (
 )
 LISTEN = ("rating_priority", "playlist_conflicts")
 NOCACHE = ("no_cache_files", "no_cache_budget_mb", "no_cache_file_max_mb")
-GENTLE = ("gentle_batch_files", "gentle_pause_s", "gentle_rate_mb_s")
+GENTLE = (
+    "gentle_batch_files",
+    "gentle_pause_s",
+    "gentle_rate_mb_s",
+    "keep_disk_awake",
+    "keep_disk_awake_s",
+)
 OWN = ("verify", "eject_after", "stay_ready", "gentle_write", "no_cache", *GENTLE, *NOCACHE)
 TYPE_KEYS = {
     "android": {"base_path": "android_base_path"}
@@ -124,7 +130,7 @@ def device_fields() -> tuple[
         if name in OWN and name not in GENTLE and name not in NOCACHE:
             continue  # drawn by devsync.js with its own strings (above)
         group = (
-            dv["ds.after_title"]
+            dv["ds.mount_title"]
             if name in MOUNT
             else dv["ds.safety_title"]
             if name in SAFETY

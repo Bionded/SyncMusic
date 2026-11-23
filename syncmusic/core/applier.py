@@ -29,6 +29,8 @@ import copy
 import errno
 import logging
 import math
+import mmap
+import os
 import sys
 import time
 import uuid
@@ -42,7 +44,8 @@ from syncmusic.base.capabilities import DeviceCapabilities
 from syncmusic.base.device import Device, DeviceSession
 from syncmusic.base.feedback import stores_ratings, stores_starred
 from syncmusic.base.library import Library, library_unavailable
-from syncmusic.base.progress import on_progress
+from syncmusic.base.progress import on_progress, on_status
+from syncmusic.core.manifest import STATE_DIR
 from syncmusic.core.models import (
     ActionKind,
     DeviceTrackRef,
@@ -191,9 +194,13 @@ class WritePacer:
         *,
         sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
+        keep_awake: Callable[[], Awaitable[None]] | None = None,
+        keep_awake_s: float = 2.0,
     ) -> None:
         self.batch, self.pause_s, self.rate = batch, pause_s, rate
+        self.keep_awake_s = keep_awake_s
         self.flush, self.sleep, self.clock = flush, sleep, clock
+        self.keep_awake = keep_awake  # pauses never leave the disk idle longer than keep_awake_s
         self.files = self.bytes = 0
         self.start: float | None = None
 
@@ -205,10 +212,20 @@ class WritePacer:
         if self.rate:
             ahead = self.bytes / self.rate - (self.clock() - self.start)
             if ahead > 0:
-                await self.sleep(ahead)
+                await self._pause(ahead)
         if self.files % self.batch == 0:
             await self.flush()
-            await self.sleep(self.pause_s)
+            await self._pause(self.pause_s)
+
+    async def _pause(self, seconds: float) -> None:
+        if self.keep_awake is None:
+            await self.sleep(seconds)
+            return
+        while seconds > 0:
+            step = min(seconds, self.keep_awake_s)
+            await self.sleep(step)
+            seconds -= step
+            await self.keep_awake()
 
 
 async def _syncfs(path: Path) -> None:
@@ -225,8 +242,75 @@ async def _no_flush() -> None:
     return None
 
 
+# default longest idle gap of a held disk while a gentle-mode sync waits
+KEEP_AWAKE_S = 2.0
+KEEP_AWAKE_FILE = STATE_DIR / "keepalive"
+KEEP_AWAKE_BLOCK = 4096  # O_DIRECT needs block-aligned sizes, offsets and buffers
+KEEP_AWAKE_BLOCKS = 16  # the reads rotate over a small file of this many blocks
+
+
+def disk_keeper(mount: Path) -> Callable[[], Awaitable[None]]:
+    """A keep-alive for the disk mounted at `mount`: each call reads one block of a small file in the state folder
+    past the page cache (O_DIRECT, rotating offset), so the disk gets a real media command and does not drop into
+    standby while the sync waits — no writes, no flash wear, no FAT updates. The file is written once if it is
+    missing. At most one read is in flight: a call while the last one still runs (a slow or wedged disk) returns
+    at once; errors are logged, the next real write reports them."""
+    path = mount / KEEP_AWAKE_FILE
+    running: list[asyncio.Task[None]] = []
+    turn = [0]
+
+    def ensure() -> None:
+        size = KEEP_AWAKE_BLOCK * KEEP_AWAKE_BLOCKS
+        try:
+            if path.stat().st_size >= size:
+                return
+        except FileNotFoundError:
+            pass
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b"\0" * size)
+
+    def read_block(offset: int, direct: bool) -> None:
+        fd = os.open(path, os.O_RDONLY | (getattr(os, "O_DIRECT", 0) if direct else 0))
+        buf = mmap.mmap(-1, KEEP_AWAKE_BLOCK)  # page-aligned, as O_DIRECT wants
+        try:
+            if not direct:  # drop the cached page so the read reaches the disk
+                os.posix_fadvise(fd, offset, KEEP_AWAKE_BLOCK, os.POSIX_FADV_DONTNEED)
+            os.preadv(fd, [buf], offset)
+        finally:
+            buf.close()
+            os.close(fd)
+
+    def read() -> None:
+        ensure()
+        offset = (turn[0] % KEEP_AWAKE_BLOCKS) * KEEP_AWAKE_BLOCK
+        turn[0] += 1
+        try:
+            read_block(offset, direct=True)
+        except OSError as e:
+            if e.errno != errno.EINVAL:
+                raise
+            read_block(offset, direct=False)  # a file system without O_DIRECT
+
+    async def run() -> None:
+        try:
+            await asyncio.to_thread(read)
+        except OSError as e:
+            log.warning("keep-alive read of %s failed: %s", path, e)
+
+    async def keep() -> None:
+        if running and not running[0].done():
+            return
+        running[:] = [asyncio.create_task(run())]
+        await asyncio.sleep(0)
+
+    return keep
+
+
 def gentle_pacer(
-    settings: SyncSettings, mount: Path, limit_mb_s: float | None = None
+    settings: SyncSettings,
+    mount: Path,
+    limit_mb_s: float | None = None,
+    keep_awake: Callable[[], Awaitable[None]] | None = None,
 ) -> WritePacer | None:
     """The pacer of a device in gentle write mode; `limit_mb_s` is the app-wide write speed limit (Settings → Sync defaults) for every disk device, the lower one wins in gentle mode. None: write at full speed."""
     limits = [
@@ -235,7 +319,12 @@ def gentle_pacer(
     rate = min(limits) * 1_000_000 if limits else None
     if settings.gentle_write:
         return WritePacer(
-            settings.gentle_batch_files, settings.gentle_pause_s, rate, lambda: _syncfs(mount)
+            settings.gentle_batch_files,
+            settings.gentle_pause_s,
+            rate,
+            lambda: _syncfs(mount),
+            keep_awake=keep_awake,
+            keep_awake_s=settings.keep_disk_awake_s,
         )
     return WritePacer(sys.maxsize, 0.0, rate, _no_flush) if rate else None
 
@@ -341,8 +430,13 @@ class Applier:
         pacer: WritePacer | None = None,
         no_cache: NoCache | None = None,
         reverse_ok: bool = True,
+        keep_awake: Callable[[], Awaitable[None]] | None = None,
+        keep_awake_s: float = KEEP_AWAKE_S,
     ) -> None:
         self.device = device
+        # called at least every keep_awake_s while the writer waits, so a held disk never idles into standby
+        self.keep_awake = keep_awake or _no_flush
+        self.keep_awake_s = keep_awake_s if keep_awake else STATUS_EVERY_S
         self.libraries = libraries
         self.chain = chain
         self.preparer = preparer
@@ -477,7 +571,14 @@ class Applier:
             msg = f"indexing {done:,} of {total:,}" if total else "indexing"
             self.progress(None, msg, phase="database")
 
-        with on_progress(indexing):
+        last: list[str] = []
+
+        def status(msg: str) -> None:
+            # a Wi-Fi player still downloading: the job says what it waits for, not the last copied file
+            self.progress(None, msg, log=not last, phase="database", waiting=True)
+            last[:] = [msg]
+
+        with on_progress(indexing), on_status(status):
             await self.device.commit(s, manifest)
 
     async def _checkpoint(
@@ -707,10 +808,11 @@ class Applier:
                     while True:
                         try:
                             work = await asyncio.wait_for(
-                                asyncio.shield(slot.ready), STATUS_EVERY_S
+                                asyncio.shield(slot.ready), min(STATUS_EVERY_S, self.keep_awake_s)
                             )
                             break
                         except TimeoutError:  # a long prepare: say what it waits for
+                            await self.keep_awake()
                             self.check_cancelled()  # a cancel does not wait for the prepare to end for the prepare to end
                             if msg := self._merge_status(window):
                                 # the merged share of this item moves the bar and the ETA; only the first
@@ -856,6 +958,7 @@ class Applier:
         while (left := until - time.monotonic()) > 0:
             self.progress(None, f"{outage.reason}: retrying in {math.ceil(left)} s")
             self.check_cancelled()
+            await self.keep_awake()
             await asyncio.sleep(min(1.0, left))
 
     async def _put_one(

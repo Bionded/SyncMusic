@@ -10,11 +10,13 @@ client's own device. It does not accept the web UI's session or API tokens, and 
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import ipaddress
 import json
 import mimetypes
 import socket
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -33,6 +35,7 @@ from syncmusic.core.client_sessions import (
     ClientSession,
     DiagnosticsRequest,
     FinishRequest,
+    PlayerDatabaseRequest,
     SyncRequest,
 )
 from syncmusic.devices.client import EVENTS_MAX, ClientEvent
@@ -219,9 +222,23 @@ def client_router(facade: AppFacade) -> APIRouter:
             "deprecations": [],
         }
 
+    async def prefetch_app(client: ClientInfo) -> None:
+        """Pairing has begun: start fetching this release's builds of the client's app now, so app-update can
+        offer them right after registration instead of on a later connection."""
+        repo = app.config.update_repo.strip()
+        if client.app not in client_apps.KNOWN_APPS or not repo or repo.lower() == "none":
+            return
+        newest = await asyncio.to_thread(client_apps.newest, client.app, app.config.data_dir)
+        if app.app_fetch.needed(newest, client.app_version or "0"):
+            # starts the download in the background (no wait)
+            await app.app_fetch.ensure(
+                client.app, app.config.data_dir, lambda: app.update_checker.releases(repo)
+            )
+
     @r.post("/pair", status_code=201)
     async def pair(body: PairRequest, request: Request) -> dict[str, Any]:
         await allowed()
+        await prefetch_app(body.client)
         address = request.client.host if request.client else "?"
         app.clients.throttle(address)
         device_id, token, continued = await app.clients.pair(
@@ -255,6 +272,7 @@ def client_router(facade: AppFacade) -> APIRouter:
         await requests_allowed()
         address = request.client.host if request.client else "?"
         app.clients.throttle(address)
+        await prefetch_app(body.client)
         req, secret = app.clients.new_request(
             body.client, body.capabilities, address, app.client_settings.client_code_minutes
         )
@@ -321,7 +339,9 @@ def client_router(facade: AppFacade) -> APIRouter:
     async def status(wait: float = 0, device_id: str = Depends(device)) -> dict[str, Any]:
         """`wait` (s, at most 30): a long poll that answers as soon as the server asks for a sync."""
         if wait > 0:
+            sessions.listened[device_id] = time.monotonic()
             await app.sync.wait_client_sync_request(device_id, min(wait, STATUS_WAIT_MAX))
+            sessions.listened[device_id] = time.monotonic()
         dev = await sessions.device(device_id)
         return sessions.status(device_id, dev, app.client_settings.client_poll_s)
 
@@ -337,7 +357,10 @@ def client_router(facade: AppFacade) -> APIRouter:
     async def get_sync(
         session_id: str, device_id: str = Depends(device)
     ) -> JSONResponse | dict[str, Any]:
-        return session_answer(sessions.get(device_id, session_id))
+        s = sessions.get(device_id, session_id)
+        if s.status == "ready":
+            await sessions.stream_refresh(s)  # files a streaming job prepared since the last call
+        return session_answer(s)
 
     @r.get("/sync/{session_id}/plan")
     async def plan_page(
@@ -513,6 +536,32 @@ def client_router(facade: AppFacade) -> APIRouter:
         app.bus.publish("client.changed", device_id=device_id)
         return info
 
+    @r.put("/player-database")
+    async def player_database(
+        body: PlayerDatabaseRequest, device_id: str = Depends(device)
+    ) -> dict[str, Any]:
+        """The card's current player database (Compás tagcache files), uploaded before a sync: the server builds
+        the next database for the card over it, reading only the files that are new."""
+        try:
+            files = {f.name: base64.b64decode(f.data, validate=True) for f in body.files}
+        except ValueError as e:
+            raise ClientError("bad_request", "a file is not valid base64", 400) from e
+        dev = await sessions.device(device_id)
+        try:
+            size = await asyncio.to_thread(dev.store_card_database, files)
+        except ValueError as e:
+            raise ClientError("bad_request", str(e), 400) from e
+        return {"files": len(files), "size": size}
+
+    @r.post("/rebuild-database")
+    async def rebuild_database(device_id: str = Depends(device)) -> dict[str, Any]:
+        """'Rebuild player database' in the app: the next sync builds the player's database from scratch (the
+        app syncs right after asking)."""
+        dev = await sessions.device(device_id)
+        await asyncio.to_thread(dev.request_rebuild)
+        app.bus.publish("client.changed", device_id=device_id)
+        return {"requested": True}
+
     @r.post("/sync/{session_id}/confirm")
     async def confirm(session_id: str, device_id: str = Depends(device)) -> dict[str, Any]:
         """The user confirmed on the client a plan that waits for confirmation (device setting)."""
@@ -683,6 +732,9 @@ def admin_router(facade: AppFacade) -> APIRouter:
             "session": session,
             "diagnostics": diag,
             "sync_requested": app.sync.sync_requested(device_id),
+            "app_listening": app.client_sessions.app_listening(device_id),
+            "player_database": dev.settings.player_database,
+            "rebuild_requested": dev.rebuild_requested,
         }
 
     @r.post("/{device_id}/sync", response_model=None)
@@ -694,6 +746,20 @@ def admin_router(facade: AppFacade) -> APIRouter:
                 {"error": "not_found", "message": "no such client"}, status_code=404
             )
         app.sync.request_client_sync(device_id)
+        return {"requested": True}
+
+    @r.post("/{device_id}/rebuild-database", response_model=None)
+    async def request_rebuild(device_id: str) -> JSONResponse | dict[str, Any]:
+        """'Rebuild player database' on the device page: built from scratch at the next sync, which is asked for
+        right away (the app starts it while it is open, else when it next asks)."""
+        if await app.clients.get(device_id) is None:
+            return JSONResponse(
+                {"error": "not_found", "message": "no such client"}, status_code=404
+            )
+        dev = await app.client_sessions.device(device_id)
+        await asyncio.to_thread(dev.request_rebuild)
+        app.sync.request_client_sync(device_id)
+        app.bus.publish("client.changed", device_id=device_id)
         return {"requested": True}
 
     @r.delete("/{device_id}/outbox", response_model=None)

@@ -41,6 +41,12 @@ export function helpTip(topic) {
     aria-expanded="false" aria-haspopup="dialog">?</button>`;
 }
 
+/** A "?" button whose popover shows `text` itself (a setting's longer explanation); no docs link. */
+export function textTip(title, text) {
+  return html`<button type="button" class="help-tip" data-help-text="${text}" data-help-title="${title}" aria-label="${t("help.label", { topic: title })}"
+    aria-expanded="false" aria-haspopup="dialog">?</button>`;
+}
+
 let open = null; // { btn, pop }
 
 function close({ focus = false } = {}) {
@@ -62,19 +68,21 @@ function place(btn, pop) {
 
 function show(btn) {
   const topic = btn.dataset.help;
+  const own = !topic; // a setting's own text
   const pop = document.createElement("div");
   pop.className = "help-pop";
-  pop.id = `help-pop-${topic}`;
+  pop.id = own ? "help-pop-text" : `help-pop-${topic}`;
   pop.setAttribute("role", "dialog");
-  pop.setAttribute("aria-label", t(`help.${topic}.title`));
-  pop.innerHTML = String(html`<p>${t(`help.${topic}`)}</p>
+  pop.setAttribute("aria-label", own ? btn.dataset.helpTitle : t(`help.${topic}.title`));
+  pop.innerHTML = own ? String(html`<p>${btn.dataset.helpText}</p>`) : String(html`<p>${t(`help.${topic}`)}</p>
     <a href="${DOCS_BASE}${DOCS[topic]}" target="_blank" rel="noopener">${t("help.more")}</a>`);
+  if (own) pop.tabIndex = -1;
   document.body.append(pop);
   place(btn, pop);
   btn.setAttribute("aria-expanded", "true");
   btn.setAttribute("aria-controls", pop.id);
   open = { btn, pop };
-  $("a", pop).focus();
+  (own ? pop : $("a", pop)).focus();
 }
 
 document.addEventListener("click", (e) => {

@@ -57,6 +57,7 @@ from syncmusic.core.applier import (
     DeviceIOError,
     DeviceLostError,
     describe,
+    disk_keeper,
     gentle_pacer,
     storage_failure,
     track_ref,
@@ -375,6 +376,8 @@ APPLY_ONLY_SYNC_FIELDS = frozenset(
         "gentle_batch_files",
         "gentle_pause_s",
         "gentle_rate_mb_s",
+        "keep_disk_awake",
+        "keep_disk_awake_s",
         "verify",
         "no_cache",
         "no_cache_files",
@@ -519,6 +522,9 @@ class SyncService:
         # device id -> {reason, plan_id} of a connect-time sync that waits for the user
         self._waiting: dict[str, dict[str, Any]] = {}
         self._client_sync_wanted: set[str] = set()  # Wi-Fi clients told to sync on their next poll
+        self._stream_ends: dict[
+            str, asyncio.Task[None]
+        ] = {}  # job id -> drops its server-started stream
         self._client_wakeups: dict[str, asyncio.Event] = {}  # long polls waiting for 'Sync now'
         self._scheduled_on: dict[
             str, dt.date
@@ -3095,7 +3101,48 @@ class SyncService:
             )
             return report.model_dump(mode="json")
 
-        return self.ctx.jobs.submit("sync", f"sync {cfg.name}", job, device_id=cfg.id)
+        stream = await self._server_stream(cfg, plan)
+
+        async def streamed(ctx: JobContext) -> dict[str, Any]:
+            try:
+                return await job(ctx)
+            finally:
+                self._end_server_stream(cfg.id, stream)
+
+        try:
+            info = self.ctx.jobs.submit(
+                "sync", f"sync {cfg.name}", streamed if stream else job, device_id=cfg.id
+            )
+        except BaseException:
+            self._end_server_stream(cfg.id, stream)
+            raise
+        if stream is not None:
+            self.request_client_sync(cfg.id)  # the app starts its session and attaches to this job
+        return info
+
+    async def _server_stream(self, cfg: DeviceConfig, plan: SyncPlan) -> Any:
+        """A plan applied on the server for a Wi-Fi client that streams: the job writes only a few files ahead
+        of the client's downloads, like a sync the client started, instead of the whole plan into the outbox."""
+        from syncmusic.devices.client import STREAMS, Stream
+
+        if (
+            cfg.type != "client" or cfg.id in STREAMS
+        ):  # no client, or the client's own session applies it
+            return None
+        dev = await self.open_device(cfg.id)
+        if not (getattr(dev, "state", None) and dev.state.capabilities.get("stream")):  # type: ignore[attr-defined]
+            return None
+        from syncmusic.core import client_sessions
+
+        st = Stream(client_sessions.STREAM_AHEAD_FILES, client_sessions.STREAM_AHEAD_BYTES, plan)
+        STREAMS[cfg.id] = st
+        return st
+
+    def _end_server_stream(self, device_id: str, stream: Any) -> None:
+        from syncmusic.devices.client import STREAMS
+
+        if stream is not None and STREAMS.get(device_id) is stream:
+            STREAMS.pop(device_id, None)
 
     async def _sync_time(self, cfg: DeviceConfig, device: Device) -> bool:
         """Set the device clock when it supports it and is connected as a disk.
@@ -3533,6 +3580,15 @@ class SyncService:
                 await self.store.remap_pending(cfg.id, pc.relinks)
         if not update:
             self.ctx.bus.publish("sync.started", device_id=cfg.id, plan_id=plan.id)
+        keep_awake = (
+            disk_keeper(device.mount)
+            if cfg.sync.gentle_write
+            and cfg.sync.keep_disk_awake
+            and not update
+            and not device.network
+            and cfg.id in self._mounts
+            else None
+        )
         applier = Applier(
             device,
             libraries,
@@ -3546,8 +3602,13 @@ class SyncService:
             pacer=None
             if update or device.network
             else gentle_pacer(
-                cfg.sync, device.mount, (await self.store.app_settings()).write_limit_mb_s
+                cfg.sync,
+                device.mount,
+                (await self.store.app_settings()).write_limit_mb_s,
+                keep_awake,
             ),
+            keep_awake=keep_awake,
+            keep_awake_s=cfg.sync.keep_disk_awake_s,
             no_cache=NoCache.of(cfg.sync),
             reverse_ok=not reverse.failed,
         )
@@ -4802,6 +4863,7 @@ class SyncService:
                 device_id,
                 e,
             )
+            self._log_kernel_excerpt(device_id)
             self.ctx.bus.publish(
                 "device.error",
                 device_id=device_id,
@@ -4809,6 +4871,29 @@ class SyncService:
                 error=f"the file system reports {why}: check and repair it, or wipe it",
             )
         return True
+
+    def _log_kernel_excerpt(self, device_id: str) -> None:
+        """Log the kernel's recent messages about the device's disk next to an I/O error, so the job log shows
+        whether the USB link, the card or the file system failed."""
+        m = self._mounts.get(device_id)
+        if m is None:
+            return
+
+        async def run() -> None:
+            lines = await asyncio.to_thread(mnt.kernel_excerpt, [m.dev_path])
+            if lines:
+                log.warning(
+                    "%s: kernel messages about %s:\n%s", device_id, m.dev_path, "\n".join(lines)
+                )
+            else:
+                log.info("%s: no kernel messages about %s", device_id, m.dev_path)
+
+        try:
+            task = asyncio.get_running_loop().create_task(run())
+        except RuntimeError:
+            return
+        self._update_tasks.add(task)
+        task.add_done_callback(self._update_tasks.discard)
 
     def mark_manifest_damaged(self, device_id: str | None, e: BaseException) -> None:
         """Reading the manifest (and its backup) of `device_id` failed: the device page offers a rebuild."""
@@ -4883,6 +4968,19 @@ class SyncService:
                 self._skip_offer[device_id] = (err.ref, err.item)
             self.ctx.bus.publish(
                 "device.error", device_id=device_id, code="storage_failing", error=msg
+            )
+            return
+        m = self._mounts.get(device_id)
+        kernel = await asyncio.to_thread(mnt.kernel_excerpt, [m.dev_path]) if m else []
+        if mnt.wedged(kernel):
+            msg = (
+                "the player stopped answering (its disk hung and reported a write error). Unplug and replug it "
+                "(an iPod: hold Menu and Select until it restarts), then check and repair it"
+            )
+            log.error("%s: %s; kernel messages:\n%s", device_id, msg, "\n".join(kernel))
+            self._errors[device_id] = msg
+            self.ctx.bus.publish(
+                "device.error", device_id=device_id, code="device_wedged", error=msg
             )
             return
         self._healed[device_id] = time.monotonic()

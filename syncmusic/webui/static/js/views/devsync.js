@@ -12,6 +12,7 @@ import { windowsEditor, bindWindows, readWindows } from "../windows.js";
 addStrings({
   "ds.upd_title": "Automatic updates",
   "ds.upd_text": "Brings plays, ratings and positions back to the libraries, then pushes changed tags, ratings, smart playlists and positions to the device. Never copies new files. Skips quietly when nothing changed and never runs during a full sync.",
+  "ds.upd_text_nolisten": "Pushes changed tags, ratings, smart playlists and positions to the device. Never copies new files. Skips quietly when nothing changed and never runs during a full sync.",
   "ds.upd_on": "When connected, keep it updated automatically",
   "ds.every": "Check the libraries for changes every",
   "ds.every_sub": "Also runs right after a library reports a change.",
@@ -37,8 +38,9 @@ addStrings({
   "ds.when.manual": "Never",
   "ds.when.manual_text": "Only the automatic update runs. Start a full sync from here when you want.",
   "ds.schedule_title": "Schedule",
-  "ds.after_title": "After a sync and mounting",
-  "ds.after_text": "What happens once files are written, and how the device's disk is mounted.",
+  "ds.after_title": "After a sync",
+  "ds.after_text": "What happens once files are written.",
+  "ds.mount_title": "Mounting",
   "ds.safety_title": "Safety",
   "ds.listen_title": "Ratings and playlists",
   "ds.nightly": "Full sync every night while connected",
@@ -78,7 +80,7 @@ const VERIFY = ["all", "sample", "off"];
 const EJECT = ["off", "full", "any"];
 // shown in their own cards: gentle write mode is in Device settings, verify above
 const NOCACHE = ["no_cache_files", "no_cache_budget_mb", "no_cache_file_max_mb"];
-const OWN = ["verify", "eject_after", "stay_ready", "gentle_write", "gentle_batch_files", "gentle_pause_s", "gentle_rate_mb_s", "no_cache", ...NOCACHE];
+const OWN = ["verify", "eject_after", "stay_ready", "gentle_write", "gentle_batch_files", "gentle_pause_s", "gentle_rate_mb_s", "keep_disk_awake", "keep_disk_awake_s", "no_cache", ...NOCACHE];
 
 const radios = (name, values, current, label, text) => html`<div class="segr" role="radiogroup" aria-label="${label}">${values.map((v) =>
   html`<label><input type="radio" name="${name}" value="${v}" ${v === current ? "checked" : ""}><span>${text(v)}</span></label>`)}</div>`;
@@ -94,29 +96,31 @@ export function syncTab(ctx, updateLine) {
   const { cfg, type } = ctx.state;
   if (!type) { const e = errorBox({ message: `unknown device type ${cfg.type}` }, ""); return { when: e, after: "", safety: "", listen: "", writing: "", advanced: "" }; }
   const props = type.sync_schema?.properties || {};
-  const part = (keys) => (keys.some((k) => k in props) ? schemaForm(type.sync_schema, cfg.sync, { prefix: "s-", only: keys }) : null);
-  const mount = part(MOUNT), safety = part(SAFETY), listen = part(LISTEN);
+  const part = (keys) => (keys.some((k) => k in props) ? schemaForm(type.sync_schema, cfg.sync, { tips: true, prefix: "s-", only: keys }) : null);
+  const disk = !cfg.mount_path && !type.network;
+  // mount options only mean something for a disk the app mounts itself (not a folder or a server)
+  const mount = disk ? part(MOUNT) : null, safety = part(SAFETY), listen = part(LISTEN);
   const rest = Object.keys(props).filter((k) => ![...OWN, ...MOUNT, ...SAFETY, ...LISTEN].includes(k));
-  const advanced = rest.length ? schemaForm(type.sync_schema, cfg.sync, { prefix: "s-", only: rest }) : null;
+  const advanced = rest.length ? schemaForm(type.sync_schema, cfg.sync, { tips: true, prefix: "s-", only: rest }) : null;
   const nocache = "no_cache" in props ? part(NOCACHE) : null;
   ctx.state.syncForms = { advanced, nocache, mount, safety, listen };
   const on = cfg.update_sync;
+  // a device that keeps no listening data (a flash drive) has nothing played to remove and nothing to bring back
+  const c = type.capabilities || {};
+  const listens = !!(c.supports_playcounts_read || c.supports_ratings_read || c.supports_favourites_read || c.supports_positions_read);
   const every = cfg.update_every_min === null ? "off" : String(cfg.update_every_min);
-  const disk = !cfg.mount_path && !type.network;
-  const when = html`<section class="card ds-card"><div><h2>${t("ds.upd_title")} ${helpTip("update_full")}</h2><p class="ds-sub">${t("ds.upd_text")}</p></div>
+  const when = html`<section class="card ds-card"><div><h2>${t("ds.upd_title")} ${helpTip("update_full")}</h2><p class="ds-sub">${t(listens ? "ds.upd_text" : "ds.upd_text_nolisten")}</p></div>
       <label class="ds-check"><input type="checkbox" id="dsUpd" ${on ? "checked" : ""}><span>${t("ds.upd_on")}</span></label>
       <div class="ds-row" data-needs-upd ${on ? "" : "data-off"}><span class="ds-label">${t("ds.every")}<small>${t("ds.every_sub")}</small></span>
         ${radios("dsEvery", EVERY.includes(every) ? EVERY : [...EVERY.slice(0, -1), every, "off"], every, t("ds.every_label"),
           (v) => (EVERY.includes(v) ? t(`ds.every.${v}`) : t("ds.every_min", { n: v })))}</div>
       <label class="ds-check" data-needs-upd ${on ? "" : "data-off"}><input type="checkbox" id="dsRemovals" ${cfg.update_removals ? "checked" : ""}>
         <span class="ds-label">${t("ds.removals")}<small>${t("ds.removals_sub")}</small></span></label>
-      <label class="ds-check" data-needs-upd ${on ? "" : "data-off"}><input type="checkbox" id="dsPlayed" ${cfg.update_remove_played !== false ? "checked" : ""}>
-        <span class="ds-label">${t("ds.played")}<small>${t("ds.played_sub")}</small></span></label>
-      <div class="ds-foot">${updateLine}</div></section>
-    <section class="card ds-card"><div><h2>${t("ds.full_title")}</h2><p class="ds-sub">${t("ds.full_text")}</p></div>
-      <div class="ds-options" role="radiogroup" aria-label="${t("ds.full_title")}">${WHEN.map((w) =>
-        html`<label class="option"><input type="radio" name="dsWhen" value="${w}" ${cfg.on_connect === w ? "checked" : ""}>
-          <span><b>${t(`ds.when.${w}`)}</b><small>${t(`ds.when.${w}_text`)}</small></span></label>`)}</div></section>
+      ${listens ? html`<label class="ds-check" data-needs-upd ${on ? "" : "data-off"}><input type="checkbox" id="dsPlayed" ${cfg.update_remove_played !== false ? "checked" : ""}>
+        <span class="ds-label">${t("ds.played")}<small>${t("ds.played_sub")}</small></span></label>` : ""}
+      </section>
+    <section class="card ds-card" data-full-card><div class="ds-row"><span class="ds-label"><b>${t("ds.full_title")}</b><small data-when-text>${t(`ds.when.${cfg.on_connect}_text`)}</small></span>
+      ${radios("dsWhen", WHEN, cfg.on_connect, t("ds.full_title"), (w) => t(`ds.when.${w}`))}</div></section>
     <section class="card ds-card" data-schedule-card><h2>${t("ds.schedule_title")}</h2>
       <div class="ds-row"><label class="ds-check ds-grow"><input type="checkbox" id="dsNightly" ${cfg.sync_at ? "checked" : ""}><span>${t("ds.nightly")}</span></label>
         <input type="time" id="s-sync_at" class="ds-time" value="${cfg.sync_at || "03:00"}" aria-label="${t("ds.nightly_time")}" ${cfg.sync_at ? "" : "disabled"}></div>
@@ -128,7 +132,7 @@ export function syncTab(ctx, updateLine) {
         ${radios("dsEject", EJECT, cfg.sync.eject_after || "off", t("ds.eject"), (v) => t(`ds.eject.${v}`))}</div>`}
       ${disk ? html`<label class="ds-check"><input type="checkbox" id="dsReady" ${cfg.sync.stay_ready ? "checked" : ""}>
         <span class="ds-label">${t("ds.ready")}<small>${t("ds.ready_sub")}</small></span></label>` : ""}
-      ${mount ? mount.html : ""}</section>`;
+      </section>`;
   const safetyCard = html`<section class="card ds-card" data-safety-card><h2>${t("ds.safety_title")}</h2>
       <div class="ds-row"><span class="ds-label">${t("ds.threshold")}<small>${t("ds.threshold_sub")}</small></span>
         <span class="ds-num"><input id="dsThreshold" inputmode="numeric" value="${cfg.delete_threshold_pct}" aria-label="${t("ds.threshold_label")}">${t("ds.threshold_unit")}</span></div>
@@ -138,10 +142,10 @@ export function syncTab(ctx, updateLine) {
   return {
     when, after, safety: safetyCard,
     listen: listen ? html`<section class="card ds-card" data-listen-card><h2>${t("ds.listen_title")}</h2>${listen.html}</section>` : "",
-    writing: nocache ? html`<section class="card ds-card" data-nocache><div><h2>${t("ds.nocache_title")} ${helpTip("cache")}</h2><p class="ds-sub">${t("ds.nocache_text")}</p></div>
+    writing: html`${mount ? html`<section class="card ds-card" data-mount-card><h2>${t("ds.mount_title")}</h2>${mount.html}</section>` : ""}${nocache ? html`<section class="card ds-card" data-nocache><div><h2>${t("ds.nocache_title")} ${helpTip("cache")}</h2><p class="ds-sub">${t("ds.nocache_text")}</p></div>
       <label class="ds-check"><input type="checkbox" id="dsNoCache" ${cfg.sync.no_cache ? "checked" : ""}>
         <span class="ds-label">${t("ds.nocache")}<small>${t("ds.nocache_sub")}</small></span></label>
-      <div data-nocache-fields ${cfg.sync.no_cache ? "" : "hidden"}>${nocache.html}</div></section>` : "",
+      <div data-nocache-fields ${cfg.sync.no_cache ? "" : "hidden"}>${nocache.html}</div></section>` : ""}`,
     advanced: advanced ? html`<section class="card ds-card" data-advanced-card><details class="ds-adv"><summary>${t("ds.advanced")}</summary>${advanced.html}</details></section>` : "",
   };
 }
@@ -242,7 +246,7 @@ export function readSync(ctx, form) {
     update_sync: form.querySelector("#dsUpd").checked,
     update_every_min: every === "off" ? null : Number(every),
     update_removals: form.querySelector("#dsRemovals").checked,
-    update_remove_played: form.querySelector("#dsPlayed").checked,
+    update_remove_played: form.querySelector("#dsPlayed") ? form.querySelector("#dsPlayed").checked : cfg.update_remove_played,
     remove_deleted: form.querySelector("#dsDeleted").checked,
     on_connect: value("dsWhen"),
     sync_at: form.querySelector("#dsNightly").checked ? form.querySelector("#s-sync_at").value || "03:00" : null,

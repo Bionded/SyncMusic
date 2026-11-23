@@ -45,7 +45,8 @@ class FlashDriveSettings(BaseModel):
     # the folder on the stick the path templates start in; "" = the stick's root. A change moves
     # the files on the next sync
     base_folder: str = ""
-    filesystem: str | None = None  # override the detected filesystem (path rules)
+    # override the detected filesystem (path rules); offered as a choice, older free-text values still load
+    filesystem: str | None = Field(None, json_schema_extra={"enum": list(FILESYSTEMS)})
     ascii_only: bool = False  # transliterate names for players without Unicode fonts
     # car stereos and old players: ASCII names and short paths; a change renames on the next sync
     car_mode: bool = False
