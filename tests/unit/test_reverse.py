@@ -563,6 +563,52 @@ def test_new_feedback_filters_by_sink_settings_and_orphans(tmp_path):
     # no manifest: nothing is an orphan
     assert "nd/orphan" in _new_feedback(fb, plays, None, libs, ReverseSyncSettings(), True).stars
 
+    # each switch blocks exactly its own kind
+    on = {"plays": True, "favourites": True, "ratings": True, "positions": True, "finished": True}
+    done = PositionInfo(position_s=99.0, finished=True, updated_at=T0)
+    fb2 = fb.model_copy(update={"positions": dict.fromkeys(keys, done)})
+    for name, field in (
+        ("plays", "plays"),
+        ("favourites", "stars"),
+        ("ratings", "ratings"),
+        ("positions", "positions"),
+    ):
+        one = _new_feedback(
+            fb2, plays, manifest, libs, ReverseSyncSettings(**on | {name: False}), True
+        )
+        for other in ("plays", "stars", "ratings", "positions"):
+            assert bool(getattr(one, other)) is (other != field), (name, other)
+    # finished off: the position still goes, without the 'played' flag
+    kept = _new_feedback(
+        fb2, plays, manifest, libs, ReverseSyncSettings(**on | {"finished": False}), True
+    )
+    assert {p.position_s for p in kept.positions.values()} == {99.0}
+    assert not any(p.finished for p in kept.positions.values())
+    assert all(
+        p.finished
+        for p in _new_feedback(
+            fb2, plays, manifest, libs, ReverseSyncSettings(), True
+        ).positions.values()
+    )
+
+
+def test_older_ratings_switch_covers_favourites():
+    """A config saved before favourites had their own switch: its ratings value applies to both."""
+    assert ReverseSyncSettings.model_validate({"ratings": False}).favourites is False
+    assert ReverseSyncSettings.model_validate({"ratings": True}).favourites is True
+    assert (
+        ReverseSyncSettings.model_validate({"ratings": False, "favourites": True}).favourites
+        is True
+    )
+    old = ReverseSyncSettings.model_validate({"enabled": True, "plays": False, "ratings": False})
+    assert (old.plays, old.ratings, old.favourites, old.positions, old.finished) == (
+        False,
+        False,
+        False,
+        True,
+        True,
+    )
+
 
 async def test_plays_of_another_installations_items_are_kept_for_it(env):
     """Items of a library this installation does not have (`ext:`): their plays are not sent and not lost - the

@@ -17,6 +17,7 @@ from pydantic import AfterValidator, BaseModel
 
 from syncmusic.base.capabilities import LibraryCapabilities
 from syncmusic.base.context import AppContext
+from syncmusic.core.audio_identity import audio_identity as identity_of
 from syncmusic.core.models import HealthStatus, LibraryConfig, LibrarySnapshot, Lyrics
 from syncmusic.core.rules.fields import ALL_FIELDS
 
@@ -163,6 +164,30 @@ class Library(ABC):
     async def open_media(self, item_id: str) -> AsyncIterator[bytes] | Path:
         """Original file: a local path, or an async byte stream."""
 
+    async def read_range(self, item_id: str, offset: int, length: int) -> bytes | None:
+        """`length` bytes of the original file from `offset` (fewer at its end), without fetching the rest.
+        None (default) = the library cannot read a part of a file; then no audio identity is known."""
+        return None
+
+    async def audio_identity(self, item_id: str, size: int) -> str | None:
+        """The identity of the item's audio without its tags (`core.audio_identity`): equal for a file whose tags
+        were rewritten. None when the library cannot read parts of its files or the format is unknown."""
+        unreadable = False
+
+        async def read(offset: int, length: int) -> bytes:
+            nonlocal unreadable
+            data = await self.read_range(item_id, offset, length)
+            if data is None:
+                unreadable = True
+                raise ValueError("no partial reads")
+            return data
+
+        try:
+            ident = await identity_of(read, size)
+        except ValueError:
+            return None
+        return None if unreadable else ident
+
     async def open_cover(self, item_id: str) -> bytes | None:
         return None
 
@@ -188,6 +213,30 @@ class Library(ABC):
 
     async def close(self) -> None:
         """Release connections."""
+
+
+async def ranged_get(
+    client: httpx.AsyncClient, request: httpx.Request, offset: int, length: int
+) -> bytes | None:
+    """`request` (a media download) with a Range header for `length` bytes from `offset`. None when the server
+    sends the whole file instead (no Range support: the body is not read) or the request fails; b"" past the end."""
+    import httpx
+
+    request.headers["Range"] = f"bytes={offset}-{offset + length - 1}"
+    try:
+        response = await client.send(request, stream=True)
+    except httpx.HTTPError:
+        return None
+    try:
+        if response.status_code == 416:
+            return b""
+        if response.status_code != 206:
+            return None
+        return (await response.aread())[:length]
+    except httpx.HTTPError:
+        return None
+    finally:
+        await response.aclose()
 
 
 async def body_chunks(response: httpx.Response, item_id: str) -> AsyncIterator[bytes]:

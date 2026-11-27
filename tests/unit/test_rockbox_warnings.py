@@ -74,6 +74,7 @@ async def test_reverse_report_carries_the_warning(tmp_path):
         report = await ReverseSync(Store(db)).run(dev.config, dev, {})
         assert report.warnings == [rf.PLAY_LOG_PENDING_WARNING] and report.errors == []
         dev.config.reverse_sync.plays = dev.config.reverse_sync.ratings = False
+        dev.config.reverse_sync.favourites = False
         assert (await ReverseSync(Store(db)).run(dev.config, dev, {})).warnings == []
     finally:
         await db.close()

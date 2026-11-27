@@ -33,9 +33,14 @@ def test_each_device_type_declares_ratings_and_hearts(type_name, expected):
 
 def test_reverse_settings_show_only_what_the_device_records():
     assert "ratings" not in _reverse_sync_schema("flashdrive")["properties"]
-    assert "ratings" in _reverse_sync_schema("hiby")["properties"]
-    assert {"plays", "ratings", "positions"} <= set(_reverse_sync_schema("client")["properties"])
-    assert "positions" not in _reverse_sync_schema("rockbox")["properties"]
+    hiby = _reverse_sync_schema("hiby")["properties"]  # hearts, no stars
+    assert "favourites" in hiby and "ratings" not in hiby
+    assert {"plays", "favourites", "ratings", "positions", "finished"} <= set(
+        _reverse_sync_schema("client")["properties"]
+    )
+    rockbox = _reverse_sync_schema("rockbox")["properties"]  # stars, no hearts, no positions
+    assert "ratings" in rockbox and "favourites" not in rockbox
+    assert "positions" not in rockbox and "finished" not in rockbox
 
 
 def test_a_heart_never_becomes_stars_and_stars_never_a_heart():

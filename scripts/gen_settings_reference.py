@@ -146,6 +146,8 @@ def device_fields() -> tuple[
         groups.setdefault(group, []).append((label, (text + where(name, "sync")).strip()))
     for name, prop in facade.ReverseSyncSettings.model_json_schema()["properties"].items():
         label, text = field_text(f, name, prop, name)
+        if name == "enabled":  # the master switch, drawn by devices.js with its own strings
+            label, text = dev["dev.set_reverse"], dev["dev.set_reverse_sub"]
         groups.setdefault(dev["dev.settings_reverse"], []).append(
             (label, (text + where(name, "reverse")).strip())
         )

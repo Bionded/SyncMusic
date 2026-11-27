@@ -139,6 +139,17 @@ def _close_pages():
             page.context.close()
 
 
+# Chromium aborts in-flight requests, loopback included, with ERR_NETWORK_CHANGED whenever any interface on the
+# host appears or disappears (e.g. another Docker network being removed); the UI retries them on its next poll, so
+# they say nothing about the page under test
+_HOST_NOISE = ("net::ERR_NETWORK_CHANGED",)
+
+
+def _console_error(page, m) -> None:
+    if m.type == "error" and not any(n in m.text for n in _HOST_NOISE):
+        page.errors.append(f"{m.text} [{m.location.get('url', '')}]")
+
+
 def open_page(chrome, url: str, width: int = 1280, height: int = 800, settings_all: bool = True):
     """A page on `url` with console errors collected in `page.errors` (asserted empty by the tests); closed (with
     its own context) when the test ends. `settings_all`: Settings and a device's Settings tab start with every
@@ -152,12 +163,7 @@ def open_page(chrome, url: str, width: int = 1280, height: int = 800, settings_a
     page.errors = []
     page.on("pageerror", lambda e: page.errors.append(str(e)))
     # with the URL: "Failed to load resource" alone does not say which request failed
-    page.on(
-        "console",
-        lambda m: (
-            m.type == "error" and page.errors.append(f"{m.text} [{m.location.get('url', '')}]")
-        ),
-    )
+    page.on("console", lambda m: _console_error(page, m))
     page.goto(url)
     return page
 

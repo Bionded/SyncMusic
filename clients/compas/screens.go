@@ -680,6 +680,7 @@ func serverOnly(url string) string {
 func (a *App) about() page {
 	return page{title: T("about.title"), lines: []line{
 		{text: T("about.version", version), col: colText},
+		{text: T("about.alpha"), col: colWarn},
 		{text: T("home.server", a.c.st.Server), col: colText},
 		{text: T("about.device", a.c.st.DeviceID), col: colText},
 		{text: T("about.log"), col: colDim},

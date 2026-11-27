@@ -111,6 +111,9 @@ class Track(BaseModel):
     published: UtcDatetime | None = None  # podcast episode publication date
     # change detection: anything that changes when the source file changes (size/mtime, etag)
     source_state: str = ""
+    # the audio without its tags (core.audio_identity), read only when needed: a changed source_state with the
+    # same audio is a tag rewrite in the library, not a new file
+    audio_id: str | None = None
     extra: dict[str, Any] = {}  # library-specific fields usable by rules (`extra.<key>`)
 
 
@@ -379,12 +382,29 @@ class ProcessorTemplate(BaseModel):
 
 
 class ReverseSyncSettings(BaseModel):
+    # master switch: nothing goes back from the player when off; the switches below pick what does
     enabled: bool = True
+    # a play goes back as one scrobble: the library's play count and last played move together
     plays: bool = True
+    # hearts (starred) on the player
+    favourites: bool = True
+    # stars on the player
     ratings: bool = True
+    # resume positions of audiobooks and podcasts
     positions: bool = True
+    # 'played to the end' flags of episodes and books (sent with their positions)
+    finished: bool = True
     # device edits of library playlists go back to the library (players that edit playlists)
     playlists: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _split_favourites(cls, data: Any) -> Any:
+        """Older builds had one `ratings` switch for stars and hearts: a stored value applies to both."""
+        if isinstance(data, dict) and "ratings" in data and "favourites" not in data:
+            return {**data, "favourites": data["ratings"]}
+        return data
+
     # no play thresholds here: the Rockbox settings `play_min_fraction` / `play_min_seconds` are the only ones
     # ; DeviceConfig moves values stored by older builds there
 
@@ -892,6 +912,7 @@ class ManifestEntry(BaseModel):
     path: str  # relative path on the device
     size: int
     source_state: str = ""
+    audio_id: str | None = None  # of the source the file was made from (Track.audio_id), when known
     chain_hash: str = ""
     meta_hash: str = ""  # hash of metadata written to the device (detects update_meta)
     # what `chain_hash` is made of, per part (Chain.processing): a changed hash names the processor and whether the

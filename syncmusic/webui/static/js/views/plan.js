@@ -124,7 +124,8 @@ addStrings({
   "plan.showing": "Showing {shown} of {n}. Download the list for every item.",
   "plan.sample": "Showing {shown} of {n}: a sample spread over artists, albums and reasons.",
   "plan.loading_items": "Loading the items…",
-  "plan.items_failed": "Could not load the items.",
+  "plan.items_failed": "The list could not be loaded. The plan may be out of date: make a new plan.",
+  "plan.items_stale": "The plan changed since this page opened and these items are no longer in it. Make a new plan.",
   "plan.nothing_here": "Nothing here.",
   "plan.no_match": "No item matches “{q}”.",
   "plan.why.keep": "Still matches",
@@ -177,7 +178,7 @@ addStrings({
   "plan.no_fit_title": "Not everything fits on the device",
   "plan.no_fit_text": "Edit the templates, or force the sync: items of the lowest-priority templates are left off until the rest fits.",
   "plan.rule": "Template",
-  "plan.items": "Items",
+  "plan.items_col": "Items",
   "plan.size": "Size",
   "plan.dropped": "Left off",
   "plan.suggestions": "Suggestions",
@@ -289,6 +290,12 @@ export async function render(ctx) {
     return html`${head(ctx)}<div class="card"><div class="card-body" data-no-libraries>
       <div class="callout">${t("plan.no_libraries", { name: info.config.name })}</div>
       <a class="btn primary" style="margin-top:12px" href="#/devices/${lid}/rules">${t("plan.attach")}</a></div></div>`;
+  }
+  if (!ctx.params.planId && info.plan_id && !ctx.state.planning
+      && ctx.query.get("force") !== "1" && ctx.query.get("again") !== "1") {
+    // a plan of this device is ready (on-connect ask, the dashboard's Review): open it, no new plan
+    goFrom(ctx, `/devices/${encodeURIComponent(id)}/plan/${encodeURIComponent(info.plan_id)}`, { replace: true });
+    return "";
   }
   if (!ctx.params.planId) {
     // plan now with its progress on screen, then replace the URL by the plan's (Back does not plan
@@ -533,6 +540,7 @@ function listBody(ctx) {
     count = shown.length;
   } else if (full && full.key === key) {
     if (full.error) return html`${listFilters(ctx)}<div class="plan-empty" data-items-error>${t("plan.items_failed")}</div>`;
+    if (!narrowed && !full.total && n) return html`${listFilters(ctx)}<div class="plan-empty" data-items-stale>${t("plan.items_stale")}</div>`;
     shown = full.rows;
     count = full.total;
   } else {
@@ -855,7 +863,7 @@ function planSuggestion(ctx) {
 
 function perRule(plan) {
   if (!plan.space.per_rule.length) return "";
-  return html`<div class="table-wrap"><table class="table"><thead><tr><th>${t("plan.rule")}</th><th>${t("plan.items")}</th><th>${t("plan.size")}</th><th>${t("plan.dropped")}</th></tr></thead>
+  return html`<div class="table-wrap"><table class="table"><thead><tr><th>${t("plan.rule")}</th><th>${t("plan.items_col")}</th><th>${t("plan.size")}</th><th>${t("plan.dropped")}</th></tr></thead>
     <tbody>${plan.space.per_rule.map((r) => html`<tr><td>${r.name || r.rule_id}</td><td>${r.items}</td><td>${bytes(r.bytes)}</td>
       <td>${r.dropped_items ? `${r.dropped_items} · ${bytes(r.dropped_bytes)}` : "-"}</td></tr>`)}</tbody></table></div>`;
 }
@@ -1038,7 +1046,7 @@ export const actions = {
       ctx.rerender();
       return;
     }
-    goFrom(ctx, `/devices/${encodeURIComponent(ctx.params.id)}/plan`);
+    goFrom(ctx, `/devices/${encodeURIComponent(ctx.params.id)}/plan?again=1`);
   },
   async force(el, ctx) {
     const ok = await confirm({ title: t("plan.force_title"), message: t("plan.force_text"), ok: t("plan.force_ok"), danger: true });

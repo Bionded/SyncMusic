@@ -1010,6 +1010,7 @@ class Applier:
             path=ref.path,
             size=ref.size,
             source_state=t.source_state,
+            audio_id=t.audio_id or (a.item.track.audio_id if a.item else None),
             chain_hash=a.chain_hash,
             processing=a.processing,
             caps_v=CAPS_HASH_VERSION,
@@ -1081,6 +1082,10 @@ class Applier:
                     a.restamp
                 ):  # the source was only touched: the file on the device is still current
                     entry.source_state = a.item.track.source_state
+                if a.item.track.audio_id and entry.source_state == a.item.track.source_state:
+                    entry.audio_id = (
+                        a.item.track.audio_id
+                    )  # learnt for this source (or after a restamp)
                 if a.rehash:  # only the caps hash scheme changed: the file stays
                     entry.chain_hash, entry.processing = a.chain_hash, a.processing
                 if a.processing and entry.chain_hash == a.chain_hash:

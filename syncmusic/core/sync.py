@@ -160,6 +160,9 @@ from syncmusic.infra.watch import watch_folder
 SNAPSHOT_LOOP_S = 60
 CLOCK_FRESH_S = 30 * 60  # a device clock set this recently is not set again at a sync or eject
 log = logging.getLogger(__name__)
+AUDIO_ID_BACKFILL = (
+    100  # unchanged items per plan whose audio identity is learnt (entries written before)
+)
 
 NO_MEDIUM_HINT = "connected, but its storage is not shared: turn on USB storage on the player"
 
@@ -1154,7 +1157,10 @@ class SyncService:
                     "manifest_damaged": self._manifest_bad.get(cfg.id) if connected else None,
                     # nothing to plan without a template or rule pulling from a library: not
                     # "waiting", the UI links to its Rules tab
-                    "waiting": self._waiting.get(cfg.id) if connected and libs else None,
+                    "waiting": self._waiting_state(cfg.id) if connected and libs else None,
+                    # the plan a waiting device offers for review: the plan page opens it
+                    # instead of planning again
+                    "plan_id": self.ready_plan_id(cfg.id) if connected else None,
                     # outside its sync windows: when automatic syncs may start again
                     "window_wait": self._window_wait(cfg) if connected else None,
                     "no_libraries": not libs,
@@ -2716,6 +2722,10 @@ class SyncService:
         if register:
             self.plans[plan.id] = pc
             self._trim_plans(device_id, plan.id)
+            if (w := self._waiting.get(device_id)) is not None and w.get("plan_id") != plan.id:
+                # a device waiting for the user (on-connect ask): every Review link opens this plan
+                w["plan_id"] = plan.id
+                self.ctx.bus.publish("device.changed", device_id=device_id)
         return pc
 
     async def _playlist_conflicts(
@@ -2750,6 +2760,7 @@ class SyncService:
         attached: list[str] | None = None,
     ) -> SyncPlan:
         missing = await device.missing(manifest) if manifest else set()
+        await self._audio_identities(cfg, snaps, manifest)
         capacity, free = await device.capacity(), await device.free_space()
         templates = await self.store.templates()
         library_names = {lib.id: lib.name for lib in await self.store.libraries()}
@@ -2775,6 +2786,59 @@ class SyncService:
                 account_names=account_names,
                 attached=attached,
             )
+        )
+
+    async def _audio_identities(
+        self, cfg: DeviceConfig, snaps: dict[str, LibrarySnapshot], manifest: Manifest | None
+    ) -> None:
+        """Read `Track.audio_id` where the plan needs it: for an item whose source changed while the device file's
+        source has a known identity (a tag rewrite in the library is then no new file), and - at most
+        AUDIO_ID_BACKFILL per plan - for unchanged items whose entry has none yet (entries written before, so
+        their next tag rewrite is recognised too). A few small byte ranges per item; a library that cannot
+        read parts of files leaves it None."""
+        if manifest is None:
+            return
+        wanted: list[Track] = []
+        backfill = 0
+        for e in manifest.items.values():
+            snap = snaps.get(e.ref.library_id)
+            t = snap.tracks.get(e.ref.item_id) if snap is not None else None
+            if t is None or t.audio_id or t.size_bytes <= 0:
+                continue
+            if e.source_state != t.source_state and e.audio_id:
+                wanted.append(t)
+            elif (
+                e.source_state == t.source_state and not e.audio_id and backfill < AUDIO_ID_BACKFILL
+            ):
+                wanted.append(t)
+                backfill += 1
+        if not wanted:
+            return
+        gate = asyncio.Semaphore(4)
+        libs: dict[str, Library | None] = {}
+
+        async def one(t: Track) -> None:
+            lid = t.ref.library_id
+            if lid not in libs:
+                try:
+                    libs[lid] = await self.library(lid, cfg)
+                except Exception:  # noqa: BLE001 - no identity, the plan stands without it
+                    libs[lid] = None
+            lib = libs[lid]
+            if lib is None:
+                return
+            async with gate:
+                try:
+                    t.audio_id = await lib.audio_identity(t.ref.item_id, t.size_bytes)
+                except Exception as e:  # noqa: BLE001 - as above
+                    log.debug("%s: audio identity of %s not read: %s", cfg.id, t.ref.key(), e)
+
+        await asyncio.gather(*(one(t) for t in wanted))
+        log.info(
+            "%s: audio identity read for %d items (%d known now)",
+            cfg.id,
+            len(wanted),
+            sum(1 for t in wanted if t.audio_id),
         )
 
     async def _managed_snapshots(
@@ -3013,6 +3077,26 @@ class SyncService:
             p for p, c in self.plans.items() if c.plan.device_id == device_id and p != keep
         ]:
             del self.plans[pid]
+
+    def latest_plan_id(self, device_id: str) -> str | None:
+        """The device's newest plan kept for review (outdated ones are dropped with drop_plans)."""
+        return next(
+            (p for p, c in reversed(self.plans.items()) if c.plan.device_id == device_id), None
+        )
+
+    def ready_plan_id(self, device_id: str) -> str | None:
+        """The plan a device waiting for the user offers (its Review links); None when nothing waits.
+        Other kept plans may be stale (free space, interrupted sync, templates changed): plan fresh."""
+        w = self._waiting_state(device_id)
+        pid = w.get("plan_id") if w else None
+        return pid if pid in self.plans else None
+
+    def _waiting_state(self, device_id: str) -> dict[str, Any] | None:
+        """The waiting state for the UI; a plan made meanwhile fills in a missing plan_id."""
+        w = self._waiting.get(device_id)
+        if w is None or w.get("plan_id") is not None:
+            return w
+        return {**w, "plan_id": self.latest_plan_id(device_id)}
 
     def get_plan(self, plan_id: str) -> PlanContext:
         pc = self.plans.get(plan_id)

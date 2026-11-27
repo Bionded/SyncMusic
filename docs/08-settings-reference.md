@@ -179,10 +179,12 @@ together. The search box at the top of *Settings* and of a device's *Settings* t
 
 | Setting | What it does |
 |---|---|
-| Enabled |  |
-| Play counts | Only: HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player, Wi-Fi client. |
-| Ratings and favourites | Stars and hearts go back as the player has them: a heart is never turned into stars or stars into a heart. Only: HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player, Wi-Fi client. |
-| Playback positions | Only: HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Wi-Fi client. |
+| Bring back listening data from this player | What you do on the player goes to your libraries after each sync. Pick below what goes back; nothing does when this is off. |
+| Play counts and last played | Each play on the player adds one to the library's play count and sets when it was last played. Only: HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player, Wi-Fi client. |
+| Favourites | Hearts added or removed on the player. A heart is never turned into stars. Only: HiBy R1 - SonixOS, HiBy R1 - Compás, Wi-Fi client. |
+| Ratings | Stars set on the player. Stars are never turned into a heart. Only: HiBy R1 - Compás, iPod (stock firmware), Rockbox player, Wi-Fi client. |
+| Playback positions | Where you stopped in audiobooks and podcasts, so you can resume elsewhere. Only: HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Wi-Fi client. |
+| Finished episodes and books | Episodes and books played to the end are marked as played in the library (needs playback positions). Only: HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Wi-Fi client. |
 | Playlists | Only: Android player (MTP), HiBy R1 - SonixOS, HiBy R1 - Compás, iPod (stock firmware), Rockbox player, Wi-Fi client. |
 
 ## Per device type (a device's Settings tab, its own fields)

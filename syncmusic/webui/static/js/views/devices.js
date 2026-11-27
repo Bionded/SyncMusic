@@ -11,7 +11,7 @@ import { schemaForm, FormError } from "../forms.js";
 import { go, goFrom } from "../router.js";
 import { refreshSidebar } from "../sidebar.js";
 import { downloadSdtool } from "../sdtool.js";
-import { deviceIcon, deviceState, dbSizeLine, dbSizeBar, etaText, isCheck, thumb, duration, hibyReboot, ejectedText, betaBadge, openJob, deviceTips, hasTips } from "./common.js";
+import { deviceIcon, deviceState, dbSizeLine, dbSizeBar, etaText, isCheck, thumb, duration, hibyReboot, ejectedText, betaBadge, compasAlphaNote, openJob, deviceTips, hasTips } from "./common.js";
 import { icon, typeIcon, typeLabel } from "../icons.js";
 import { rulesTab, rulesActions, rulesMounted } from "./rules.js";
 import { processorsTab, processorActions, refreshLint } from "./processors.js";
@@ -419,6 +419,9 @@ addStrings({
   "dev.set_saved": "Settings saved.",
   "dev.set_autosaved": "Saved",
   "dev.settings_reverse": "Reverse sync",
+  "dev.set_reverse": "Bring back listening data from this player",
+  "dev.set_reverse_sub": "What you do on the player goes to your libraries after each sync. Pick below what goes back; nothing does when this is off.",
+  "dev.set_reverse_compas": "Compás counts a play as soon as a track starts, also when you skip it. Turn off play counts if that matters to you.",
   "dev.accounts": "Library accounts",
   "dev.accounts_sub": "Whose plays, ratings, stars and positions this device uses. Pick another user of the library to sync a family member's profile; accounts are managed in the library's settings.",
   "dev.accounts_none": "None of this device's libraries keeps data per user (folders never do).",
@@ -553,6 +556,7 @@ function pairRequests(reqs) {
   return html`<section class="dev-section" aria-labelledby="hReq" data-client-requests role="status">
     <div class="dev-section-head"><h2 id="hReq">${t("devs.req_head")}</h2></div>
     <p class="muted dev-req-hint">${t("devs.req_hint")}</p>
+    ${reqs.some((q) => q.client?.app === "syncmusic-compas") ? compasAlphaNote() : ""}
     <div class="panel set-io-list dev-req-list">${reqs.map((q) => html`<div class="set-io-row cl-req" data-request="${q.id}">
       <span class="cl-req-text"><input class="cl-req-name" maxlength="64" aria-label="${t("devs.req_name")}" title="${t("devs.req_name")}" value="${q.client?.name || q.client?.model || ""}" placeholder="${q.address}">
         <span class="cl-req-code">${badge("info", `${t("devs.req_code")}: ${q.display_code}`)}</span>
@@ -774,6 +778,7 @@ function clientCard(c, syncing) {
   ].filter(([, v]) => v);
   return html`<section class="card ds-card dev-client" data-client-card="${c.device_id}" aria-label="${t("dev.cl_title")}">
     ${c.revoked ? html`<p class="hint warn" data-client-revoked>${t("dev.cl_revoked")}</p>` : ""}
+    ${cl.app === "syncmusic-compas" ? compasAlphaNote() : ""}
     <dl class="dev-client-facts">${rows.map(([k, v]) => html`<div><dt>${t(`dev.cl_${k}`)}</dt><dd>${v}</dd></div>`)}</dl>
     ${c.diagnostics ? html`<p class="dev-client-diag" data-client-diag>${t("dev.cl_diag")}: ${t("dev.cl_diag_val", { when: when(c.diagnostics.received_at) })}
       <a class="btn small ghost" href="/api/v1/clients/${encodeURIComponent(c.device_id)}/diagnostics" download>${t("dev.cl_diag_get")}</a></p>` : ""}
@@ -1125,7 +1130,7 @@ async function renderDeviceSettings(ctx) {
   const settings = schemaForm(type.settings_schema, cfg.settings, { tips: true, prefix: "d-", skip, keys: TYPE_KEYS[type.type] });
   const hasFiles = Object.keys(type.settings_schema?.properties || {}).some((k) => !skip.includes(k));
   const noReverse = reverseSupport(type, libraries, libTypes, ctx.state.libs);
-  const reverse = noReverse ? null : schemaForm(type.reverse_sync_schema, cfg.reverse_sync, { tips: true, prefix: "r-" });
+  const reverse = noReverse ? null : schemaForm(type.reverse_sync_schema, cfg.reverse_sync, { tips: true, prefix: "r-", skip: ["enabled"] });
   const canGentle = !type.network && "gentle_write" in (type.sync_schema?.properties || {});
   const gentle = canGentle ? schemaForm(type.sync_schema, cfg.sync, { tips: true, prefix: "s-", only: GENTLE }) : null;
   const accounts = accountForms(cfg, libraries, libTypes, ctx.state.libs);
@@ -1182,6 +1187,7 @@ async function renderDeviceSettings(ctx) {
         <span class="ds-label">${t("dev.set_rename")}<small>${idle ? t("dev.rename_help", { what }) : t("dev.set_rename_offline")}</small></span></label>` : ""}</section>
     ${sync.when}
     ${sync.after}
+    ${reverse ? reverseCard(cfg, type, reverse) : ""}
     ${gentle ? html`<section class="card ds-card" id="gentleCard" aria-labelledby="hGentle">
       <label class="ds-check ds-switch"><span class="ds-label"><b id="hGentle">${t("dev.set_gentle")}</b><small>${t("dev.set_gentle_sub")}</small></span>
         <input type="checkbox" id="dsGentle" ${cfg.sync.gentle_write ? "checked" : ""}></label>
@@ -1194,8 +1200,7 @@ async function renderDeviceSettings(ctx) {
     ${hasFiles ? part("files") : ""}
     ${hasFiles ? html`<section class="card ds-card" id="filesCard"><div><h2>${t("dev.settings_device")}</h2><p class="ds-sub">${t("dev.set_files_sub")}</p></div>${settings.html}
       ${type.type === "flashdrive" && (cfg.mount_path || live?.mounted_at) && idle ? pickerButton("dev-flash", { mount: cfg.mount_path || live.mounted_at }) : ""}</section>` : ""}
-    ${reverse || accounts.length ? part("listen") : ""}
-    ${reverse ? html`<section class="card ds-card" id="reverseCard"><h2>${t("dev.settings_reverse")} ${helpTip("reverse")}</h2>${reverse.html}</section>` : ""}
+    ${(reverse && sync.listen) || accounts.length ? part("listen") : ""}
     ${reverse ? sync.listen : ""}
     ${accounts.length ? accountsCard(cfg, accounts) : ""}
     ${part("safety")}
@@ -1210,6 +1215,17 @@ async function renderDeviceSettings(ctx) {
     <section class="card ds-card" id="orphansCard"><div><h2>${t("dev.orphans")}</h2><p class="ds-sub">${t("dev.orphans_help")}</p></div>
       <div data-orphans-body>${idle ? html`<p class="muted" data-orphans-checking>${t("dev.orphans_checking")}</p>` : orphansBody(null)}</div></section>
     ${dangerZone(cfg, type, live, idle, ctx.state.home)}</div></div></div>`;
+}
+
+// Basic → listening data from the player: one master switch, the kinds of data indented under it (only those the
+// player records), turned off with it
+function reverseCard(cfg, type, reverse) {
+  const on = cfg.reverse_sync.enabled !== false;
+  return html`<section class="card ds-card" id="reverseCard" aria-labelledby="hReverse">
+    <label class="ds-check ds-switch"><span class="ds-label"><b id="hReverse">${t("dev.set_reverse")} ${helpTip("reverse")}</b><small>${t("dev.set_reverse_sub")}</small></span>
+      <input type="checkbox" id="dsReverse" ${on ? "checked" : ""}></label>
+    ${type.type === "hiby_compas" && "plays" in (type.reverse_sync_schema?.properties || {}) ? html`<div class="ds-hint" data-compas-plays>${icon("info", { size: 14 })}${t("dev.set_reverse_compas")}</div>` : ""}
+    <fieldset class="ds-subs" data-reverse-fields ${on ? "" : "disabled"}>${reverse.html}</fieldset></section>`;
 }
 
 // the library account the device signs in as, per attached library that keeps data per user:
@@ -1498,6 +1514,7 @@ export function mounted(ctx, root) {
     settings.addEventListener("change", (e) => {
       if (e.target.name === "dsWhen") settings.querySelector("[data-when-text]").textContent = t(`ds.when.${e.target.value}_text`);
       if (e.target.id === "dsGentle") settings.querySelector("[data-gentle-fields]").hidden = !e.target.checked;
+      if (e.target.id === "dsReverse") settings.querySelector("[data-reverse-fields]").disabled = !e.target.checked;
       if (e.target.dataset.accountPick && e.target.value === "__add") addAccount(e.target, ctx); //
       else if (e.target.dataset.accountPick) { // "Browse … as this account" follows the pick
         const link = e.target.closest("[data-account]").querySelector("[data-browse-as]");
@@ -1638,7 +1655,7 @@ function readSettings(ctx, root) {
   if (parts.some((x) => x === null)) return null;
   const [typed, files, rev, gentle] = parts;
   const out = { settings: { ...cfg.settings, ...typed, ...files } };
-  if (forms.reverse) out.reverse_sync = { ...cfg.reverse_sync, ...rev };
+  if (forms.reverse) out.reverse_sync = { ...cfg.reverse_sync, ...rev, enabled: root.querySelector("#dsReverse").checked };
   if (forms.gentle) out.sync = { ...gentle, gentle_write: root.querySelector("#dsGentle").checked }; // autosave adds the rest
   if (forms.accounts?.length) {
     out.library_accounts = readAccounts(ctx, root);

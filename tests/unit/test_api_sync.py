@@ -319,9 +319,22 @@ async def test_waiting_confirmation_is_listed_until_applied_or_unplugged(env, tm
     cd = ConnectedDisk(disk=BlockDeviceInfo(name="sdy", path="/dev/sdy"), device_id="ask")
     await app.sync.on_disk_added(cd)
     assert await waiting("ask") == {"reason": "on_connect: ask", "plan_id": None}
+    # a plan made for the waiting device: every Review link opens it, the plan page reuses it
+    q = app.bus.subscribe()
+    pid = (await c.post("/api/v1/devices/ask/plan")).json()["id"]
+    assert await waiting("ask") == {"reason": "on_connect: ask", "plan_id": pid}
+    assert any(e.type == "device.changed" for e in (q.get_nowait() for _ in range(q.qsize())))
+    assert (await c.get("/api/v1/devices/ask")).json()["plan_id"] == pid
+    app.sync.drop_plans("ask")  # outdated: the page plans again
+    assert (await c.get("/api/v1/devices/ask")).json()["plan_id"] is None
     app.sync.detector.connected["sdy"] = cd
     await app.sync.on_disk_removed("sdy")
     assert await waiting("ask") is None
+    # a plan made while nothing waits is not offered again: it may be stale, the page plans fresh
+    await app.sync.on_disk_added(cd)
+    app.sync._waiting.pop("ask", None)
+    await c.post("/api/v1/devices/ask/plan")
+    assert (await c.get("/api/v1/devices/ask")).json()["plan_id"] is None
 
 
 def test_cli_status_lists_devices(monkeypatch):

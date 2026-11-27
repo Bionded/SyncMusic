@@ -27,6 +27,9 @@ plan as *no longer synced*, with the usual confirmation for many removals.
   be combined into one track with chapters.
 - **Reverse sync:** play counts, ratings (stars) and bookmarks (positions) go back to the libraries.
 - **Clock:** the iPod's clock is set on every sync.
+- **Lost song database:** when the iPod's database is missing or empty but SyncMusic's files are still there, the plan
+  and the sync report say so; the sync adds the songs again with their ratings and playlists, and no rating is
+  removed from your library.
 - **Format** erases only the **data partition**; the partition table and the firmware partition are never touched.
 - An iPod running **Rockbox** can be registered as Rockbox or (if it still starts Apple's firmware, hold *Menu* while
   booting) as a stock iPod.
@@ -119,6 +122,9 @@ The device page shows these as *Tips for this player* (Overview tab; close the c
   from the Audiobooks plugin and positions of the Podcasts plugin's episodes. Stars you give on the player become
   the song's rating in your library (clearing them clears the rating); they never star or unstar it. A song the player's library
   does not list (a rebuilt library) changes nothing.
+- **Skipped tracks count as plays:** the Compás firmware counts a play as soon as a track starts, also when you
+  skip it. If that matters, turn off *Play counts and last played* under *Settings → Basic → Bring back listening
+  data from this player*.
 - **Album ratings** (Navidrome and other Subsonic servers) go both ways too: an album's rating in your library shows
   as the album's stars on the player, and stars you give an album on the player become its rating in your library.
   As with songs, stars changed on the player are never overwritten by the library.
@@ -135,6 +141,9 @@ The device page shows these as *Tips for this player* (Overview tab; close the c
   downloads and subscriptions are not touched.
 - **Wipe** removes the music, audiobooks, podcasts and playlists; the player's own files (`.compas`, plugins, themes,
   radio list, firmware updates) and the Podcasts plugin's subscriptions and downloads stay.
+- **After a firmware update or a reset** that cleared the player's library: the plan and the sync report say so (and
+  name the new firmware version), and the sync builds the library again with all your favourites and ratings; no
+  favourite or rating is removed from your library.
 - **Switching firmware:** when a registered R1 comes back with the other firmware (SonixOS ↔ Compás), its device page
   says so and offers *Switch to Compás* (or *Switch to SonixOS*). That changes only the device type: rules, templates
   and the music on the card stay; the next sync writes what the new firmware expects.
@@ -226,7 +235,7 @@ with its next sync. **Rename** or **Revoke** a client under Settings → Wi-Fi c
 device and history but can no longer sync until it is paired again. The connection is plain HTTP: use it only on a
 network you trust.
 
-**SyncMusic app for Compás players.** Each release has `syncmusic-compas-<version>-hard.zip` (recommended) and
+**SyncMusic app for Compás players** (*alpha, very unstable*: expect crashes and sync problems; syncing over USB is the reliable way). Each release has `syncmusic-compas-<version>-hard.zip` (recommended) and
 `syncmusic-compas-<version>-soft.zip` (if the hard-float app does not start) next to the server downloads: unzip one into the `.apps/` folder of the player's SD card (it holds a `syncmusic/` folder) and start
 *SyncMusic* from the player's apps. A player paired with this app gets **Player library built by the server** set
 to *Compás* and **After a sync that changed something** set to *Restart the player*: the server builds the player's

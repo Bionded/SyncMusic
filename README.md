@@ -64,7 +64,7 @@ USB drives, FTP/SMB folders and Android players have no listening data to send b
 | iPod nano 6G and 7G, iPod touch, iPhone | not supported | refused: their database checksum cannot be written |
 | Rockbox players (iPods with Rockbox, other Rockbox targets) | supported | music only; play counts from Rockbox's playback log |
 | HiBy R1 (SonixOS) | supported | reboot the player after a sync so it shows the new music |
-| HiBy R1 (Compás) | supported | as USB storage, or over Wi-Fi with the [SyncMusic app](docs/10-compas-app.md); audiobooks and podcasts need the player's plugins |
+| HiBy R1 (Compás) | supported | as USB storage, or over Wi-Fi with the [SyncMusic app](docs/10-compas-app.md) (alpha); audiobooks and podcasts need the player's plugins |
 | USB flash drives and memory cards | supported | vfat, exFAT, ext4, NTFS |
 | FTP server, SMB share | supported | a folder on a network player, streamer or NAS |
 | Android players and phones (MTP) | **beta** | tested on an Android handheld only; no Android DAP was available for testing yet |
@@ -72,6 +72,8 @@ USB drives, FTP/SMB folders and Android players have no listening data to send b
 Details per device: [docs/04-devices.md](docs/04-devices.md).
 
 ## SyncMusic app for Compás (HiBy R1)
+> **Alpha — very unstable.** Expect crashes and sync problems; syncing over USB is the reliable way.
+
 Players with the Compás firmware can sync over Wi-Fi with the SyncMusic app. Download it from the
 [latest release](https://github.com/Bionded/SyncMusic/releases/latest):
 - `syncmusic-compas-<version>-hard.zip` — **use this one** (faster);

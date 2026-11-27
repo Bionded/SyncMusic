@@ -79,6 +79,12 @@ FORMATS = frozenset(
 )
 
 
+PLAYER_DB_RESET_WARNING = (
+    "The player's song database is missing or empty (a firmware update or a reset clears it): this sync builds "
+    "it again and puts your favourites and playlists back; no favourite is removed from the library"
+)
+
+
 def device_rel(path: str) -> str:
     """SonixOS path (`/mnt/sd_0/Music/x.flac`) → path relative to the volume."""
     if path.startswith(VOLUME_PREFIX):
@@ -1351,6 +1357,13 @@ class Hiby(FileDeviceMixin, Device):
         by_path = {path_key(e.path, rules): e for e in manifest.items.values() if not e.orphan}
         keys = {path_key(p, rules) for p in fresh.data.favourites}
         keys |= {k for k, e in by_path.items() if e.last_starred}
+        # the library's current stars too: a reset player database leaves `last_starred` cleared by the
+        # reverse sync, and with no library.db to mirror into (`_write_hearts` skipped) only these bring them back
+        starred: dict[str, bool] = s.data.get("library_starred") or {}
+        for ref, star in starred.items():
+            if star and (e := manifest.items.get(ref)) is not None and not e.orphan:
+                keys.add(path_key(e.path, rules))
+                e.last_starred = True
         add: dict[str, tuple[str, str]] = {}
         for k in sorted(keys):
             e = by_path.get(k)
@@ -1555,6 +1568,23 @@ class Hiby(FileDeviceMixin, Device):
                 now=dt.datetime.now(dt.UTC),
                 device_id=self.id,
             )
+
+        return await asyncio.to_thread(work)
+
+    async def feedback_warnings(self) -> list[str]:
+        """The player's library.db is gone or holds no songs while the card has files of ours: a firmware update
+        (or a reset) wiped it. The next sync builds it again and writes the library's favourites back."""
+
+        def work() -> list[str]:
+            manifest_file = self.mount / ".syncmusic"
+            db = (self._db_dir or self.mount / DB_DIR) / "library.db"
+            if not manifest_file.exists():
+                return []
+            try:
+                songs = _query(db, "SELECT COUNT(*) FROM MEDIA_TABLE")[0][0] if db.is_file() else 0
+            except (sqlite3.Error, IndexError):
+                songs = 0
+            return [] if songs else [PLAYER_DB_RESET_WARNING]
 
         return await asyncio.to_thread(work)
 

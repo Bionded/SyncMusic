@@ -33,6 +33,7 @@ from syncmusic.base.library import (
     ServerUrl,
     body_chunks,
     error_reason,
+    ranged_get,
 )
 from syncmusic.core.models import (
     HealthStatus,
@@ -123,6 +124,7 @@ class AudiobookshelfLibrary(Library, FeedbackSink):
     def __init__(self, config: Any, ctx: Any) -> None:
         super().__init__(config, ctx)
         self._client: httpx.AsyncClient | None = None
+        self._range_urls: dict[str, str] = {}  # item -> its download URL, for `read_range`
 
     @property
     def s(self) -> AudiobookshelfSettings:
@@ -422,6 +424,18 @@ class AudiobookshelfLibrary(Library, FeedbackSink):
             raise KeyError(f"download of {item_id!r} failed: HTTP {response.status_code}")
 
         return body_chunks(response, item_id)
+
+    async def read_range(self, item_id: str, offset: int, length: int) -> bytes | None:
+        """A part of the file by an HTTP Range request on its download URL (looked up once per item)."""
+        url = self._range_urls.get(item_id)
+        if url is None:
+            try:
+                url = await self._file_url(item_id)
+            except (httpx.HTTPError, KeyError):
+                return None
+            self._range_urls[item_id] = url
+        request = self.client().build_request("GET", url)
+        return await ranged_get(self.client(), request, offset, length)
 
     async def open_cover(self, item_id: str) -> bytes | None:
         abs_item = item_id.partition(":")[0]

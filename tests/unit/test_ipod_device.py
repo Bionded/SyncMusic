@@ -816,3 +816,19 @@ def test_format_ids_take_the_detected_disk_serial():
     assert bare.format_guard_ids() is None
     bare.detected_serial = "READERB0002"
     assert bare.format_guard_ids() == ["READERB0002"]
+
+
+async def test_a_missing_or_empty_database_is_warned_about(tmp_path):
+    import os
+
+    from pygpod.device.mountpoint import find_itunesdb
+
+    from syncmusic.devices.iPod.ipod import IPOD_DB_RESET_WARNING
+
+    dev = _dev(tmp_path)
+    manifest, _ = await _sync(dev, tmp_path, [("One", "A")])
+    assert await dev.feedback_warnings() == []
+    os.remove(find_itunesdb(str(dev.mount)))
+    assert await dev.feedback_warnings() == [IPOD_DB_RESET_WARNING]
+    assert len(await dev.missing(manifest)) == 1  # the sync adds it again
+    assert (await dev.read_feedback(manifest)).ratings == {}  # nothing unrated

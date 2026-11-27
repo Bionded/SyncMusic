@@ -251,3 +251,48 @@ def test_star_ratings_by_player_version(version, stars):
     from syncmusic.devices.HibyR1.compas import star_ratings
 
     assert star_ratings({"player_version": version}) is stars
+
+
+@pytest.mark.parametrize("reset", [False, True])
+def test_a_cleared_player_library_gets_every_favourite_back(tmp_path, reset):
+    """After a firmware update cleared the library, the rebuilt one has no hearts although the manifest
+    says they were mirrored: only a detected reset writes them again."""
+    import asyncio
+
+    dev, m, refs, tracks, starred = _setup(tmp_path)
+    write_tagcache(tmp_path, [(p, 0, 0, 0) for p, *_ in ROWS])  # rebuilt: no hearts
+    m.items[refs["Music/Ours/01.flac"].key()].last_starred = True  # mirrored before the reset
+    s = _session({"library_tracks": {}, "library_starred": starred, "compas_db_reset": reset})
+    asyncio.run(dev._patch_stats(s, m))
+    assert ("Music/Ours/01.flac" in cf.read_card(tmp_path).favourites) is reset
+
+
+def test_a_cleared_player_library_is_detected_and_warned_about(tmp_path):
+    import asyncio
+    import shutil
+
+    from syncmusic.devices.HibyR1.sonixos import PLAYER_DB_RESET_WARNING
+
+    dev, *_ = _setup(tmp_path)
+    assert asyncio.run(dev.feedback_warnings()) == []  # never synced: nothing of ours
+    (tmp_path / ".syncmusic").mkdir()
+    assert asyncio.run(dev.feedback_warnings()) == []  # a library with songs
+    for f in (tmp_path / ".compas").glob("database*"):
+        f.unlink()
+    assert asyncio.run(dev.feedback_warnings()) == [PLAYER_DB_RESET_WARNING]
+    s = asyncio.run(dev.begin())
+    assert s.data["compas_db_reset"] and s.data["compas_music_changed"]
+    shutil.rmtree(tmp_path / ".compas")  # the whole folder wiped
+    assert asyncio.run(dev.feedback_warnings()) == [PLAYER_DB_RESET_WARNING]
+
+
+def test_a_firmware_update_is_named_once(tmp_path):
+    import asyncio
+
+    dev, *_ = _setup(tmp_path, version="1.2")
+    dev._remember_version()
+    assert asyncio.run(dev.feedback_warnings()) == []
+    (tmp_path / ".compas" / "device.json").write_text(json.dumps({"player_version": "1.3"}))
+    assert asyncio.run(dev.feedback_warnings()) == ["the player's firmware changed from 1.2 to 1.3"]
+    dev._remember_version()  # at the sync's commit
+    assert asyncio.run(dev.feedback_warnings()) == []

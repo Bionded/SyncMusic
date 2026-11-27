@@ -8,6 +8,8 @@ import { typeIcon } from "../icons.js";
 
 addStrings({
   "beta.badge": "Beta",
+  "alpha.badge": "Alpha",
+  "alpha.compas_app": "The SyncMusic app for Compás is an alpha: very unstable, expect crashes and sync problems. Syncing over USB is the reliable way.",
   "beta.android": "Android players over MTP are in beta: unlock the player and allow file transfer, and report problems.",
   "beta.jellyfin": "Jellyfin libraries are in beta: movies and episodes go to the player, nothing is sent back.",
   "hiby.reboot": "Reboot the player after unplugging to see the changes (SonixOS keeps an old view of the card until a reboot).",
@@ -241,6 +243,15 @@ document.addEventListener("toggle", (e) => {
 // device and library types still in beta (HiBy SonixOS left beta): a badge next to the type
 // wherever it is shown
 const BETA_TYPES = new Set(["android", "jellyfin"]);
+
+// the SyncMusic app for Compás players is an unstable alpha (only the app, not Wi-Fi clients as such)
+export function compasAlphaBadge() {
+  return html` <span class="tag beta" data-alpha title="${t("alpha.compas_app")}">${t("alpha.badge")}</span>`;
+}
+
+export function compasAlphaNote() {
+  return html`<p class="hint warn" data-compas-alpha>${compasAlphaBadge()} ${t("alpha.compas_app")}</p>`;
+}
 
 export function betaBadge(type) {
   return BETA_TYPES.has(type) ? html` <span class="tag beta" data-beta title="${t(`beta.${type}`)}">${t("beta.badge")}</span>` : "";

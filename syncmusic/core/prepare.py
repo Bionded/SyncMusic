@@ -38,6 +38,7 @@ from syncmusic.base.context import AppContext
 from syncmusic.base.library import Library
 from syncmusic.base.processor import Processor
 from syncmusic.core import books, registry
+from syncmusic.core.audio_identity import file_identity
 from syncmusic.core.models import (
     PlanItem,
     PlannedFile,
@@ -456,6 +457,9 @@ class Preparer:
             path = original.file(original.meta["name"])
         else:
             path = original
+        if item.track.audio_id is None and not books.is_book(item.track):
+            # read from the file at hand: the manifest keeps it, so a later tag rewrite in the library is known
+            item.track.audio_id = await file_identity(path)
         # pinned from here on, before any await: another sync preparing the same track (two devices at once) puts the
         # same key, and a put replaces an unpinned entry - its file would vanish under this one's processors
         async with self.cache.pinned(*pinned):

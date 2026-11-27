@@ -288,7 +288,13 @@ def _new_feedback(
         ratings={k: v for k, v in fb.ratings.items() if wanted(k)}
         if settings.ratings and device_wins
         else {},
-        positions={k: v for k, v in fb.positions.items() if wanted(k)}
+        positions={
+            k: v
+            if settings.finished or not v.finished
+            else v.model_copy(update={"finished": False})
+            for k, v in fb.positions.items()
+            if wanted(k)
+        }
         if settings.positions
         else {},
         # a heart is the user's own change on the player: sent whatever the rating priority;
@@ -298,7 +304,7 @@ def _new_feedback(
             for k, v in fb.stars.items()
             if wanted(k) and _takes_stars(libraries.get(k.split("/", 1)[0]))
         }
-        if settings.ratings
+        if settings.favourites
         else {},
     )
 
@@ -445,7 +451,7 @@ class ReverseSync:
         out.report.plays_found = len(fb.plays)
         if len(plays) < len(fb.plays):
             log.info("%s: %d plays were already captured", cfg.id, len(fb.plays) - len(plays))
-        if settings.plays or settings.ratings:
+        if settings.plays or settings.ratings or settings.favourites:
             out.report.warnings = await device.feedback_warnings()
         if reset_hearts:
             out.report.held_unstars = list(reset_hearts)

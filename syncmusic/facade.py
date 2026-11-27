@@ -266,14 +266,16 @@ def _edits_playlists(device_type: str) -> bool:
 
 
 def _reverse_sync_schema(device_type: str) -> dict[str, Any]:
-    """Only the switches for what the device type records: no ratings switch on a player without stars or
-    hearts, no positions switch on one without positions."""
+    """Only the switches for what the device type records: no ratings switch on a player without stars, no
+    favourites switch on one without hearts, no positions/finished switches on one without positions."""
     full = ReverseSyncSettings.model_json_schema()
     caps = registry.device_class(device_type).capabilities
     has = {
         "plays": caps.supports_playcounts_read,
-        "ratings": caps.supports_ratings_read or caps.supports_favourites_read,
+        "favourites": caps.supports_favourites_read,
+        "ratings": caps.supports_ratings_read,
         "positions": caps.supports_positions_read,
+        "finished": caps.supports_positions_read,
         "playlists": _edits_playlists(device_type),
     }
     props = {k: v for k, v in full["properties"].items() if has.get(k, True)}
@@ -2529,6 +2531,8 @@ class AppFacade:
             # a server: nothing to eject; an MTP player can be ejected
             "network": cls.network and not cls.usb_mtp,
             "usb_mtp": cls.usb_mtp,
+            # the plan it waits on for review: the plan page opens it instead of planning again
+            "plan_id": self.app.sync.ready_plan_id(cfg.id),
             # the last full sync; update syncs have their own line
             "last_report": last,
             "last_update": update.model_dump(mode="json") if update else None,

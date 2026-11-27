@@ -34,6 +34,7 @@ from syncmusic.base.library import (
     ServerUrl,
     body_chunks,
     error_reason,
+    ranged_get,
 )
 from syncmusic.base.progress import report_progress
 from syncmusic.core.models import (
@@ -533,6 +534,13 @@ class SubsonicLibrary(Library, FeedbackSink):
             )
 
         return body_chunks(response, item_id)
+
+    async def read_range(self, item_id: str, offset: int, length: int) -> bytes | None:
+        """A part of the original file by an HTTP Range request on `download`."""
+        request = self.client().build_request(
+            "GET", "/rest/download", params={**self._auth(), "f": "json", "id": item_id}
+        )
+        return await ranged_get(self.client(), request, offset, length)
 
     async def open_cover(self, item_id: str) -> bytes | None:
         return await self._cover(item_id, None)

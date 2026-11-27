@@ -278,8 +278,11 @@ def test_ipod_clock_time_zone_and_reverse_sync(server, chrome, tmp_path):
     assert options.count() > 300
     page.locator('input[id$="d-time_sync"]').check()
     page.fill('input[id$="d-timezone"]', "Asia/Tokyo")
-    page.locator("[data-ds-group-btn=listen]").click()
+    # listening data: a master switch in Basic, the kinds the iPod records indented under it
+    page.locator("[data-ds-group-btn=basic]").click()
     assert page.locator('#reverseCard input[id$="r-plays"]').is_visible()
+    assert page.locator('#reverseCard input[id$="r-finished"]').is_visible()
+    assert page.locator('#reverseCard input[id$="r-favourites"]').count() == 0  # stars, no hearts
     page.locator('#reverseCard input[id$="r-ratings"]').uncheck()
     # the iPod card; every change saves itself
     assert page.locator('#typeCard[data-type-card="ipod"] input[id$="d-timezone"]').count() == 1
@@ -289,6 +292,16 @@ def test_ipod_clock_time_zone_and_reverse_sync(server, chrome, tmp_path):
     cfg = _api(url, "GET", "/devices/pod")["config"]
     assert cfg["settings"]["timezone"] == "Asia/Tokyo" and cfg["settings"]["time_sync"] is True
     assert cfg["reverse_sync"]["ratings"] is False and cfg["reverse_sync"]["plays"] is True
+    page.locator("[data-ds-group-btn=basic]").click()
+    page.locator("#dsReverse").uncheck()
+    assert page.locator('#reverseCard input[id$="r-plays"]').is_disabled()
+    _autosave(
+        page, lambda: _api(url, "GET", "/devices/pod")["config"]["reverse_sync"]["enabled"] is False
+    )
+    rs = _api(url, "GET", "/devices/pod")["config"]["reverse_sync"]
+    assert rs["ratings"] is False and rs["plays"] is True  # the switches keep their values
+    page.locator("#dsReverse").check()
+    assert page.locator('#reverseCard input[id$="r-plays"]').is_enabled()
 
     page.locator("[data-ds-group-btn=device]").click()
     page.fill('input[id$="d-timezone"]', "Mars/Olympus")

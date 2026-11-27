@@ -52,6 +52,7 @@ from syncmusic.devices.HibyR1.sonixos import (
     COMPAS_USB_PRODUCT,
     FORMATS,
     HIBY_USB_VENDOR,
+    PLAYER_DB_RESET_WARNING,
     HibyData,
     hiby_feedback,
 )
@@ -78,6 +79,8 @@ FAVOURITES_STATE = (
 POSITIONS_STATE = "compas-positions.json"
 # in our state dir: album key -> {"ref": the library's album, "stars": what player and library agreed on last}
 ALBUM_RATINGS_STATE = "compas-album-ratings.json"
+# in our state dir: the player version (.compas/device.json) of the last sync, to name a firmware update
+PLAYER_VERSION_STATE = "compas-player-version.txt"
 # the player's files at the card root, kept by Wipe (every hidden entry is kept too, see wipe_keeps)
 TAGCACHE_FORMAT = 8  # the `database_format` of .compas/device.json whose rows compas_stats patches
 PLAYER_FILES = (COMPAS_DIR, ".plugins", PLUGIN_ASSETS, IGNORE_FILE, "database.unignore")
@@ -379,7 +382,53 @@ class HibyCompas(FileDeviceMixin, Device):
         folder = self.mount / PODCAST_DIR
         folder.mkdir(exist_ok=True)
         (folder / IGNORE_FILE).touch(exist_ok=True)
+        if await asyncio.to_thread(self._library_reset):
+            # built again from scratch below, with every favourite and rating of the library
+            s.data["compas_db_reset"] = True
+            s.data["compas_music_changed"] = True
         return s
+
+    def _library_reset(self) -> bool:
+        """The card has files of ours but the player's library is gone or empty: a firmware update or a reset of
+        the player cleared it (a damaged one is replaced by a build too, but is not a reset)."""
+        if not (self.mount / ".syncmusic").exists():
+            return False
+        try:
+            entries = cf.read_tagcache(self.mount)
+        except (cf.CompasDbError, OSError, ValueError):
+            return False
+        return not entries
+
+    async def feedback_warnings(self) -> list[str]:
+        """The plan and the sync report say when the player's library was cleared (see `_library_reset`) and
+        when its firmware changed since the last sync."""
+
+        def work() -> list[str]:
+            out = [PLAYER_DB_RESET_WARNING] if self._library_reset() else []
+            if changed := self._version_change():
+                out.append(f"the player's firmware changed from {changed[0]} to {changed[1]}")
+            return out
+
+        return await asyncio.to_thread(work)
+
+    def _player_version(self) -> str | None:
+        v = read_device_info(self.mount).get("player_version")
+        return str(v) if v else None
+
+    def _version_change(self) -> tuple[str, str] | None:
+        """(version at the last sync, version now) when the player was updated since; None otherwise."""
+        try:
+            old = (self.mount / STATE_DIR / PLAYER_VERSION_STATE).read_text("utf-8").strip()
+        except OSError:
+            return None
+        new = self._player_version()
+        return (old, new) if old and new and new != old else None
+
+    def _remember_version(self) -> None:
+        if (v := self._player_version()) is not None:
+            f = self.mount / STATE_DIR / PLAYER_VERSION_STATE
+            f.parent.mkdir(exist_ok=True)
+            f.write_text(v, encoding="utf-8")
 
     def _state_file(self) -> Path:
         return self.mount / STATE_DIR / FAVOURITES_STATE
@@ -607,6 +656,8 @@ class HibyCompas(FileDeviceMixin, Device):
         tracks: dict[str, Track] = s.data.get("library_tracks") or {}
         starred: dict[str, bool] = s.data.get("library_starred") or {}
         pushed = bool(s.data.get("reverse_ok", True))
+        # a cleared library lost every heart and rating we wrote: all of the library's go back, not only changes
+        reset = bool(s.data.get("compas_db_reset"))
 
         rates = star_ratings(read_device_info(self.mount))
 
@@ -621,10 +672,12 @@ class HibyCompas(FileDeviceMixin, Device):
                 t, star = tracks.get(key), starred.get(key)
                 stars: int | None = None
                 fav: bool | None = None
-                if rates and t is not None and t.rating != e.last_rating:
+                if rates and t is not None and (t.rating != e.last_rating or (reset and t.rating)):
                     stars = t.rating or 0  # the library's rating changed since the player got it
                     moved[e.path] = (e, t.rating)
-                elif not rates and star is not None and star != e.last_starred:
+                elif (
+                    not rates and star is not None and (star != e.last_starred or (reset and star))
+                ):
                     fav = star  # the library's heart changed since we last mirrored it
                     if star or e.path in seen:  # taken away only when the reverse sync has seen it
                         moved[e.path] = (e, star)
@@ -633,7 +686,7 @@ class HibyCompas(FileDeviceMixin, Device):
                 plays = t.play_count if (t is not None and pushed) else None
                 last = int(t.last_played.timestamp()) if (pushed and t and t.last_played) else None
                 if stars is not None or fav is not None or plays or last:
-                    expect = (e.last_rating or 0) if stars is not None else None
+                    expect = (0 if reset else (e.last_rating or 0)) if stars is not None else None
                     updates[e.path] = StatsUpdate(
                         plays or None, last, favourite=fav, stars=stars, expect=expect
                     )
@@ -723,6 +776,7 @@ class HibyCompas(FileDeviceMixin, Device):
                     len(left_out),
                 )
         await self._index(s)
+        await asyncio.to_thread(self._remember_version)
         if manifest is not None:
             await self._patch_stats(s, manifest)
             try:

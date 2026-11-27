@@ -113,6 +113,12 @@ class IPodSettings(BaseModel):
         return v.strip()
 
 
+IPOD_DB_RESET_WARNING = (
+    "The iPod's song database is missing or empty: this sync adds the songs again with their ratings and "
+    "playlists; no rating is removed from the library"
+)
+
+
 def with_guid(sysinfo: bytes, serial: str | None) -> bytes:
     """SysInfo content with a FirewireGuid line. iPods report the FireWire GUID as USB serial (16 hex digits):
     enough for pygpod's hash58. A stock restore leaves SysInfo empty."""
@@ -527,6 +533,22 @@ class IPod(Device):
                 playlists=sorted(p.name for p in playlists),
                 playlist_items={p.name: [str(t.dbid) for t in p.tracks] for p in playlists},
             )
+
+        return await asyncio.to_thread(work)
+
+    async def feedback_warnings(self) -> list[str]:
+        """The iPod has files of ours but its song database is gone or empty (a restore of the database,
+        another program, a reset): the plan and the sync report say so; the sync adds the songs again."""
+
+        def work() -> list[str]:
+            if not (self.mount / ".syncmusic").exists():
+                return []
+            try:
+                if self._has_db() and len(self._open_db().tracks):
+                    return []
+            except Exception:  # noqa: BLE001 - a damaged database is reported by the sync itself
+                return []
+            return [IPOD_DB_RESET_WARNING]
 
         return await asyncio.to_thread(work)
 

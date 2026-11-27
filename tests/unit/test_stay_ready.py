@@ -50,7 +50,10 @@ async def test_idle_device_is_unmounted_after_the_running_job(env, tmp_path, mon
     assert "flash" in app.sync._mounts
     release.set()
     await app.jobs.wait(info.id)
-    await asyncio.wait_for(app.sync._ready_tasks.get("flash") or asyncio.sleep(0), 2)
+    for _ in range(100):  # the idle wait starts only after the job has ended
+        if "flash" not in app.sync._mounts:
+            break
+        await asyncio.sleep(0.02)
     assert "flash" not in app.sync._mounts
     assert len(unmounted) == 1
     events = [q.get_nowait() for _ in range(q.qsize())]

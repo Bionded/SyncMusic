@@ -216,7 +216,7 @@ def reverse_changes(
                 a.changes = [c for c in a.changes if c.field != "rating"]
         pos = fb.positions.get(key) if settings.positions else None
         if pos is not None:
-            if pos.finished and not tr.finished:
+            if pos.finished and not tr.finished and settings.finished:
                 back.append(
                     MetaChange(field="played", old="unplayed", new="played", direction="to_library")
                 )
@@ -735,6 +735,12 @@ def _source_parts(state: str) -> tuple[str, str, str] | None:
     return size, stamp, rest
 
 
+def _same_rest(old: str, new: str) -> bool:
+    """Two source states whose parts besides size and time (e.g. the cover's hash) are the same."""
+    a, b = _source_parts(old), _source_parts(new)
+    return a is not None and b is not None and a[2] == b[2]
+
+
 def touched_only(old: str, new: str) -> bool:
     """Two source states that differ only in their timestamp: the size and the rest (cover image hash, ...) are
     the same - a tagger or a rescan touched the file without changing it."""
@@ -834,7 +840,23 @@ def _selected_action(
         and entry.meta_hash == mhash
         and touched_only(entry.source_state, track.source_state)
     )
-    if entry.source_state != track.source_state and not restamp:
+    # the library rewrote the file's tags only (a tagger): the audio is the one the device file was made from
+    same_audio = (
+        entry.source_state != track.source_state
+        and not restamp
+        and entry.audio_id is not None
+        and track.audio_id == entry.audio_id
+        and (entry.chain_hash == chash or rehash)
+    )
+    if same_audio and tag_device:
+        kind, reason, tags_only = ActionKind.REPLACE, "tags changed in the library", True
+    elif same_audio and _same_rest(entry.source_state, track.source_state):
+        restamp = True  # the device database holds the tags: an update, the file stays
+        if entry.meta_hash != mhash and caps.needs_device_db:
+            kind, reason = ActionKind.UPDATE_META, "tags changed in the library"
+        else:
+            kind, reason = ActionKind.KEEP, f"still selected by {by(rule_ids)}"
+    elif entry.source_state != track.source_state and not restamp:
         kind, reason = ActionKind.REPLACE, "source changed"
     elif entry.chain_hash != chash and not rehash:
         kind, reason = ActionKind.REPLACE, "processing changed"
@@ -859,7 +881,7 @@ def _selected_action(
     else:
         # the plan review says why it stays: the rules that still select it
         kind, reason = ActionKind.KEEP, f"still selected by {by(rule_ids)}"
-    tags = kind is ActionKind.UPDATE_META or reason.startswith("metadata changed")
+    tags = kind is ActionKind.UPDATE_META or reason.startswith(("metadata changed", "tags changed"))
     action = PlanAction(
         kind=kind,
         ref=track.ref,

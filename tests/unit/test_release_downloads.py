@@ -51,3 +51,11 @@ def test_check_passes_with_all_assets_and_names_a_missing_one(tmp_path: Path) ->
     res = _run("--check", str(notes), str(dist))
     assert res.returncode == 1
     assert "MISSING syncmusic-compas-1.2.3-4-soft.zip" in res.stderr
+
+
+def test_only_the_compas_app_is_marked_alpha() -> None:
+    out = _run("Owner/Repo", "v1.2.3-4").stdout
+    rows = [line for line in out.splitlines() if line.startswith("|")]
+    alpha = [line for line in rows if "Alpha" in line]
+    assert len(alpha) == 2
+    assert all("syncmusic-compas-" in line for line in alpha)

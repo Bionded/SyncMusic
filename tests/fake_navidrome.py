@@ -59,6 +59,8 @@ class FakeNavidrome(httpx.AsyncBaseTransport):
         server_type: str = "navidrome",
     ) -> None:
         self.user, self.password, self.native = user, password, native
+        self._range: str | None = None
+        self.download_bytes = 0  # bytes of media served by `download`
         self.server_type = (
             server_type  # what `ping` & co. say; another Subsonic server: no native API
         )
@@ -120,6 +122,7 @@ class FakeNavidrome(httpx.AsyncBaseTransport):
                 (self.password + q.get("s", "")).encode()
             ).hexdigest() != q.get("t"):
                 return self._fail(40, "Wrong username or password", q.get("f"))
+            self._range = request.headers.get("range")
             return self._rest(path[len("/rest/") :], q)
         if not self.native:
             return httpx.Response(404)
@@ -239,9 +242,24 @@ class FakeNavidrome(httpx.AsyncBaseTransport):
             s = self.songs.get(q["id"])
             if s is None:
                 return self._fail(70, "not found", q.get("f"))
-            return httpx.Response(
-                200, content=s["_data"], headers={"content-type": s["contentType"]}
-            )
+            data = s["_data"]
+            if rng := self._range:  # bytes=a-b
+                a, _, b = rng.removeprefix("bytes=").partition("-")
+                start, end = int(a), min(int(b) if b else len(data) - 1, len(data) - 1)
+                if start >= len(data):
+                    return httpx.Response(416)
+                part = data[start : end + 1]
+                self.download_bytes += len(part)
+                return httpx.Response(
+                    206,
+                    content=part,
+                    headers={
+                        "content-type": s["contentType"],
+                        "content-range": f"bytes {start}-{end}/{len(data)}",
+                    },
+                )
+            self.download_bytes += len(data)
+            return httpx.Response(200, content=data, headers={"content-type": s["contentType"]})
         if ep == "getCoverArt":
             if q["id"].removeprefix("mf-") in self.songs:
                 return httpx.Response(

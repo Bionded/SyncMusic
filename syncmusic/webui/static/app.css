@@ -1441,6 +1441,8 @@ fieldset.texts legend { font-size: 13px; color: var(--tx2); font-weight: 600; ma
 @media (max-width: 600px) { .texts-row { grid-template-columns: 1fr; gap: 4px; } .texts-example { grid-column: 1; margin-top: 0; } }
 /* device Settings */
 .ds-switch { align-items: flex-start; }
+.ds-subs { border: 0; margin: 8px 0 0; padding: 0 0 0 28px; min-width: 0; border-left: 2px solid var(--bd, rgba(127,127,127,.25)); }
+.ds-subs:disabled { opacity: .5; }
 .ds-switch input { width: 20px; height: 20px; margin-top: 2px; order: 2; }
 .ds-label b { font-size: 15px; font-weight: 700; }
 .ds-hint { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--tx2); }

@@ -1,5 +1,7 @@
 # SyncMusic app for Compás players
 
+> **Alpha — very unstable.** Expect crashes and sync problems; syncing over USB is the reliable way.
+
 The SyncMusic app runs on a HiBy R1 with the Compás firmware and syncs the player with your SyncMusic server
 over Wi-Fi. A sync does the same as a sync over USB: it brings music, audiobooks, podcasts and playlists onto the
 SD card, removes what you no longer picked, and sends plays, star ratings, positions and playlist edits back.

@@ -640,3 +640,17 @@ func TestAnimateMovesOnlyThePhaseSegment(t *testing.T) {
 		t.Fatal("the band stands still")
 	}
 }
+
+// TestAboutSaysAlpha: the About page says the app is an unstable alpha and points to USB as the reliable way
+func TestAboutSaysAlpha(t *testing.T) {
+	a := &App{c: &Client{root: t.TempDir(), st: State{Server: "http://192.0.2.10:8080/"}}, set: defaultSettings()}
+	var found bool
+	for _, l := range a.about().lines {
+		if l.text == T("about.alpha") && l.col == colWarn {
+			found = true
+		}
+	}
+	if !found || !strings.Contains(T("about.version", "1.0"), "alpha") || !strings.Contains(T("about.alpha"), "USB") {
+		t.Fatal("the About page does not say the app is alpha")
+	}
+}

@@ -5,7 +5,12 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Device Settings → Basic has **Bring back listening data from this player**: one switch for everything that goes back to your libraries, with separate switches under it for play counts and last played, favourites, ratings, playback positions, finished episodes and books, and playlists (only those the player records). Favourites and finished flags can now be turned off on their own; settings saved before keep their meaning. Compás players get a note that they count a play as soon as a track starts, also a skipped one.
+
 ### Changed
+- The SyncMusic app for Compás (HiBy R1) is now marked as an **alpha**: very unstable, syncing over USB is the reliable way. The README, the guide, the release downloads, the server pages where the app is paired or updated, and the app's About page say so.
+- A library file whose tags were rewritten (for example by a nightly tagger) but whose audio did not change is no longer downloaded, converted and copied again: the plan shows *tags changed in the library* and the file on the device gets the new tags. SyncMusic reads only a few small parts of the file to tell (Navidrome and other Subsonic servers, Audiobookshelf, Jellyfin, local folders); files synced by older versions learn this gradually, about a hundred per sync.
 - A device's Settings tab is simpler: it opens on **Basic** with the everyday settings, the rest is in advanced sections in a menu on the left (a row at the top on a phone) with the danger zone last, and sections that do not apply to the device are left out. Every change is saved at once with an *Undo* note — there is no Save button any more. On/off settings are switches, the full-sync choice is one compact row, and default values are no longer captioned (a changed one shows *Changed* with a reset). The folder layout offers ready-made choices with an example path; *Custom…* shows the templates. Longer explanations open from a *?* next to the setting, numbers show their unit inside the field, the file system is a choice (*Detected* by default), and a flash drive no longer offers settings about what was played.
 - A device's Settings tab is tidier: on wide screens each setting is one row with its name on the left and the control on the right, the file naming settings have their own **Files** section, cards no longer repeat their section's title, and the section heading is hidden while the section menu already shows it. Folder and network devices no longer show mount options that do not apply to them.
 - Compás app: while a sync runs, a light band moves along the current step of the phase bar (8 frames a second, redrawing only that small strip), so a long step never looks frozen.
@@ -48,6 +53,13 @@ versions follow [Semantic Versioning](https://semver.org/).
 - If both copies of SyncMusic's sync record on a player are damaged, the device page offers **Rebuild from files**: the damaged copies are moved aside and the next sync starts as a first sync that can adopt the files already on the player, instead of wiping it.
 
 ### Fixed
+- The plan page no longer shows an old plan after free space, an interrupted sync or the templates changed: only the plan a waiting player offers is reopened, otherwise it plans fresh.
+- **Review plan** no longer plans again when a plan for the player is already ready (for example after a connect that asks first): the dashboard, the device page and the notification open that plan; **Plan again** still makes a fresh one.
+- Compás players: when a firmware update or a reset clears the player's library, the plan and the sync report say so and the next sync puts your favourites and ratings back.
+- iPods: when the song database is missing or empty while SyncMusic's files are still there, the plan and the sync report say so; the sync adds the songs again and no rating is removed from your library.
+- The plan page shows the full "the list could not be loaded, the plan may be out of date" message again.
+- HiBy R1 (stock firmware): when a firmware update leaves the player without its database, the next sync now puts your favourites back as hearts (they stayed empty before), and the plan and sync report say that the player's song database was missing or empty.
+- Sync plan: a list that could not be loaded, or whose items are no longer in the plan, now says so and asks for a new plan instead of showing nothing.
 - Rockbox players and the Wi-Fi app show the minimum played share for a play as a percentage (50 %) instead of a fraction (0.5).
 - Device Settings → Files and paths: the folder layout choice now lines up with the other settings on wide screens.
 - A player whose disk stopped answering during a sync (a hung write followed by a write error in the system log) is no longer sent into an automatic repair that hangs: the device page asks to unplug and replug it (an iPod: restart it with Menu and Select), then check and repair it.

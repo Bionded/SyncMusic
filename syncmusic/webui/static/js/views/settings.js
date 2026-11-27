@@ -18,6 +18,7 @@ import { icon } from "../icons.js";
 import { windowsEditor, bindWindows, readWindows } from "../windows.js";
 import { sdtoolCredit, downloadSdtool } from "../sdtool.js";
 import { progressText } from "../update-overlay.js";
+import { compasAlphaBadge, compasAlphaNote } from "./common.js";
 
 const STRINGS = {
   "set.sub": "SyncMusic {version} on {host}",
@@ -832,7 +833,7 @@ export async function render(ctx) {
           <div data-sdtool>${sdtoolLine(sdinfo)}</div>
           ${sdtoolAutoLine(sdinfo?.auto_update)}
           ${sdtoolCredit(sdinfo)}
-          <div class="field"><label>${t("set.compas_app")}</label><div class="hint">${t("set.compas_app_sub")}</div></div>
+          <div class="field"><label>${t("set.compas_app")}${compasAlphaBadge()}</label><div class="hint">${t("set.compas_app_sub")}</div>${compasAlphaNote()}</div>
           <div data-compas-app>${compasAppLine(appinfo)}</div>`)}`, t("set.tools_sub"))}
         ${section("storage", html`
           ${sub("cache", html`${cacheBar(cache)}
@@ -1138,6 +1139,7 @@ export const actions = {
       <div class="cl-qr" data-cl-qr aria-hidden="true">${raw(code.qr_svg)}</div>
       <dl class="cl-codes"><dt>${t("set.cl_address")}</dt><dd class="mono" data-cl-url>${code.url}</dd>
         <dt>${t("set.cl_code")}</dt><dd class="mono cl-code" data-cl-code>${code.display}</dd></dl>
+      ${compasAlphaNote()}
       <p class="muted" data-cl-left role="status"></p></div>`;
     const before = new Set(((await get("/clients").catch(() => null))?.clients || []).map((x) => x.device_id));
     const tick = async (back) => {

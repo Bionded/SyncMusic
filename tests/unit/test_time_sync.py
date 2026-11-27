@@ -470,7 +470,10 @@ async def test_clock_on_connect_before_mount_at_sync_and_throttled(env, tmp_path
     app.sync.detector.connected["sdy"] = cd
     while not events.empty():
         events.get_nowait()
+    # a mount left by the earlier steps' background work (slow under load) would skip the connect clock
+    app.sync._mounts.clear()
     await app.sync.on_disk_added(cd)
+    assert "pod" in app.sync._clock_tasks
     await app.sync._clock_tasks["pod"]
     await real_sleep(0)
     done = [

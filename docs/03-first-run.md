@@ -118,7 +118,10 @@ Steps run top to bottom; drag a step by its grip to reorder it. Converted files 
 *Device → Sync* builds a **plan** - *nothing is written until you apply*. It shows:
 
 - what will be **added**, **replaced**, **removed** and **written** (playlists, database), grouped by template, with
-  totals and a sample of items;
+  totals and a sample of items. A file whose tags were rewritten in the library (for example by a tagger that
+  runs every night) but whose audio is the same is listed as *tags changed in the library*: SyncMusic updates
+  the tags of the file already on the device instead of downloading, converting and copying it again. Only new
+  audio is *source changed*;
 - the **space** after the sync (*used of total · free · fits / does not fit*); if it does not fit, choose what to
   leave off or pick fewer templates;
 - warnings (a slow or fragile device can be switched to **gentle write mode** right from the plan);

@@ -697,6 +697,25 @@ class FolderLibrary(Library):
             raise KeyError(f"item {item_id!r} resolves outside the library root")
         return path
 
+    async def read_range(self, item_id: str, offset: int, length: int) -> bytes | None:
+        """A part of a local file; None for a remote folder (it would download the whole file)."""
+        if self.remote is not None:
+            return None
+        try:
+            path = await self.open_media(item_id)
+        except KeyError:
+            return None
+
+        def work() -> bytes:
+            with path.open("rb") as f:
+                f.seek(offset)
+                return f.read(length)
+
+        try:
+            return await asyncio.to_thread(work)
+        except OSError:
+            return None
+
     async def open_media(self, item_id: str) -> Path:
         if not self._paths:
             await self.snapshot()

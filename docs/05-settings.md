@@ -171,11 +171,18 @@ templates for every media kind.
 ### Reverse sync
 | Key | Default | Meaning |
 |---|---|---|
-| `enabled` | on | Read listening data back before every sync. |
-| `plays` | on | Play counts and last played. |
-| `ratings` | on | Ratings and favourites, as the player has them: star ratings go to the library rating, hearts to favourites; a heart never becomes stars or the other way round. |
+| `enabled` | on | **Bring back listening data from this player**: read listening data back before every sync. Off: nothing goes back, whatever the switches below say. |
+| `plays` | on | Play counts and last played (a play adds one to the count and sets the time; the two always go together). |
+| `favourites` | on | Hearts added or removed on the player go to the library's favourites. |
+| `ratings` | on | Star ratings set on the player go to the library rating. A heart never becomes stars or the other way round. |
 | `positions` | on | Audiobook and podcast positions. |
-| `playlists` | on | Playlists changed on the player go back to the library. |
+| `finished` | on | Episodes and books played to the end are marked as played (needs `positions`). |
+| `playlists` | on | Playlists changed or made on the player go back to the library. |
+
+The switches are in the device's **Settings → Basic**, indented under the master switch. Settings saved by
+older versions keep their meaning: their one ratings switch now sets both `ratings` and `favourites`.
+A Compás player counts a play as soon as a track starts, also when you skip it; turn off `plays` for it if
+that matters to you.
 
 The page shows only the switches for what the player records: a USB stick has no reverse sync at all, a
 Rockbox player no positions, an iPod or Rockbox player stars but no hearts, the HiBy R1 with SonixOS hearts but

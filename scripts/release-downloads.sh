@@ -37,11 +37,11 @@ cat <<NOTES
 | SyncMusic desktop | A Linux desktop: the app in its own window (x86_64) | $(a "syncmusic-desktop-$v-linux-x86_64") | \`chmod +x\` the file and start it |
 | SyncMusic desktop | A Linux desktop on ARM 64-bit | $(a "syncmusic-desktop-$v-linux-aarch64") | \`chmod +x\` the file and start it |
 | Docker image | Docker / compose users (amd64, arm64) | \`$image:$tag\` | \`docker pull $image:$tag\` |
-| SyncMusic app for Compás (HiBy R1), hard float | **Use this one** (faster) | $(a "syncmusic-compas-$v-hard.zip") | Unzip into \`.apps/\` on the SD card |
-| SyncMusic app for Compás (HiBy R1), soft float | Only if the hard-float app closes at once or does not start | $(a "syncmusic-compas-$v-soft.zip") | Unzip into \`.apps/\` on the SD card |
+| SyncMusic app for Compás (HiBy R1), hard float — **Alpha, very unstable** | **Use this one** (faster) | $(a "syncmusic-compas-$v-hard.zip") | Unzip into \`.apps/\` on the SD card |
+| SyncMusic app for Compás (HiBy R1), soft float — **Alpha, very unstable** | Only if the hard-float app closes at once or does not start | $(a "syncmusic-compas-$v-soft.zip") | Unzip into \`.apps/\` on the SD card |
 
 Checksums: $(a SHA256SUMS) — verify a download with \`sha256sum -c --ignore-missing SHA256SUMS\` in the folder you downloaded to.
 
-Compás app: after unzipping, the card has \`.apps/syncmusic/\`; open *Apps* → **SyncMusic** and approve the first start. If the player says *Could not start the app* right after the copy, restart the player. Guide: https://github.com/$repo/blob/main/docs/10-compas-app.md
+Compás app (alpha, very unstable; syncing over USB is the reliable way): after unzipping, the card has \`.apps/syncmusic/\`; open *Apps* → **SyncMusic** and approve the first start. If the player says *Could not start the app* right after the copy, restart the player. Guide: https://github.com/$repo/blob/main/docs/10-compas-app.md
 
 NOTES

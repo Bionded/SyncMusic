@@ -34,6 +34,7 @@ from syncmusic.base.library import (
     ServerUrl,
     body_chunks,
     error_reason,
+    ranged_get,
 )
 from syncmusic.core.models import (
     HealthStatus,
@@ -325,6 +326,17 @@ class JellyfinLibrary(Library):
                 f"download of {item_id!r} failed: HTTP {response.status_code} (server error)"
             )
         raise KeyError(f"download of {item_id!r} failed: HTTP {response.status_code}")
+
+    async def read_range(self, item_id: str, offset: int, length: int) -> bytes | None:
+        """A part of the original file by an HTTP Range request on `Download`."""
+        try:
+            token, _ = await self._login()
+        except (httpx.HTTPError, JellyfinError):
+            return None
+        request = self.client().build_request(
+            "GET", f"/Items/{item_id}/Download", headers={"Authorization": self._auth_header(token)}
+        )
+        return await ranged_get(self.client(), request, offset, length)
 
     async def open_cover(self, item_id: str) -> bytes | None:
         return await self._image(item_id, None)

@@ -203,3 +203,31 @@ async def test_listening_changes_of_a_sync_can_be_undone(env, server):
     await _refresh(app, c)
     await _sync(app, c, dev_id)  # the player follows the library again
     assert len(_hearts(mount)) == 1
+
+
+async def test_reset_favourites_come_back_on_an_update_sync(env, server, monkeypatch):
+    """A firmware update wiped the player's database; the next update sync (not a full sync) puts the
+    library's favourites back as hearts."""
+    from syncmusic.core import reverse
+
+    monkeypatch.setattr(reverse, "MASS_UNSTAR_MIN", 2)
+    app, c, mount, dev_id = env
+    for sid in ("s1", "s2"):
+        server.songs[sid]["starred"] = "2026-10-28T10:00:00Z"
+    await _refresh(app, c)
+    await _sync(app, c, dev_id)
+    await _sync(app, c, dev_id)
+    assert len(_hearts(mount)) == 2
+
+    for f in (mount / ".local").glob("*.db*"):
+        f.unlink()  # the firmware update leaves no database at all
+    r = await c.post(f"/api/v1/devices/{dev_id}/update")
+    assert r.status_code == 202, r.text
+    job = await app.jobs.wait(r.json()["id"])
+    assert job.status == "succeeded", job.error
+    assert job.result["counts"]["device_hearts"] == 2
+    assert any("song database is missing" in w for w in job.result["reverse"]["warnings"])
+    plan = (await c.post(f"/api/v1/devices/{dev_id}/plan", json={})).json()
+    assert not any("song database is missing" in w for w in plan["warnings"])  # rebuilt
+    assert all(server.songs[sid].get("starred") for sid in ("s1", "s2"))
+    assert len(_hearts(mount)) == 2
